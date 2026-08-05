@@ -1,0 +1,459 @@
+/**
+ * Workspace isolation for parallel workers (Phase 6).
+ *
+ * Each parallel worker runs in its own jj workspace: an extra working
+ * copy on the same repo (shared commits + op log, its own working-copy
+ * commit). Workers commit freely without touching the main working copy;
+ * the orchestrator merges each workspace's commits into the task base
+ * with `jj squash`, then removes the workspace.
+ *
+ * jj 0.43 mechanics pinned down empirically (see docs/pi-task-design.md):
+ *
+ * - Workspace names are NOT revsets ("Revision `ws1` doesn't exist").
+ *   Resolve the workspace's working-copy commit id from
+ *   `jj workspace list` (columns: name, change id, commit id, description).
+ * - `jj squash --into <commit>` rewrites the target in place (same change
+ *   id, new commit id) and auto-rebases descendants. The merge base must
+ *   therefore be tracked by its CHANGE id and re-resolved to a commit id
+ *   before EVERY squash — squashing into a stale commit id silently
+ *   diverges (two workspaces merge into the old snapshot; no conflict).
+ * - A divergent change (two or more VISIBLE commits sharing a change id —
+ *   the op-log-fork signature, see below) makes `jj log -r <change>` fail
+ *   with "Change ID ... is divergent". Resolution never picks a stale or
+ *   arbitrary revision: it fails loudly instead.
+ * - Squashing `base..ws-@` moves every worker commit's diff into the base
+ *   and abandons the worker commits; the workspace @ ends up empty.
+ * - Conflicts do NOT fail the squash — they land in the base commit with
+ *   conflict markers. Detect via `jj resolve --list -r <base>`: exit 0 +
+ *   "<path> N-sided conflict" lines when conflicted; exit 2 + "No
+ *   conflicts found" when clean.
+ * - jj 0.43 has no `jj workspace remove` — cleanup is `jj workspace
+ *   forget <name>` (abandons the now-empty @ commit) plus deleting the
+ *   directory.
+ * - jj snapshots the working copy on read-only commands too (`jj diff`,
+ *   `jj status`, ...) when the on-disk state changed — writing a
+ *   "snapshot working copy" op. Concurrent jj processes writing ops from
+ *   the same op-log head FORK the op log (jj reconciles with a
+ *   "Concurrent modification detected" op and can leave divergent
+ *   changes). Orchestrator read-only commands therefore pass
+ *   `--ignore-working-copy` (no snapshot op, no fork). The lone exception
+ *   is assertCleanWorkingCopy, whose PURPOSE is the live working-copy
+ *   state — it is the run's first jj op, when no other writer exists.
+ *
+ * Also exported for the orchestrator: assertCleanWorkingCopy (R1 guard),
+ * detectChangeConflicts (final-state conflict check on the base change),
+ * resolveCommitId (the surviving post-squash base commit id) and
+ * assertMerged (post-merge provable-integration gate).
+ */
+
+import { execFile } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+
+// ─── Types ───────────────────────────────────────────────────────────
+
+export interface MergeOutcome {
+	/** Repo-relative paths with unresolved conflicts in the merged base. */
+	conflicts: string[];
+}
+
+interface JjResult {
+	code: number;
+	stdout: string;
+	stderr: string;
+}
+
+// ─── jj plumbing ─────────────────────────────────────────────────────
+
+const MAX_JJ_OUTPUT_BYTES = 10 * 1024 * 1024;
+
+/** Run jj; never throws (exit code + output captured for error messages).
+ *  JJ_EDITOR=true in the child env: jj invokes the editor for squash even
+ *  with --from/--into when descriptions differ — an interactive editor
+ *  reading an idle pipe hangs the orchestrator. */
+export function execJj(args: string[], cwd: string): Promise<JjResult> {
+	return new Promise((resolve) => {
+		execFile(
+			"jj",
+			args,
+			{
+				cwd,
+				maxBuffer: MAX_JJ_OUTPUT_BYTES,
+				env: { ...process.env, JJ_EDITOR: "true" },
+			},
+			(error, stdout, stderr) => {
+				if (!error) {
+					resolve({ code: 0, stdout: stdout.toString(), stderr: stderr.toString() });
+					return;
+				}
+				// Non-zero exit: error.code is the numeric exit code.
+				// Spawn failures (ENOENT etc.): error.code is a string.
+				const err = error as NodeJS.ErrnoException;
+				const code = typeof err.code === "number" ? err.code : 1;
+				resolve({ code, stdout: stdout.toString(), stderr: stderr.toString() });
+			},
+		);
+	});
+}
+
+/** Parse `jj workspace list` into name → { changeId, commitId }. */
+function parseWorkspaceList(stdout: string): Map<string, { changeId: string; commitId: string }> {
+	const result = new Map<string, { changeId: string; commitId: string }>();
+	for (const line of stdout.split("\n")) {
+		const match = /^(\S+):\s+(\S+)\s+(\S+)/.exec(line);
+		if (match) result.set(match[1], { changeId: match[2], commitId: match[3] });
+	}
+	return result;
+}
+
+async function workspaceCommitId(projectDir: string, name: string): Promise<string> {
+	const result = await execJj(["workspace", "list"], projectDir);
+	if (result.code !== 0) {
+		throw new Error(`jj workspace list failed (${result.code}): ${result.stderr.trim()}`);
+	}
+	const ws = parseWorkspaceList(result.stdout).get(name);
+	if (!ws) throw new Error(`Workspace "${name}" not found in jj workspace list`);
+	return ws.commitId;
+}
+
+/** Resolve a change id to its current commit id. Change ids are stable
+ *  across `jj squash --into` rewrites; commit ids are not. Exported for
+ *  the orchestrator: a parallel run's surviving commit is the base
+ *  change's commit id resolved AFTER the last squash.
+ *
+ *  Never picks a stale or arbitrary revision: a divergent change (two or
+ *  more visible commits sharing the change id — the op-log-fork
+ *  signature) makes jj fail, and multi-match output is rejected. Either
+ *  way the caller gets a loud error instead of squashing into the wrong
+ *  commit (todo #71's corruption mode). */
+export async function resolveCommitId(projectDir: string, changeId: string): Promise<string> {
+	const result = await execJj(
+		["log", "-r", changeId, "-T", "commit_id", "--no-graph", "--ignore-working-copy"],
+		projectDir,
+	);
+	if (result.code !== 0) {
+		const stderr = result.stderr.trim();
+		if (stderr.includes("is divergent")) {
+			throw new Error(
+				`change ${changeId} is DIVERGENT (multiple visible commits share the change id — ` +
+					`signature of a concurrent jj session/op-log fork). Refusing to pick one arbitrarily; ` +
+					`resolve the divergence (e.g. jj abandon) and re-run. jj: ${stderr.split("\n")[0]}`,
+			);
+		}
+		if (stderr.includes("doesn't exist")) {
+			throw new Error(
+				`change ${changeId} has NO visible commit (hidden or abandoned — a stale-target squash ` +
+					`can hide the whole merged base, todo #71). Refusing to verify a tree without the ` +
+					`integrated work. jj: ${stderr.split("\n")[0]}`,
+			);
+		}
+		throw new Error(`jj log -r ${changeId} failed (${result.code}): ${stderr}`);
+	}
+	const id = result.stdout.trim();
+	if (!/^[0-9a-f]{40}$/.test(id)) {
+		throw new Error(
+			`jj log -r ${changeId}: expected a single 40-hex commit id, got ${JSON.stringify(id)} ` +
+				"(multiple matches or unexpected output — the change may be divergent)",
+		);
+	}
+	return id;
+}
+
+/** The task base's CHANGE id: the parent of the main working-copy commit
+ *  at task start (main @ is empty; @- is the commit workers build on).
+ *  `--ignore-working-copy`: the recorded @ (fresh from the
+ *  assertCleanWorkingCopy snapshot, the run's first jj op) is exact — no
+ *  snapshot op to race later writers with (todo #70). */
+export async function taskBaseChangeId(projectDir: string): Promise<string> {
+	const result = await execJj(
+		["log", "-r", "@-", "-T", "change_id", "--no-graph", "--ignore-working-copy"],
+		projectDir,
+	);
+	if (result.code !== 0) {
+		throw new Error(`jj log -r @- failed (${result.code}): ${result.stderr.trim()}`);
+	}
+	const id = result.stdout.trim();
+	if (!id) {
+		throw new Error("jj log -r @-: no task base commit found (repo needs a starter commit)");
+	}
+	return id;
+}
+
+/**
+ * The parallel-run merge target: a fresh EMPTY commit authored as the AI
+ * identity (todo #84), parented on @- (the user's last commit), described
+ * with the spec goal. The workspaces' work is squashed into it, so the
+ * merged parallel commit is AI-authored — jj squash keeps the DESTINATION
+ * commit's author, so squashing into the user's base would silently
+ * attribute AI work to the user. jj 0.43 has no author-reset, so the
+ * identity must be set at creation: `jj --config-file <identity> new @-`
+ * (--config-file MERGES with the user config, unlike the JJ_CONFIG env
+ * var — verified: author+committer follow the identity while the user's
+ * revset aliases survive).
+ *
+ * Returns the new commit's CHANGE id (the base for mergeWorkspace).
+ *
+ * @param identityFile path to a jj config with the AI identity.
+ * @param goal the spec's Goal line — the merged commit's description.
+ */
+export async function createAiTaskBase(
+	projectDir: string,
+	identityFile: string,
+	goal: string,
+): Promise<string> {
+	const newResult = await execJj(["--config-file", identityFile, "new", "@-"], projectDir);
+	if (newResult.code !== 0) {
+		throw new Error(`jj new @- failed (${newResult.code}): ${newResult.stderr.trim()}`);
+	}
+	const describeResult = await execJj(["describe", "-m", `task: ${goal}`], projectDir);
+	if (describeResult.code !== 0) {
+		throw new Error(`jj describe failed (${describeResult.code}): ${describeResult.stderr.trim()}`);
+	}
+	const idResult = await execJj(
+		["log", "-r", "@", "-T", "change_id", "--no-graph", "--ignore-working-copy"],
+		projectDir,
+	);
+	if (idResult.code !== 0 || !idResult.stdout.trim()) {
+		throw new Error(`jj log -r @ failed (${idResult.code}): ${idResult.stderr.trim()}`);
+	}
+	return idResult.stdout.trim();
+}
+
+// ─── Workspace lifecycle ─────────────────────────────────────────────
+
+/**
+ * Create a jj workspace for one worker. The workspace's working-copy
+ * commit starts at the task base (@- of the main working copy), so the
+ * worker commits freely without touching the main working copy.
+ *
+ * @returns the workspace directory — the worker's cwd.
+ */
+export async function createWorkspace(projectDir: string, name: string): Promise<string> {
+	const parent = mkdtempSync(join(tmpdir(), "pi-task-parallel-"));
+	const dir = join(parent, name);
+	const result = await execJj(["workspace", "add", dir, "--name", name], projectDir);
+	if (result.code !== 0) {
+		rmSync(parent, { recursive: true, force: true });
+		throw new Error(`jj workspace add "${name}" failed (${result.code}): ${result.stderr.trim()}`);
+	}
+	return dir;
+}
+
+/** Summary lines of `jj diff --from <from> --to <to>` ("M path", "A path", ...).
+ *  Explicit commit ids only — no @ evaluation, no working-copy snapshot. */
+async function diffSummary(projectDir: string, from: string, to: string): Promise<string[]> {
+	const result = await execJj(["diff", "--from", from, "--to", to, "--summary"], projectDir);
+	if (result.code !== 0) {
+		throw new Error(
+			`jj diff --from ${from} --to ${to} failed (${result.code}): ${result.stderr.trim()}`,
+		);
+	}
+	return result.stdout.split("\n").filter((line) => line.trim().length > 0);
+}
+
+/**
+ * Merge a workspace's commits into the task base.
+ *
+ * @param into the base's CHANGE id (see taskBaseChangeId) — stable across
+ *   `jj squash --into` rewrites of the base itself.
+ *
+ * After the squash, verifies the provable-integration invariant: the
+ * workspace's @ must now sit on the CURRENT base with zero remaining diff
+ * (every worker commit was consumed). A squash that targeted a stale/
+ * pre-rewrite base (resolved, then a concurrent session rewrote the base
+ * before the squash landed — todo #71) leaves the worker's changes outside
+ * the current base and fails here instead of reporting a green run whose
+ * visible tree lacks the work.
+ */
+export async function mergeWorkspace(
+	projectDir: string,
+	name: string,
+	into: string,
+): Promise<MergeOutcome> {
+	const baseCommit = await resolveCommitId(projectDir, into);
+	const wsAt = await workspaceCommitId(projectDir, name);
+
+	// `base..ws-@` = every commit the worker made on top of the base
+	// (multi-commit ranges work; the workspace root is included but empty).
+	// Squashing into the CURRENT base commit id moves the diffs in and
+	// abandons the worker commits.
+	const squash = await execJj(
+		["squash", "--from", `${baseCommit}..${wsAt}`, "--into", baseCommit],
+		projectDir,
+	);
+	if (squash.code !== 0) {
+		throw new Error(
+			`jj squash workspace "${name}" failed (${squash.code}): ${squash.stderr.trim()}`,
+		);
+	}
+
+	// Provable-integration check: the squash consumed EVERY worker commit.
+	// The base was rewritten, so re-resolve its current commit id and diff
+	// it against the workspace's (auto-rebased) @ — empty means the whole
+	// range landed in the base.
+	const newBase = await resolveCommitId(projectDir, into);
+	const leftover = await diffSummary(projectDir, newBase, await workspaceCommitId(projectDir, name));
+	if (leftover.length > 0) {
+		throw new Error(
+			`jj squash workspace "${name}" left changes OUTSIDE the merged base ` +
+				`(stale squash target? a concurrent session rewrote the base?): ${leftover.join(", ")}`,
+		);
+	}
+
+	// Conflicts land in the base commit without failing the squash; the
+	// base was rewritten, so resolve its current commit id before checking.
+	const conflicts = await detectConflicts(projectDir, newBase);
+	return { conflicts };
+}
+
+/** List unresolved conflict paths in a commit. `jj resolve --list -r`:
+ *  exit 0 + "<path> N-sided conflict" lines when conflicted;
+ *  exit 2 + "No conflicts found" (printed to stderr) when clean. */
+async function detectConflicts(projectDir: string, commitId: string): Promise<string[]> {
+	const result = await execJj(["resolve", "--list", "-r", commitId], projectDir);
+	const all = `${result.stdout}\n${result.stderr}`;
+	if (result.code === 2 && all.includes("No conflicts found")) return [];
+	if (result.code !== 0) {
+		throw new Error(
+			`jj resolve --list -r ${commitId} failed (${result.code}): ${all.trim()}`,
+		);
+	}
+	const paths: string[] = [];
+	for (const line of result.stdout.split("\n")) {
+		const match = /^(\S+)\s+\d+-sided conflict/.exec(line.trim());
+		if (match) paths.push(match[1]);
+	}
+	return paths;
+}
+
+/**
+ * Unresolved conflict paths in the current commit of a change id — the
+ * FINAL-state conflict check. Squashes rewrite the commit (not the change),
+ * so the change is re-resolved to its latest commit before listing its
+ * conflicts. The orchestrator uses this once, after ALL workspaces merged,
+ * instead of unioning per-squash conflict lists (a later squash's changes
+ * can change the conflict state, so per-squash lists are stale).
+ */
+export async function detectChangeConflicts(projectDir: string, changeId: string): Promise<string[]> {
+	const commitId = await resolveCommitId(projectDir, changeId);
+	return detectConflicts(projectDir, commitId);
+}
+
+/**
+ * Provable-integration gate (R2, todo #71 observation 3): after ALL
+ * workspaces merged, assert that every workspace's working-copy commit AND
+ * the main working copy sit directly on the CURRENT merged base with zero
+ * remaining diff. The orchestrator runs this BEFORE verification and
+ * before workspace cleanup — a merge that targeted a stale/pre-rewrite
+ * base (or never ran) leaves worker changes OUTSIDE the current base,
+ * which would let verification pass trivially on a working copy without
+ * the integrated work. Fails the run loudly instead.
+ *
+ * Throws when the base change has no visible commit (the whole change was
+ * rewritten into a hidden revision) or when any workspace/@- still differs
+ * from the merged base, naming the offenders.
+ */
+export async function assertMerged(
+	projectDir: string,
+	workspaceNames: string[],
+	baseChangeId: string,
+): Promise<void> {
+	const base = await resolveCommitId(projectDir, baseChangeId);
+	const problems: string[] = [];
+	for (const name of workspaceNames) {
+		const leftover = await diffSummary(projectDir, base, await workspaceCommitId(projectDir, name));
+		if (leftover.length > 0) {
+			problems.push(`workspace "${name}" still has changes outside the merged base: ${leftover.join(", ")}`);
+		}
+	}
+	// The main working copy must sit directly on the merged base too — the
+	// observed corruption left it on a pre-rewrite chain with no visible
+	// changes. --ignore-working-copy: the recorded @ is exact (squashes
+	// rewrote it in the workspace store) and no snapshot op may be written
+	// by a read-only gate.
+	const main = await execJj(
+		["diff", "--from", base, "--to", "@-", "--summary", "--ignore-working-copy"],
+		projectDir,
+	);
+	if (main.code !== 0) {
+		throw new Error(
+			`jj diff (main working copy vs merged base) failed (${main.code}): ${main.stderr.trim()}`,
+		);
+	}
+	if (main.stdout.trim().length > 0) {
+		problems.push(
+			`main working copy is not on the merged base (${main.stdout.trim().split("\n").length} change(s))`,
+		);
+	}
+	if (problems.length > 0) {
+		throw new Error(
+			"parallel merge did NOT integrate all worker changes into the task base — refusing to " +
+				"verify a tree without the merged work:\n  - " +
+				problems.join("\n  - "),
+		);
+	}
+}
+
+/**
+ * The merged base must be a VISIBLE commit (assertMerged's postconditions
+ * — main @- and every workspace @ directly on it — can only hold for a
+ * visible head; a stale-target squash hides the whole base chain). Run
+ * after assertMerged so a divergent base (op-log fork) is also caught.
+ *
+ * jj 0.43 reports a fully hidden change as "Revision ... doesn't exist",
+ * which resolveCommitId already turns into the "NO visible commit" error;
+ * the zero-id check below is a defensive guard for jj versions that
+ * resolve a hidden change to the all-zero commit id instead.
+ */
+export async function assertVisibleCommit(projectDir: string, changeId: string): Promise<void> {
+	const id = await resolveCommitId(projectDir, changeId);
+	if (!/^[0-9a-f]{40}$/.test(id) || /^0+$/.test(id)) {
+		throw new Error(
+			`base change ${changeId} has NO visible commit (id ${JSON.stringify(id)}) — ` +
+				"the merge rewrote the base into a hidden revision. Refusing to verify a tree " +
+				"without the integrated work.",
+		);
+	}
+}
+
+/**
+ * R1 guard: the orchestrator requires a CLEAN main working copy. The
+ * single path commits task work into the main working copy; the parallel
+ * path squashes workspace commits under it — either way, pre-existing user
+ * changes would be silently bundled into task commits. Fails fast when `@`
+ * differs from its parent (e.g. `jj diff --from @- --to @ --summary` is
+ * non-empty), with a short `jj status` excerpt. Real jj, hermetic-testable.
+ *
+ * Deliberately does NOT use --ignore-working-copy: its purpose is the LIVE
+ * on-disk state, and it is the run's FIRST jj op — nothing else writes ops
+ * yet, so its snapshot cannot race another process (todo #70).
+ */
+export async function assertCleanWorkingCopy(cwd: string): Promise<void> {
+	const diff = await execJj(["diff", "--from", "@-", "--to", "@", "--summary"], cwd);
+	if (diff.code !== 0) {
+		throw new Error(`jj diff --from @- --to @ failed (${diff.code}): ${diff.stderr.trim()}`);
+	}
+	if (diff.stdout.trim().length > 0) {
+		const status = await execJj(["status"], cwd);
+		const excerpt = (status.stdout.trim() || status.stderr.trim()).split("\n").slice(0, 8).join("\n");
+		throw new Error(
+			"task requires a clean working copy — commit or stash your changes before dispatching" +
+				(excerpt ? `\njj status excerpt:\n${excerpt}` : ""),
+		);
+	}
+}
+
+/**
+ * Remove a workspace: `jj workspace forget` (abandons the now-empty @
+ * commit) and delete its directory when `dir` is provided.
+ */
+export async function removeWorkspace(projectDir: string, name: string, dir?: string): Promise<void> {
+	const result = await execJj(["workspace", "forget", name], projectDir);
+	if (result.code !== 0) {
+		throw new Error(
+			`jj workspace forget "${name}" failed (${result.code}): ${result.stderr.trim()}`,
+		);
+	}
+	if (dir) rmSync(dir, { recursive: true, force: true });
+}

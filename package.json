@@ -1,0 +1,26 @@
+{
+	"name": "pi-task",
+	"version": "0.1.0",
+	"description": "Task-execution engine for the pi coding agent: isolated worker sessions, bwrap sandbox, typed yields, budget tiers, adversarial review",
+	"type": "module",
+	"keywords": ["pi-package"],
+	"license": "MIT",
+	"pi": {
+		"extensions": ["./extensions"]
+	},
+	"peerDependencies": {
+		"@earendil-works/pi-ai": "*",
+		"@earendil-works/pi-agent-core": "*",
+		"@earendil-works/pi-coding-agent": "*",
+		"@earendil-works/pi-tui": "*",
+		"typebox": "*"
+	},
+	"devDependencies": {
+		"@earendil-works/pi-ai": "0.83.0",
+		"@earendil-works/pi-agent-core": "0.83.0",
+		"@earendil-works/pi-coding-agent": "0.83.0",
+		"@earendil-works/pi-tui": "0.83.0",
+		"tsx": "^4.19.0",
+		"typebox": "^1.3.7"
+	}
+}

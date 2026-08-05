@@ -1,0 +1,10 @@
+# Dependencies
+node_modules/
+
+# Runtime data (extension writes these to the agent dir, not the repo)
+results/
+cache/
+
+# Editor/OS noise
+*.tsbuildinfo
+.DS_Store

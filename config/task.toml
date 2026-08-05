@@ -1,0 +1,105 @@
+# task.toml — pi-task budget + sandbox configuration (Phases 10-11).
+#
+# The budget-tier source of truth: which models run the worker pipeline
+# (prewalk exploration, execution, forked review) per tier, plus the
+# defaults applied when neither the --task-budget flag nor the tool's
+# budget parameter locks a tier, the per-tool-call budget, and the
+# worker-sandbox policy. See docs/pi-task-design.md → Budget Enforcement
+# / Budget Tiers / Worker Sandbox.
+#
+# BUDGET TIERS ARE CONFIG-DRIVEN (Phase 11): every [budget.*] section in
+# this file is a usable tier, in file order — no code change is needed to
+# add a tier. The task tool's budget enum, the --task-budget flag choices,
+# and the /task-budget command choices are built from these sections plus
+# "auto". Editing this file mid-session needs /reload (or a /task-budget
+# command) to refresh the schema enum.
+#
+# Loader: loadTaskConfig() in extensions/task/config.ts (built-in
+# defaults apply for any missing file/key; explicitly invalid values
+# warn and fall back per field). In the installed layout this file lives
+# at ~/.pi/agent/config/task.toml; in the dev workspace it is
+# <workspace>/config/task.toml.
+
+[defaults]
+# Effective budget mode for unlocked runs — the fallback when no tier is
+# locked (the --task-budget flag is "auto" when unset, so a concrete tier
+# here always applies to an unlocked run):
+#   "auto" — the requirement-count heuristic picks per task
+#            (small tasks -> economy, large -> full; never free);
+#   any [budget.*] tier name — that tier always applies.
+budget = "full"
+# Max fix workers the review-fix loop may dispatch before escalating.
+max_fix_iterations = 2
+# Per-tool-call budget (ms) for a single worker tool execution (bash/read/
+# edit/write/grep/find — tracked via tool_execution_start/end). A tool
+# running longer than this aborts the worker as hung; the no-progress
+# watchdog cannot catch it because an in-flight tool counts as progress.
+# 900000 = 15 min (the default when absent).
+tool_timeout_ms = 900000
+# AI commit identity: task-worker commits are authored as this name/email
+# (jj reads it via a config override in the worker env; "{model}" is
+# replaced with the execute model's short name). Parallel runs build the
+# merged commit on an AI-authored base so the squashed result is AI-owned.
+# Your own jj/git commits keep your identity.
+ai_author_name = "Pi ({model})"
+ai_author_email = "noreply@danong.dev"
+
+[budget.max]
+# Use the best model for everything.
+prewalk_model = "qwen-token-plan/qwen3.8-max-preview"
+execute_model = "qwen-token-plan/qwen3.8-max-preview"
+review_model = "qwen-token-plan/qwen3.8-max-preview"
+review = true
+# Per-tier worker wall-clock budget (ms) — the whole worker run, incl.
+# prewalk. 2700000 = 45 min.
+wall_timeout_ms = 2700000
+
+[budget.full]
+# Strong exploration, fast execution + review.
+prewalk_model = "qwen-token-plan/qwen3.8-max-preview"
+execute_model = "opencode-go/deepseek-v4-flash"
+review_model = "opencode-go/deepseek-v4-flash"
+review = true
+wall_timeout_ms = 2700000
+
+[budget.economy]
+# Fast model throughout. prewalk_model == execute_model, so the prewalk
+# machinery auto-skips (zero overhead). Cheaper tiers get a shorter wall
+# (25 min) so a stuck run burns less budget.
+prewalk_model = "opencode-go/deepseek-v4-flash"
+execute_model = "opencode-go/deepseek-v4-flash"
+review_model = "opencode-go/deepseek-v4-flash"
+review = false
+wall_timeout_ms = 1500000
+
+[budget.free]
+# Fastest model, no review. prewalk_model == execute_model (no prewalk).
+prewalk_model = "opencode/deepseek-v4-flash-free"
+execute_model = "opencode/deepseek-v4-flash-free"
+review_model = "opencode/deepseek-v4-flash-free"
+review = false
+wall_timeout_ms = 1500000
+
+[sandbox]
+# Worker bwrap sandbox policy (docs/pi-task-design.md → Worker Sandbox).
+# The agent dir (~/.pi/agent) is bound READ-ONLY except for pi's own
+# runtime-state paths (settings.json, trust.json, models-store.json,
+# sessions/, cache/, results/, tmp/, npm/, .npm-cache), which are rw so the
+# worker's pi process can start and run — pi writes settings.json at startup
+# (the changelog check records lastChangelogVersion); a read-only bind there
+# hangs the worker on the first write (todo #89). The project's shared jj
+# store (.jj/.git) is also rw so parallel workspace commits work (todo #89).
+# Repo content (config/,
+# extensions/, docs/, tracked files) and auth.json stay read-only, so a
+# parallel worker still cannot escape its jj workspace through the agent dir;
+# the checklist tool is unaffected (its state is session entries, not
+# agent-dir files). The orchestrator consumes this when spawning workers
+# (extensions/task/sandbox.ts); a missing/disabled bwrap degrades the run to
+# unsandboxed spawns with one warning.
+enabled = true
+# "allow" — host network (workers often need it for verification);
+# "isolate" — --unshare-net for stricter environments.
+network = "allow"
+# Additional bind paths beyond the default allowlist.
+extra_ro_binds = []
+extra_rw_binds = []
