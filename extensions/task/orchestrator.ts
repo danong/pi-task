@@ -1104,6 +1104,32 @@ async function executeSingle(
 	// traces are preserved (benchmark mode). The orchestrator owns the scratch
 	// dir and cleans it up in finally.
 	const sessionDir = review || preserveSessions ? mkdtempSync(join(tmpdir(), "pi-task-session-")) : undefined;
+
+	// AI commit identity (todo #84): root the single worker on a fresh
+	// AI-authored commit. jj commit preserves the working-copy commit's
+	// ORIGINAL author, so rewriting the user's WC would attribute the AI's
+	// work to the user — and the worker's leftover empty WC would then make
+	// the user's NEXT commit AI-authored too (jj has no author-reset; the
+	// identity is set at commit creation). Mirrors the parallel path's
+	// createAiTaskBase; the restore step in the finally below returns the
+	// working copy to the user's identity.
+	let identityDir: string | null = null;
+	let identityFile: string | null = null;
+	if (aiAuthorName.trim().length > 0 && aiAuthorEmail.trim().length > 0) {
+		identityDir = mkdtempSync(join(tmpdir(), "pi-task-identity-"));
+		identityFile = join(identityDir, "jj-identity.toml");
+		writeFileSync(identityFile, aiIdentityToml(aiAuthorName, aiAuthorEmail), "utf-8");
+		try {
+			await createAiTaskBase(cwd, identityFile, spec.goal);
+		} catch (err) {
+			try {
+				rmSync(identityDir, { recursive: true, force: true });
+			} catch {
+				/* best effort */
+			}
+			throw err;
+		}
+	}
 	const baseCommit = review ? await headCommitId(cwd) : "";
 
 	// Metrics: run timing + the swap turn (captured by wrapping the caller's
@@ -1347,6 +1373,28 @@ async function executeSingle(
 			durationMs: Date.now() - runStartMs,
 		};
 	} finally {
+		// Restore the main working copy to the USER's identity: `jj new`
+		// creates a fresh empty commit under the orchestrator's (user)
+		// config, and the worker's leftover empty AI-authored WC (or the AI
+		// base itself when the worker made no commits) is abandoned — safe:
+		// it is empty by construction. Best effort — a failure here must not
+		// mask the run's outcome; the parallel path mirrors this restore.
+		if (identityDir) {
+			try {
+				await execJj(["new"], cwd);
+				const leftover = (
+					await execJj(["log", "-r", "@-", "-T", "if(empty, 'EMPTY', 'X')", "--no-graph"], cwd)
+				).stdout.trim();
+				if (leftover === "EMPTY") await execJj(["abandon", "@-"], cwd);
+			} catch {
+				/* best effort */
+			}
+			try {
+				rmSync(identityDir, { recursive: true, force: true });
+			} catch {
+				/* best effort */
+			}
+		}
 		if (sessionDir) {
 			try {
 				rmSync(sessionDir, { recursive: true, force: true });

@@ -22,10 +22,12 @@ import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSy
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
+import { aiIdentityToml } from "./config.ts";
 import {
 	assertCleanWorkingCopy,
 	assertMerged,
 	assertVisibleCommit,
+	createAiTaskBase,
 	createWorkspace,
 	detectChangeConflicts,
 	mergeWorkspace,
@@ -272,21 +274,81 @@ async function testAiTaskBase(errors: string[]): Promise<void> {
 		writeFileSync(identityFile, aiIdentityToml("Pi (deepseek-v4-flash)", "noreply@danong.dev"), "utf-8");
 		const baseChange = await createAiTaskBase(testDir, identityFile, "Handle UTF-8 BOM");
 
-		check(baseChange === jj(["log", "-r", "@", "-T", "change_id"], testDir).trim(),
+		check(baseChange === jj(["log", "-r", "@", "-T", "change_id", "--no-graph"], testDir).trim(),
 			"createAiTaskBase returns the new @'s change id");
-		const author = jj(["log", "-r", "@", "-T", 'author.name() ++ " <" ++ author.email() ++ ">"'], testDir);
+		const author = jj(["log", "-r", "@", "-T", 'author.name() ++ " <" ++ author.email() ++ ">"', "--no-graph"], testDir);
 		check(author.includes("Pi (deepseek-v4-flash)") && author.includes("noreply@danong.dev"),
 			`merged base authored as the AI identity, got: ${author.trim()}`);
-		const parent = jj(["log", "-r", "@-", "-T", "description.first_line()"], testDir);
+		const parent = jj(["log", "-r", "@-", "-T", "description.first_line()", "--no-graph"], testDir);
 		check(parent.trim() === "init", `parent is @- (the user's last commit), got: ${parent.trim()}`);
-		const desc = jj(["log", "-r", "@", "-T", "description.first_line()"], testDir);
+		const desc = jj(["log", "-r", "@", "-T", "description.first_line()", "--no-graph"], testDir);
 		check(desc.trim() === "task: Handle UTF-8 BOM", `described with the spec goal, got: ${desc.trim()}`);
-		const files = jj(["log", "-r", "@", "-T", "files.len()"], testDir);
-		check(files.trim() === "0", `the base starts empty (workspaces' work lands via squash), got: ${files.trim()}`);
+		const files = jj(["log", "-r", "@", "-T", "if(empty, 'EMPTY', 'X')", "--no-graph"], testDir);
+		check(files.trim() === "EMPTY", `the base starts empty (workspaces' work lands via squash), got: ${files.trim()}`);
 	} finally {
 		rmSync(testDir, { recursive: true, force: true });
 	}
 	console.log("✓ AI-authored task base: identity + parent + goal description + empty tree");
+}
+
+/**
+ * The single-worker identity lifecycle (todo #84 regression): the worker
+ * works directly in the user's repo, so the orchestrator roots it on an
+ * AI-authored base (createAiTaskBase). The worker's first jj commit
+ * rewrites that base — author preserved, so the work commit is
+ * AI-authored — and afterwards the restore step (`jj new` + abandoning
+ * the empty leftover WC) returns the working copy to the user's identity.
+ * Without this, the worker's first commit inherits the USER's WC author
+ * and the user's next commit inherits the AI's.
+ */
+async function testSingleWorkerIdentity(errors: string[]): Promise<void> {
+	const check = (cond: boolean, msg: string): void => {
+		if (!cond) errors.push(msg);
+	};
+
+	const testDir = mkdtempSync(join(tmpdir(), "pi-task-ws-id-"));
+	try {
+		initRepo(testDir);
+		const userAuthor = jj(["log", "-r", "@-", "-T", "author.email()", "--no-graph"], testDir).trim();
+		check(userAuthor.length > 0 && userAuthor !== "noreply@danong.dev",
+			`the repo's default author is the user's (got ${userAuthor}) — test precondition`);
+		const identityFile = join(testDir, "jj-identity.toml");
+		writeFileSync(identityFile, aiIdentityToml("Pi (deepseek-v4-flash)", "noreply@danong.dev"), "utf-8");
+
+		// 1. Orchestrator roots the worker on the AI-authored base.
+		await createAiTaskBase(testDir, identityFile, "Implement feature");
+
+		// 2. The worker commits under JJ_CONFIG (as spawnWorkerSession sets it).
+		writeFileSync(join(testDir, "feature.txt"), "work\n", "utf-8");
+		execFileSync("jj", ["commit", "-m", "implement feature"], {
+			cwd: testDir,
+			encoding: "utf8",
+			env: { ...process.env, JJ_EDITOR: "true", JJ_CONFIG: identityFile },
+		});
+
+		// 3. The restore step from executeSingle's finally.
+		execFileSync("jj", ["new"], { cwd: testDir, encoding: "utf8", env: { ...process.env, JJ_EDITOR: "true" } });
+		const leftover = jj(["log", "-r", "@-", "-T", "if(empty, 'EMPTY', 'X')", "--no-graph"], testDir).trim();
+		check(leftover === "EMPTY", `the worker's leftover WC is empty and abandoned, got: ${leftover}`);
+		execFileSync("jj", ["abandon", "@-"], { cwd: testDir, encoding: "utf8", env: { ...process.env, JJ_EDITOR: "true" } });
+
+		// 4. Assertions: work is AI-authored, the WC is back to the user's
+		// identity, and the history is clean (work directly on the user's
+		// commit — no empty AI base, no empty leftover).
+		const workAuthor = jj(["log", "-r", "@-", "-T", "author.email()", "--no-graph"], testDir).trim();
+		check(workAuthor === "noreply@danong.dev", `the worker's commit is AI-authored, got: ${workAuthor}`);
+		const wcAuthor = jj(["log", "-r", "@", "-T", "author.email()", "--no-graph"], testDir).trim();
+		check(wcAuthor === userAuthor, `the restored WC is user-authored, got: ${wcAuthor}`);
+		const parentDesc = jj(["log", "-r", "@-", "-T", "description.first_line()", "--no-graph"], testDir).trim();
+		check(parentDesc === "implement feature", `the result commit is the worker's work, got: ${parentDesc}`);
+		const grandparentDesc = jj(["log", "-r", "@--", "-T", "description.first_line()", "--no-graph"], testDir).trim();
+		check(grandparentDesc === "init", `no empty AI base between the work and the user's commit, got: ${grandparentDesc}`);
+		const wcEmpty = jj(["log", "-r", "@", "-T", "if(empty, 'EMPTY', 'X')", "--no-graph"], testDir).trim();
+		check(wcEmpty === "EMPTY", `the restored WC is empty (no diff vs the work in @-), got: ${wcEmpty}`);
+	} finally {
+		rmSync(testDir, { recursive: true, force: true });
+	}
+	console.log("✓ single-worker identity: AI-authored work commit + user-authored restored WC, no empty leftovers");
 }
 
 async function testConflict(errors: string[]): Promise<void> {
@@ -733,6 +795,8 @@ export async function runTests(): Promise<void> {
 	await testStaleTargetSurfaced(errors);
 	await testAssertVisibleCommit(errors);
 	await testDivergentChangeResolution(errors);
+	await testAiTaskBase(errors);
+	await testSingleWorkerIdentity(errors);
 	await testForkProofReadOnly(errors);
 
 	if (errors.length > 0) {

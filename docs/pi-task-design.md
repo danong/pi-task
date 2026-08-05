@@ -482,6 +482,13 @@ the user; jj 0.43 has no author-reset, so the identity is set at creation
 via `jj --config-file`, which merges with the user config). The user's own
 jj/git commits keep their identity — the override is worker-scoped only.
 
+Single-worker runs (the common path) apply the same identity: the worker is
+rooted on a fresh AI-authored base (`createAiTaskBase` again — jj commit
+preserves the working-copy commit's ORIGINAL author, so committing into the
+user's WC would attribute the AI's work to the user), and after the run the
+working copy is restored to the user's identity (`jj new` + abandoning the
+worker's leftover empty WC) so the user's next commit is theirs.
+
 **Spec split (Phase 6, deterministic).** Requirements are partitioned
 round-robin by index — worker `j` gets requirements where `index % N === j`
 — preserving original requirement ids ("R1", "R2", ...) so each worker's
