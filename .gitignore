@@ -5,6 +5,11 @@ node_modules/
 results/
 cache/
 
+# pi project-local state (auto-generated; .pi/settings.json is tracked)
+.pi/sessions/
+.pi/npm/
+.pi/git/
+
 # Editor/OS noise
 *.tsbuildinfo
 .DS_Store

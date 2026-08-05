@@ -15,7 +15,10 @@ surfaced. See `docs/pi-task-design.md` for the full design.
 ## Install
 
 Requires jj (>= 0.43), node, python3 (config TOML is parsed via tomllib), and a
-working `pi` install. Install the package (local path, git, or npm source):
+working `pi` install. The repo ships `.pi/settings.json` registering itself as a
+project package (`"packages": [".."]`), so any trusted checkout auto-installs
+— the `task` tool, `/task-budget` command, and `--task-budget` flag are
+available on the next session. For a global (non-project) install instead:
 
 ```sh
 pi install /path/to/this/repo
