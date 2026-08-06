@@ -19,7 +19,7 @@
  */
 
 import { createHash, randomBytes } from "node:crypto";
-import { copyFileSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import type { Finding } from "./schemas/findings.ts";
 import type { ReadRecord, WorkerResult, WorkerUsage } from "./worker.ts";
@@ -462,4 +462,171 @@ export function copySessionTraces(opts: {
 		copyFileSync(src, dest);
 		return dest;
 	});
+}
+
+// ─── Consumption: summarizeRuns + render (metrics step 1) ────────────
+//
+// Pure functions over the results/<project>/<run_id>.json manifests so
+// /task-stats can answer "how is task performing" with data that is
+// already collected — no new collection, no benchmark suite.
+
+/** One completed run, flattened for aggregation/reporting. */
+export interface RunRow {
+	runId: string;
+	project: string;
+	tier: string;
+	requirements: number;
+	durationMs: number;
+	costUsd: number;
+	verifyPassed: boolean;
+	fixIterations: number;
+}
+
+export interface RunSummary {
+	/** Ascending by run id (time-sortable). */
+	rows: RunRow[];
+	count: number;
+	/** Runs whose verify phase passed. */
+	passed: number;
+	/** *.failure.json artifacts: aborts/timeouts that left no manifest. */
+	failures: number;
+	/** Malformed manifest files skipped. */
+	unreadable: number;
+	totalCostUsd: number;
+	totalDurationMs: number;
+	p50DurationMs: number;
+	p90DurationMs: number;
+	byTier: Record<string, { count: number; costUsd: number }>;
+	byProject: Record<string, { count: number; costUsd: number }>;
+}
+
+/** Nearest-rank percentile of sorted durations; 0 when empty. */
+function percentile(sortedMs: number[], p: number): number {
+	if (sortedMs.length === 0) return 0;
+	const idx = Math.min(sortedMs.length - 1, Math.max(0, Math.ceil((p / 100) * sortedMs.length) - 1));
+	return sortedMs[idx];
+}
+
+/**
+ * Summarize run manifests under <metricsDir>/<project>/<run_id>.json
+ * (optional project filter). Lenient: malformed files count in
+ * `unreadable` and are skipped; *.failure.json artifacts count in
+ * `failures` (they record aborts/timeouts that produced no manifest).
+ */
+export function summarizeRuns(metricsDir: string, project?: string): RunSummary {
+	const rows: RunRow[] = [];
+	let failures = 0;
+	let unreadable = 0;
+
+	const projectDirs = project
+		? [project]
+		: existsSync(metricsDir)
+			? readdirSync(metricsDir, { withFileTypes: true })
+					.filter((d) => d.isDirectory())
+					.map((d) => d.name)
+			: [];
+
+	for (const proj of projectDirs) {
+		const dir = join(metricsDir, proj);
+		if (!existsSync(dir)) continue;
+		for (const name of readdirSync(dir)) {
+			if (name.endsWith(".failure.json")) {
+				failures++;
+				continue;
+			}
+			if (!name.endsWith(".json") || name.endsWith(".tmp")) continue;
+			let manifest: RunManifest;
+			try {
+				manifest = JSON.parse(readFileSync(join(dir, name), "utf-8")) as RunManifest;
+				if (typeof manifest.run_id !== "string" || !manifest.phases?.verify) throw new Error("bad shape");
+			} catch {
+				unreadable++;
+				continue;
+			}
+			rows.push({
+				runId: manifest.run_id,
+				project: proj,
+				tier: manifest.config?.budget ?? "unknown",
+				requirements: manifest.task?.requirements ?? 0,
+				durationMs: manifest.totals?.duration_ms ?? 0,
+				costUsd: manifest.totals?.cost_usd ?? 0,
+				verifyPassed: manifest.phases.verify.passed === true,
+				fixIterations: manifest.phases.fix_loop?.iterations ?? 0,
+			});
+		}
+	}
+
+	rows.sort((a, b) => (a.runId < b.runId ? -1 : a.runId > b.runId ? 1 : 0));
+	const durations = rows.map((r) => r.durationMs).sort((a, b) => a - b);
+	const byTier: Record<string, { count: number; costUsd: number }> = {};
+	const byProject: Record<string, { count: number; costUsd: number }> = {};
+	for (const r of rows) {
+		(byTier[r.tier] ??= { count: 0, costUsd: 0 }).count++;
+		byTier[r.tier].costUsd += r.costUsd;
+		(byProject[r.project] ??= { count: 0, costUsd: 0 }).count++;
+		byProject[r.project].costUsd += r.costUsd;
+	}
+
+	return {
+		rows,
+		count: rows.length,
+		passed: rows.filter((r) => r.verifyPassed).length,
+		failures,
+		unreadable,
+		totalCostUsd: rows.reduce((a, r) => a + r.costUsd, 0),
+		totalDurationMs: rows.reduce((a, r) => a + r.durationMs, 0),
+		p50DurationMs: percentile(durations, 50),
+		p90DurationMs: percentile(durations, 90),
+		byTier,
+		byProject,
+	};
+}
+
+/** Compact human duration, e.g. "42s", "7m12s", "1h2m". */
+export function formatDuration(ms: number): string {
+	const total = Math.round(ms / 1000);
+	if (total < 60) return `${total}s`;
+	const m = Math.floor(total / 60);
+	const s = total % 60;
+	if (m < 60) return s > 0 ? `${m}m${s}s` : `${m}m`;
+	const h = Math.floor(m / 60);
+	const rm = m % 60;
+	return rm > 0 ? `${h}h${rm}m` : `${h}h`;
+}
+
+const fmtUsd = (usd: number): string => `$${usd.toFixed(4)}`;
+
+/**
+ * Render the summary for /task-stats: headline, recent runs (latest
+ * first, capped), then by-tier/by-project rollups. Pure string array.
+ */
+export function renderTaskStats(summary: RunSummary, maxRows = 10): string[] {
+	const lines: string[] = [
+		`task runs: ${summary.count} total · ${summary.passed}/${summary.count} verified · ` +
+			`${summary.failures} aborted (no manifest) · ${fmtUsd(summary.totalCostUsd)} · ` +
+			`p50 ${formatDuration(summary.p50DurationMs)} · p90 ${formatDuration(summary.p90DurationMs)}`,
+	];
+	const recent = [...summary.rows].reverse().slice(0, maxRows);
+	if (recent.length > 0) {
+		lines.push("recent runs (latest first):");
+		for (const r of recent) {
+			lines.push(
+				`  ${r.runId} ${r.project.padEnd(18)} ${r.tier.padEnd(8)} ${String(r.requirements).padStart(2)}r ` +
+					`${formatDuration(r.durationMs).padStart(8)} ${fmtUsd(r.costUsd).padStart(9)} ` +
+					`${r.verifyPassed ? "✓" : "✗"}${r.fixIterations > 0 ? ` (${r.fixIterations} fix)` : ""}`,
+			);
+		}
+	} else {
+		lines.push("no task runs recorded yet — manifests land in <agent-dir>/results/<project>/.");
+	}
+	const tierLine = Object.entries(summary.byTier)
+		.map(([t, v]) => `${t} ${v.count} (${fmtUsd(v.costUsd)})`)
+		.join(" · ");
+	if (tierLine) lines.push(`by tier: ${tierLine}`);
+	const projectLine = Object.entries(summary.byProject)
+		.map(([p, v]) => `${p} ${v.count} (${fmtUsd(v.costUsd)})`)
+		.join(" · ");
+	if (projectLine) lines.push(`by project: ${projectLine}`);
+	if (summary.unreadable > 0) lines.push(`${summary.unreadable} unreadable manifest file(s) skipped`);
+	return lines;
 }

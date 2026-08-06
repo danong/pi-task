@@ -10,7 +10,7 @@
  */
 
 import { pathToFileURL } from "node:url";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -27,6 +27,9 @@ import {
 	writeManifest,
 	copySessionTraces,
 	deriveProjectName,
+	summarizeRuns,
+	renderTaskStats,
+	formatDuration,
 	type PhaseMetrics,
 	type BuildManifestInput,
 	type RunManifest,
@@ -344,6 +347,83 @@ export async function runTests(): Promise<void> {
 		} finally {
 			rmSync(metricsDir, { recursive: true, force: true });
 		}
+	}
+
+	// summarizeRuns + renderTaskStats: consume manifests on disk.
+	{
+		const metricsDir = mkdtempSync(join(tmpdir(), "pi-task-sum-"));
+		try {
+			const manifest = (over: Record<string, unknown> = {}): Record<string, unknown> => ({
+				run_id: "20260805T0000-abcd",
+				config: { budget: "full" },
+				task: { spec_hash: "abc", requirements: 2 },
+				phases: {
+					prewalk: null,
+					execute: { model: "m", turns: 1, tokens_in: 1, tokens_out: 1, reads: 0, edits: 0, duration_ms: 1000, cost_usd: 0.01 },
+					verify: { passed: true, commands: 1, duration_ms: 100 },
+					review: null,
+					fix_loop: { iterations: 0, cost_usd: 0 },
+				},
+				totals: { cost_usd: 0.01, duration_ms: 1100, read_duplication_tokens: 0, session_files: [] },
+				...over,
+			});
+			const write = (project: string, m: Record<string, unknown>): void => {
+				const dir = join(metricsDir, project);
+				mkdirSync(dir, { recursive: true });
+				writeFileSync(join(dir, `${m.run_id}.json`), JSON.stringify(m), "utf-8");
+			};
+
+			// alpha: pass (full, 60s, $0.02) + fail (120s, $0.03) + abort artifact + garbage file.
+			write("alpha", manifest({ run_id: "20260805T0001-abcd", config: { budget: "full" }, totals: { cost_usd: 0.02, duration_ms: 60000 } }));
+			write("alpha", manifest({
+				run_id: "20260805T0002-abcd",
+				config: { budget: "full" },
+				phases: { verify: { passed: false, commands: 1, duration_ms: 100 } },
+				totals: { cost_usd: 0.03, duration_ms: 120000 },
+			}));
+			writeFileSync(join(metricsDir, "alpha", "20260805T0003-abcd.failure.json"), "{}", "utf-8");
+			writeFileSync(join(metricsDir, "alpha", "garbage.json"), "{not json", "utf-8");
+			// beta: pass (economy, 30s, $0.01).
+			write("beta", manifest({ run_id: "20260805T0004-abcd", config: { budget: "economy" }, totals: { cost_usd: 0.01, duration_ms: 30000 } }));
+
+			const s = summarizeRuns(metricsDir);
+			check(s.count === 3, `count, got ${s.count}`);
+			check(s.passed === 2, `passed, got ${s.passed}`);
+			check(s.failures === 1, `failure artifacts, got ${s.failures}`);
+			check(s.unreadable === 1, `unreadable manifests, got ${s.unreadable}`);
+			check(Math.abs(s.totalCostUsd - 0.06) < 1e-9, `total cost, got ${s.totalCostUsd}`);
+			check(s.p50DurationMs === 60000, `p50, got ${s.p50DurationMs}`);
+			check(s.p90DurationMs === 120000, `p90, got ${s.p90DurationMs}`);
+			check(s.byTier.full?.count === 2 && Math.abs(s.byTier.full.costUsd - 0.05) < 1e-9, "byTier full rollup");
+			check(s.byTier.economy?.count === 1, "byTier economy rollup");
+			check(s.byProject.alpha?.count === 2 && s.byProject.beta?.count === 1, "byProject rollup");
+			check(s.rows[0].runId === "20260805T0001-abcd" && s.rows[2].runId === "20260805T0004-abcd", "rows sorted by run id");
+
+			const filtered = summarizeRuns(metricsDir, "alpha");
+			check(filtered.count === 2 && filtered.byProject.alpha?.count === 2 && !("beta" in filtered.byProject),
+				"project filter narrows the summary");
+
+			const lines = renderTaskStats(s);
+			const joined = lines.join("\n");
+			check(lines[0].includes("3 total") && lines[0].includes("2/3 verified") && lines[0].includes("1 aborted"),
+				`headline: ${lines[0]}`);
+			check(joined.includes("by tier: full 2") && joined.includes("by project: alpha 2"), "rollup lines");
+			check(joined.includes("✓") && joined.includes("✗"), "pass/fail glyphs in recent rows");
+			check(joined.includes("1 unreadable manifest"), "unreadable note");
+
+			const empty = renderTaskStats(summarizeRuns(join(metricsDir, "nonexistent")));
+			check(empty.some((l) => l.includes("no task runs recorded yet")), "empty summary message");
+		} finally {
+			rmSync(metricsDir, { recursive: true, force: true });
+		}
+	}
+
+	// formatDuration: compact human durations.
+	{
+		check(formatDuration(42000) === "42s", `42s, got ${formatDuration(42000)}`);
+		check(formatDuration(432000) === "7m12s", `7m12s, got ${formatDuration(432000)}`);
+		check(formatDuration(3723000) === "1h2m", `1h2m, got ${formatDuration(3723000)}`);
+		check(formatDuration(0) === "0s", `0s, got ${formatDuration(0)}`);
 	}
 
 	if (errors.length > 0) {

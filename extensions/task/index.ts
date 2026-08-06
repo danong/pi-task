@@ -67,6 +67,7 @@ import {
 } from "./progress.ts";
 import { buildMap, formatMapOverview, formatMapPrompt, loadCachedMap, loadRepoMapConfig, sliceRelevant } from "./repo-map.ts";
 import type { ReviewResult } from "./schemas/findings.ts";
+import { renderTaskStats, summarizeRuns } from "./metrics.ts";
 import type { RunManifest } from "./metrics.ts";
 import {
 	budgetModes,
@@ -735,6 +736,16 @@ export default function (pi: ExtensionAPI) {
 			pi.appendEntry(BUDGET_ENTRY_TYPE, { budgetMode: mode });
 			applyBudget(ctx);
 			ctx.ui.notify(`task budget: ${mode}${isLockedBudget(mode, taskConfig.tiers) ? " (locked)" : ""}`, "info");
+		},
+	});
+
+	pi.registerCommand("task-stats", {
+		description:
+			"Summarize task runs from the agent-dir metrics — all projects, or one: /task-stats <project>",
+		handler: async (args, ctx) => {
+			const project = (args ?? "").trim() || undefined;
+			const summary = summarizeRuns(METRICS_DIR, project);
+			ctx.ui.notify(renderTaskStats(summary), "info");
 		},
 	});
 
