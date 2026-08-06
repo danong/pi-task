@@ -15,10 +15,21 @@ surfaced. See `docs/pi-task-design.md` for the full design.
 ## Install
 
 Requires jj (>= 0.43), node, python3 (config TOML is parsed via tomllib), and a
-working `pi` install. The repo ships `.pi/settings.json` registering itself as a
-project package (`"packages": [".."]`), so any trusted checkout auto-installs
-— the `task` tool, `/task-budget` command, and `--task-budget` flag are
-available on the next session. For a global (non-project) install instead:
+working `pi` install. Dev/test dependencies are provisioned through the repo's
+`mise.toml`:
+
+```sh
+mise run setup     # npm ci, gated on file staleness — skipped when node_modules
+                   # is newer than package.json/package-lock.json
+mise run verify    # toolchain gate (tsx, pi deps, python3 tomllib,
+                   # shipped-config drift)
+mise run test      # full hermetic test suite, zero LLM calls
+```
+
+The repo ships `.pi/settings.json` registering itself as a project package
+(`"packages": [".."]`), so any trusted checkout auto-installs — the `task`
+tool, `/task-budget` command, and `--task-budget` flag are available on the
+next session. For a global (non-project) install instead:
 
 ```sh
 pi install /path/to/this/repo
@@ -30,21 +41,44 @@ available after `/reload`.
 
 ## Configuration
 
-The loader reads `<pi agent dir>/config/task.toml` (default `~/.pi/agent`) — a
-missing file falls back to built-in defaults, so a fresh install works without
-any config. The shipped `config/task.toml` in this repo is the drift-guarded
-mirror of those defaults (a hermetic test fails if they diverge); your agent-dir
-copy is where per-machine overrides belong. Budget tiers are dynamic: every
-`[budget.*]` section is a usable tier, in file order. `config/repo-map.toml`
-(agent dir) configures the cached codebase-map used to seed worker context.
+`task.toml` is the config surface: the loader (`loadTaskConfig()` in
+`extensions/task/config.ts`) reads `<pi agent dir>/config/task.toml` (default
+`~/.pi/agent`) — a missing file falls back to built-in defaults, so a fresh
+install works without any config; the agent-dir copy is where per-machine
+overrides belong. The sections it can contain — see `config/task.toml` and
+`extensions/task/config.ts` for the full surface, including but not limited
+to:
+
+- `[defaults]` — run-wide defaults: the effective budget mode for unlocked
+  runs, the fix-loop iteration cap, the per-tool-call timeout, and the AI
+  commit identity used for task-worker commits.
+- `[budget.*]` — budget tiers: the models used for prewalk, execution, and
+  review, plus a per-tier wall-clock budget. Tiers are dynamic: every
+  `[budget.*]` section is a usable tier, in file order, so adding a tier needs
+  no code change.
+- `[sandbox]` — worker bwrap sandbox policy: enable/disable, network mode,
+  and extra bind paths.
+
+The shipped `config/task.toml` in this repo is the drift-guarded mirror of the
+built-in defaults: a hermetic test fails if they diverge
+(`testShippedConfigMatchesDefaults()` in `extensions/task/test-config.ts`,
+exercised by `mise run verify` and `mise run test`). Your agent-dir copy may
+legitimately diverge — that is where overrides belong. `config/repo-map.toml`
+(agent dir) configures the cached codebase-map used to seed worker context,
+falling back to built-in defaults when missing.
 
 ## Testing
 
 ```sh
-npm install
-npx tsx extensions/task/test.ts        # hermetic fast suite, zero LLM calls
-timeout 900 npx tsx extensions/task/test-e2e.ts   # one real-LLM e2e, manual
+mise run test                                    # full hermetic suite, zero LLM calls
+npx tsx extensions/task/test.ts                  # same suite, run directly
+timeout 900 npx tsx extensions/task/test-e2e.ts  # one real-LLM e2e, manual
 ```
+
+`mise run test` runs the full hermetic suite in one process (zero LLM calls);
+`npx tsx extensions/task/test.ts` is the same suite as a direct command. The
+real-LLM e2e (`extensions/task/test-e2e.ts`) stays manual and is intentionally
+not part of `mise run test`.
 
 ## How it stays location-independent
 
