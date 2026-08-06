@@ -28,8 +28,9 @@ mise run test      # full hermetic test suite, zero LLM calls
 
 The repo ships `.pi/settings.json` registering itself as a project package
 (`"packages": [".."]`), so any trusted checkout auto-installs — the `task`
-tool, `/task-budget` command, and `--task-budget` flag are available on the
-next session. For a global (non-project) install instead:
+tool, `/task-budget` command, `--task-budget` flag, the `delegation` skill,
+and the `/build` spec template are available on the next session. For a
+global (non-project) install instead:
 
 ```sh
 pi install /path/to/this/repo
@@ -38,6 +39,15 @@ pi install /path/to/this/repo
 `pi install` adds the package to the pi agent dir's `settings.json` (`packages`)
 and the `task` tool, `/task-budget` command, and `--task-budget` flag become
 available after `/reload`.
+
+## Dispatch workflow
+
+Multi-step coding work is dispatched to isolated workers via the `task` tool.
+The `delegation` skill (loaded automatically when relevant) covers when to
+dispatch vs. edit directly and the spec discipline; `/build` scaffolds a spec
+from a work request. Large or parallelizable work decomposes into parallel
+`sub_specs` — each a self-contained spec with its own Goal / Requirements /
+Verification.
 
 ## Configuration
 

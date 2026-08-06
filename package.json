@@ -6,7 +6,9 @@
 	"keywords": ["pi-package"],
 	"license": "MIT",
 	"pi": {
-		"extensions": ["./extensions"]
+		"extensions": ["./extensions"],
+		"skills": ["./skills"],
+		"prompts": ["./prompts"]
 	},
 	"peerDependencies": {
 		"@earendil-works/pi-ai": "*",
