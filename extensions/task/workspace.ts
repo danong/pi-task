@@ -4,8 +4,14 @@
  * Each parallel worker runs in its own jj workspace: an extra working
  * copy on the same repo (shared commits + op log, its own working-copy
  * commit). Workers commit freely without touching the main working copy;
- * the orchestrator merges each workspace's commits into the task base
- * with `jj squash`, then removes the workspace.
+ * the orchestrator combines every workspace's commits into the task base
+ * in ONE jj operation (mergeWorkspacesAtomic — a single squash of all
+ * workspace ranges, R1), resolves textual conflicts deterministically
+ * with the jj-native "union" merge tool (resolveConflictsWithUnion, R4),
+ * and removes the workspaces only after the full consistency gate
+ * (assertMerged, R3) and verification pass. On merge failure the
+ * workspaces are NEVER forgotten (R2) — the failure artifact records
+ * them for scripted recovery.
  *
  * jj 0.43 mechanics pinned down empirically (see docs/pi-task-design.md):
  *
@@ -21,12 +27,21 @@
  *   the op-log-fork signature, see below) makes `jj log -r <change>` fail
  *   with "Change ID ... is divergent". Resolution never picks a stale or
  *   arbitrary revision: it fails loudly instead.
- * - Squashing `base..ws-@` moves every worker commit's diff into the base
- *   and abandons the worker commits; the workspace @ ends up empty.
+ * - Squashing every workspace range in ONE operation (atomic combine,
+ *   R1): `jj squash --from '<base>..<ws1-@>|<base>..<ws2-@>' --into
+ *   <base>` (revset union is `|` — `+` is not a binary operator in jj
+ *   0.43 revsets). The worker commits are abandoned in that single
+ *   operation; the workspace @s are auto-rebased onto the rewritten
+ *   base, empty.
  * - Conflicts do NOT fail the squash — they land in the base commit with
  *   conflict markers. Detect via `jj resolve --list -r <base>`: exit 0 +
  *   "<path> N-sided conflict" lines when conflicted; exit 2 + "No
  *   conflicts found" when clean.
+ * - `jj resolve --tool union -r <commit> <path>` resolves conflicts
+ *   directly in the commit's tree with the configured merge tool
+ *   (merge-tools.<name>.program + merge-args with $base/$left/$right/
+ *   $output placeholders). Non-zero tool exit keeps the conflict; git
+ *   merge-file --union exits 0 when it applied the union (no markers).
  * - jj 0.43 has no `jj workspace remove` — cleanup is `jj workspace
  *   forget <name>` (abandons the now-empty @ commit) plus deleting the
  *   directory.
@@ -42,8 +57,11 @@
  *
  * Also exported for the orchestrator: assertCleanWorkingCopy (R1 guard),
  * detectChangeConflicts (final-state conflict check on the base change),
- * resolveCommitId (the surviving post-squash base commit id) and
- * assertMerged (post-merge provable-integration gate).
+ * resolveCommitId (the surviving post-squash base commit id),
+ * mergeWorkspacesAtomic (R1 atomic combine), resolveConflictsWithUnion
+ * (R4 union ladder), workspaceFileChanges/diffForWorkspacePath (R5
+ * overlap classification inputs), conflictHunks (R4 escalation payload)
+ * and assertMerged (R3 post-merge consistency gate).
  */
 
 import { execFile } from "node:child_process";
@@ -56,6 +74,15 @@ import { tmpdir } from "node:os";
 export interface MergeOutcome {
 	/** Repo-relative paths with unresolved conflicts in the merged base. */
 	conflicts: string[];
+}
+
+/** One workspace's file changes vs the task base (R3/R5 input). */
+export interface WorkspaceFileChange {
+	/** Repo-relative path. For renames, the NEW path. */
+	file: string;
+	/** "A" added, "M" modified, "D" deleted, "R" renamed (jj diff
+	 *  --summary first token). */
+	kind: "A" | "M" | "D" | "R" | string;
 }
 
 interface JjResult {
@@ -107,7 +134,10 @@ function parseWorkspaceList(stdout: string): Map<string, { changeId: string; com
 	return result;
 }
 
-async function workspaceCommitId(projectDir: string, name: string): Promise<string> {
+/** Resolve a workspace's working-copy COMMIT id from `jj workspace list`
+ *  (workspace names are NOT revsets). Exported for the orchestrator: the
+ *  merge-failure artifact records each workspace's commit id (R2). */
+export async function workspaceCommitId(projectDir: string, name: string): Promise<string> {
 	const result = await execJj(["workspace", "list"], projectDir);
 	if (result.code !== 0) {
 		throw new Error(`jj workspace list failed (${result.code}): ${result.stderr.trim()}`);
@@ -253,6 +283,204 @@ async function diffSummary(projectDir: string, from: string, to: string): Promis
 }
 
 /**
+ * Parse `jj diff --summary` lines into file changes. Renames print as a
+ * single token "R {old => new}" (verified on jj 0.43) — the NEW path is
+ * the one whose presence matters for the merged-tree gate. Pure.
+ */
+export function parseSummaryChanges(lines: string[]): WorkspaceFileChange[] {
+	const changes: WorkspaceFileChange[] = [];
+	for (const line of lines) {
+		const [kind, pathToken] = line.trim().split(/\s+/, 2);
+		if (!kind || !pathToken) continue;
+		const rename = /^\{([^}]+) => ([^}]+)\}$/.exec(pathToken);
+		changes.push({ kind, file: rename ? rename[2] : pathToken });
+	}
+	return changes;
+}
+
+/**
+ * Repo-relative file changes of one workspace vs the task base (R5/R3
+ * input): `jj diff --from <base> --to <ws-@> --summary`, parsed into
+ * path + kind. Used for the pre-merge overlap classification and the
+ * union-file-presence half of the post-merge consistency gate.
+ */
+export async function workspaceFileChanges(
+	projectDir: string,
+	baseChangeId: string,
+	name: string,
+): Promise<WorkspaceFileChange[]> {
+	const baseCommit = await resolveCommitId(projectDir, baseChangeId);
+	const wsAt = await workspaceCommitId(projectDir, name);
+	const result = await execJj(["diff", "--from", baseCommit, "--to", wsAt, "--summary"], projectDir);
+	if (result.code !== 0) {
+		throw new Error(
+			`jj diff (workspace "${name}" vs base) failed (${result.code}): ${result.stderr.trim()}`,
+		);
+	}
+	return parseSummaryChanges(result.stdout.split("\n").filter((line) => line.trim().length > 0));
+}
+
+/**
+ * `jj diff --git` output for ONE path as changed by one workspace — the
+ * R5 overlap-classification input (the pure classifier lives in
+ * orchestrator.ts). Empty when the workspace did not touch the path.
+ */
+export async function diffForWorkspacePath(
+	projectDir: string,
+	baseChangeId: string,
+	name: string,
+	path: string,
+): Promise<string> {
+	const baseCommit = await resolveCommitId(projectDir, baseChangeId);
+	const wsAt = await workspaceCommitId(projectDir, name);
+	const result = await execJj(["diff", "--from", baseCommit, "--to", wsAt, "--git", path], projectDir);
+	if (result.code !== 0) {
+		throw new Error(
+			`jj diff --git (workspace "${name}" vs base, ${path}) failed (${result.code}): ${result.stderr.trim()}`,
+		);
+	}
+	return result.stdout;
+}
+
+// ─── Atomic combine + deterministic union ladder (R1/R4) ─────────────
+
+/**
+ * The jj-native custom merge tool "union" (R4): backed by `git
+ * merge-file --union`. jj 0.43's merge-tools contract (verified
+ * empirically): `merge-tools.<name>.program` + `merge-tools.<name>
+ * .merge-args` with $base/$left/$right/$output placeholders; a non-zero
+ * exit leaves the conflict in place (unless listed in
+ * merge-conflict-exit-codes, which we deliberately do NOT set).
+ *
+ * git merge-file has no -o flag, so a sh wrapper redirects `-p` stdout
+ * into $output; `&& test -s "$output"` guards the binary/error case:
+ * git merge-file exits 255 without output on binary files, so an empty
+ * result exits non-zero and jj KEEPS the conflict (escalation) — a
+ * false "resolved" with empty content must never pass the gate. git
+ * merge-file --union exits 0 when it applied the union (no markers), so
+ * no exit-code mapping is needed.
+ */
+const UNION_TOOL = "union";
+const UNION_SCRIPT = 'git merge-file --union -p "$1" "$2" "$3" > "$4" && test -s "$4"';
+
+/** jj global `--config` args defining the union merge tool. */
+function unionToolConfigArgs(): string[] {
+	const escaped = UNION_SCRIPT.replace(/"/g, '\\"');
+	return [
+		`merge-tools.${UNION_TOOL}.program=sh`,
+		`merge-tools.${UNION_TOOL}.merge-args=["-c","${escaped}","pi-union","$left","$base","$right","$output"]`,
+	];
+}
+
+/**
+ * Run jj with extra global `--config <NAME=VALUE>` args (the union
+ * merge-tool definition). Global options precede the subcommand.
+ */
+function execJjConfigured(args: string[], cwd: string, configArgs: string[]): Promise<JjResult> {
+	const flat: string[] = [];
+	for (const config of configArgs) flat.push("--config", config);
+	return execJj([...flat, ...args], cwd);
+}
+
+/**
+ * R1: ATOMIC combine — every workspace's commits land in the task base
+ * in ONE jj operation: a single `jj squash --from '<base>..<ws1-@> |
+ * <base>..<ws2-@> | …' --into <base>`. (Revset union is `|`; `+` is not
+ * a binary operator in jj 0.43 revsets.) There is no incremental
+ * per-workspace squash into a moving base, so the observed failure class
+ * — a mid-loop squash failure leaving a partial merge with dangling
+ * sibling commits — cannot occur.
+ *
+ * After the squash, verifies the provable-integration invariant per
+ * workspace (its @ sits on the CURRENT base with zero remaining diff),
+ * then returns the conflicts that landed in the base (they do not fail
+ * the squash — jj 3-way merge is rung 1 of the R4 conflict ladder).
+ */
+export async function mergeWorkspacesAtomic(
+	projectDir: string,
+	workspaceNames: string[],
+	into: string,
+): Promise<MergeOutcome> {
+	if (workspaceNames.length === 0) return { conflicts: [] };
+	const baseCommit = await resolveCommitId(projectDir, into);
+	const wsAtIds = await Promise.all(workspaceNames.map((n) => workspaceCommitId(projectDir, n)));
+	const from = wsAtIds.map((id) => `(${baseCommit}..${id})`).join("|");
+
+	const squash = await execJj(["squash", "--from", from, "--into", baseCommit], projectDir);
+	if (squash.code !== 0) {
+		throw new Error(
+			`jj squash (atomic combine of ${workspaceNames.length} workspace(s)) failed (${squash.code}): ` +
+				squash.stderr.trim(),
+		);
+	}
+
+	// Provable integration: the single squash consumed EVERY worker commit
+	// — each workspace @ now sits on the rewritten base, diff-empty.
+	const newBase = await resolveCommitId(projectDir, into);
+	for (const name of workspaceNames) {
+		const leftover = await diffSummary(projectDir, newBase, await workspaceCommitId(projectDir, name));
+		if (leftover.length > 0) {
+			throw new Error(
+				`jj squash (atomic combine) left changes OUTSIDE the merged base (workspace "${name}": ` +
+					`${leftover.join(", ")})`,
+			);
+		}
+	}
+	return { conflicts: await detectConflicts(projectDir, newBase) };
+}
+
+/**
+ * R4 rung 2: resolve the given conflicted files with the jj-native
+ * "union" merge tool (git merge-file --union — both sides' hunks are
+ * kept, deterministic, no markers). Runs on the base commit directly
+ * (`jj resolve --tool union -r <base> <paths>` — resolves in the
+ * commit's tree, rewriting it; verified on jj 0.43).
+ *
+ * Best-effort by design: a tool failure (binary file, tool error) leaves
+ * the conflict in place — the authoritative post-check
+ * (detectChangeConflicts) decides what escalates. jj's stderr noise is
+ * captured, never printed.
+ */
+export async function resolveConflictsWithUnion(
+	projectDir: string,
+	changeId: string,
+	paths: string[],
+): Promise<void> {
+	if (paths.length === 0) return;
+	const commitId = await resolveCommitId(projectDir, changeId);
+	await execJjConfigured(
+		["resolve", "--tool", UNION_TOOL, "-r", commitId, ...paths],
+		projectDir,
+		unionToolConfigArgs(),
+	);
+}
+
+/**
+ * Escalation payload (R4): the conflicted file contents (conflict
+ * markers included) of the given paths in a commit, bounded per file.
+ * Best-effort — failures yield an empty map (the artifact write must
+ * never mask the run's outcome).
+ */
+export async function conflictHunks(
+	projectDir: string,
+	changeId: string,
+	paths: string[],
+	maxBytesPerFile = 8 * 1024,
+): Promise<Record<string, string>> {
+	const hunks: Record<string, string> = {};
+	for (const path of paths) {
+		try {
+			const commitId = await resolveCommitId(projectDir, changeId);
+			const result = await execJj(["file", "show", "-r", commitId, "--", path], projectDir);
+			if (result.code === 0) hunks[path] = result.stdout.slice(0, maxBytesPerFile);
+		} catch {
+			// Best effort — escalation proceeds with the paths alone.
+		}
+	}
+	return hunks;
+}
+
+/**
  * Merge a workspace's commits into the task base.
  *
  * @param into the base's CHANGE id (see taskBaseChangeId) — stable across
@@ -341,28 +569,56 @@ export async function detectChangeConflicts(projectDir: string, changeId: string
 }
 
 /**
- * Provable-integration gate (R2, todo #71 observation 3): after ALL
- * workspaces merged, assert that every workspace's working-copy commit AND
- * the main working copy sit directly on the CURRENT merged base with zero
- * remaining diff. The orchestrator runs this BEFORE verification and
- * before workspace cleanup — a merge that targeted a stale/pre-rewrite
- * base (or never ran) leaves worker changes OUTSIDE the current base,
- * which would let verification pass trivially on a working copy without
- * the integrated work. Fails the run loudly instead.
+ * Provable-integration + consistency gate (R2/R3, todo #71 observation
+ * 3): after ALL workspaces merged, assert that
  *
- * Throws when the base change has no visible commit (the whole change was
- * rewritten into a hidden revision) or when any workspace/@- still differs
- * from the merged base, naming the offenders.
+ *  - every workspace's working-copy commit is a DESCENDANT of the
+ *    current merged base with zero remaining diff (every worker commit
+ *    reachable from the merged result — R3), AND the main working copy
+ *    sits directly on the merged base with zero diff,
+ *  - the merged tree is non-empty and holds the union of the workers'
+ *    added/modified files (`expectedFiles`, computed pre-merge — R3),
+ *
+ * The orchestrator runs this BEFORE verification and before workspace
+ * cleanup — a merge that targeted a stale/pre-rewrite base (or never
+ * ran) leaves worker changes OUTSIDE the current base, which would let
+ * verification pass trivially on a working copy without the integrated
+ * work. Fails the run loudly instead.
+ *
+ * Throws when the base change has no visible commit (the whole change
+ * was rewritten into a hidden revision) or when any check fails, naming
+ * the offenders.
  */
 export async function assertMerged(
 	projectDir: string,
 	workspaceNames: string[],
 	baseChangeId: string,
+	opts?: { expectedFiles?: string[] },
 ): Promise<void> {
 	const base = await resolveCommitId(projectDir, baseChangeId);
 	const problems: string[] = [];
 	for (const name of workspaceNames) {
-		const leftover = await diffSummary(projectDir, base, await workspaceCommitId(projectDir, name));
+		const wsAt = await workspaceCommitId(projectDir, name);
+		// R3: reachability — the workspace @ must be a DESCENDANT of the
+		// merged result (its commits reachable from it), not merely
+		// diff-equal on some other chain. `<ws@>..<base>` is empty iff
+		// base ∈ ancestors(ws@). --ignore-working-copy: read-only gate.
+		const reach = await execJj(
+			["log", "-r", `${wsAt}..${base}`, "--no-graph", "-T", "commit_id", "--ignore-working-copy"],
+			projectDir,
+		);
+		if (reach.code !== 0) {
+			problems.push(
+				`could not check whether workspace "${name}" is reachable from the merged base ` +
+					`(jj: ${reach.stderr.trim().split("\n")[0]})`,
+			);
+		} else if (reach.stdout.trim().length > 0) {
+			problems.push(
+				`workspace "${name}" is NOT a descendant of the merged base — its commits are ` +
+					"dangling outside the merged result",
+			);
+		}
+		const leftover = await diffSummary(projectDir, base, wsAt);
 		if (leftover.length > 0) {
 			problems.push(`workspace "${name}" still has changes outside the merged base: ${leftover.join(", ")}`);
 		}
@@ -385,6 +641,24 @@ export async function assertMerged(
 		problems.push(
 			`main working copy is not on the merged base (${main.stdout.trim().split("\n").length} change(s))`,
 		);
+	}
+	// R3: the merged tree must be non-empty and contain the union of the
+	// workers' added/modified files (computed pre-merge by the
+	// orchestrator). A green verification on a tree missing the integrated
+	// work is the false-success mode this gate exists to prevent.
+	const fileList = await execJj(["file", "list", "-r", base, "--ignore-working-copy"], projectDir);
+	if (fileList.code !== 0) {
+		problems.push(
+			`jj file list -r <merged base> failed (${fileList.code}): ${fileList.stderr.trim().split("\n")[0]}`,
+		);
+	} else {
+		const files = new Set(fileList.stdout.split("\n").filter((l) => l.trim().length > 0));
+		if (files.size === 0) problems.push("the merged tree is EMPTY");
+		for (const f of opts?.expectedFiles ?? []) {
+			if (!files.has(f)) {
+				problems.push(`merged tree is missing "${f}" — the union of worker file changes is not present`);
+			}
+		}
 	}
 	if (problems.length > 0) {
 		throw new Error(

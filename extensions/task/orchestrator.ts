@@ -4,8 +4,12 @@
  * Validates a spec, spawns one worker per parallel slot (optionally with
  * prewalk model swap), gates the result on the spec's verification
  * commands (bash exit codes, zero LLM tokens). With `parallel > 1` each
- * worker runs in its own jj workspace and the workspaces are squashed
- * into the task base afterwards (see workspace.ts for the jj mechanics).
+ * worker runs in its own jj workspace and the workspaces are combined
+ * into the task base in ONE jj operation (atomic combine, R1), with a
+ * deterministic union-merge ladder for textual conflicts (R4), a
+ * post-merge consistency gate (R3), pre-merge overlap classification
+ * (R5), and a merge-failure artifact that never forgets the workspaces
+ * (R2) — see workspace.ts for the jj mechanics.
  * With `review` enabled (single-worker), a forked adversarial review +
  * bounded fix loop gates the result on P0/P1 findings (see review.ts).
  *
@@ -50,14 +54,19 @@ import {
 	assertCleanWorkingCopy,
 	assertMerged,
 	assertVisibleCommit,
+	conflictHunks,
 	createAiTaskBase,
 	createWorkspace,
 	detectChangeConflicts,
+	diffForWorkspacePath,
 	execJj,
-	mergeWorkspace,
+	mergeWorkspacesAtomic,
 	removeWorkspace,
 	resolveCommitId,
+	resolveConflictsWithUnion,
 	taskBaseChangeId,
+	workspaceCommitId,
+	workspaceFileChanges,
 } from "./workspace.ts";
 import { parseSpec, SpecError, type Spec } from "./schemas/spec.ts";
 import { forkedReview } from "./review.ts";
@@ -77,10 +86,95 @@ import {
 	splitPhases,
 	writeFailureArtifact,
 	writeManifest,
+	type MergeMetrics,
 	type RunManifest,
 } from "./metrics.ts";
 
-// ─── Failure artifacts (todo #86) ────────────────────────────────────
+// ─── Merge-failure artifact (R2) ────────────────────────────────────
+
+/**
+ * The merge-failure record written when the parallel merge path fails or
+ * escalates (R2/R4): workspace names + their working-copy commit ids
+ * (dangling when the merge did not land), the dangling commit ids, and
+ * the conflicted files (+ bounded hunks). Recovery is scripted from this
+ * file rather than LLM-discovered: `jj workspace list` names survive,
+ * and each dangling id can be squashed into the base manually.
+ * Best-effort — never masks the original failure.
+ */
+export interface MergeFailureInfo {
+	cause: string;
+	workspaces: Array<{ name: string; commit_id: string }>;
+	danglingCommitIds: string[];
+	conflictedFiles: string[];
+	conflictHunks?: Record<string, string>;
+	metricsDir?: string;
+	project: string;
+	specMarkdown: string;
+	tier?: string;
+}
+
+/** Write a merge-failure artifact via the existing .failure.json pattern
+ *  (metrics.ts writeFailureArtifact), extended with the R2 merge record. */
+export function writeMergeFailureArtifact(opts: MergeFailureInfo): void {
+	if (!opts.metricsDir) return;
+	try {
+		const artifact = buildFailureArtifact({
+			kind: "parallel",
+			specHash: hashSpec(opts.specMarkdown),
+			tier: opts.tier,
+			cause: opts.cause,
+			merge: {
+				workspaces: opts.workspaces,
+				dangling_commit_ids: opts.danglingCommitIds,
+				conflicted_files: opts.conflictedFiles,
+				conflict_hunks: opts.conflictHunks,
+			},
+		});
+		writeFailureArtifact(artifact, { metricsDir: opts.metricsDir, project: opts.project });
+	} catch {
+		// Best effort — the original failure propagates regardless.
+	}
+}
+
+// ─── Pre-merge overlap classification (R5) ───────────────────────────
+
+export type OverlapKind = "comment-only" | "substantive";
+
+export interface FileOverlap {
+	/** Repo-relative path changed by ≥2 workers. */
+	file: string;
+	/** The workers whose changes touch the file. */
+	workers: string[];
+	kind: OverlapKind;
+}
+
+/** Line prefixes that mark a changed line as comment-only (language
+ *  agnostic: // # /* * -- ; ' <!--) plus whitespace-only lines. */
+const COMMENT_LINE_RE = /^\s*(?:\/\/|#|\/\*|\*|--|;|'|<!--)/;
+
+/**
+ * Classify a multi-worker overlap on one file (R5): "comment-only" when
+ * EVERY worker's added/removed lines are comments or whitespace — the
+ * deterministic union path (R4) resolves such overlaps safely;
+ * "substantive" when any worker changed a code line (or the file is
+ * binary) — flagged in the merge report before merging. Input: each
+ * worker's `jj diff --git` output for the file. Pure — hermetically
+ * tested.
+ */
+export function classifyOverlapDiffs(diffsByWorker: string[]): OverlapKind {
+	for (const diff of diffsByWorker) {
+		if (diff.includes("Binary files differ")) return "substantive";
+		for (const line of diff.split("\n")) {
+			if (line.startsWith("+++") || line.startsWith("---") || line.startsWith("diff --git")) continue;
+			if (!line.startsWith("+") && !line.startsWith("-")) continue;
+			const content = line.slice(1);
+			if (content.trim().length === 0) continue; // whitespace-only
+			if (COMMENT_LINE_RE.test(content)) continue;
+			return "substantive";
+		}
+	}
+	return "comment-only";
+}
 
 /**
  * Best-effort failure artifact: write the run's failure state to
@@ -715,6 +809,9 @@ function finalizeParallelMetrics(opts: {
 	filesChanged?: string[];
 	insertions: number;
 	deletions: number;
+	/** R1/R4/R5 parallel-merge record (atomic combine + union ladder +
+	 *  overlap classification) — written into the manifest. */
+	merge?: MergeMetrics;
 }): { manifest: RunManifest; manifestPath?: string } {
 	const project = opts.project ?? deriveProjectName(opts.cwd);
 	const manifest = buildRunManifest({
@@ -751,6 +848,7 @@ function finalizeParallelMetrics(opts: {
 		filesChanged: opts.filesChanged,
 		insertions: opts.insertions,
 		deletions: opts.deletions,
+		merge: opts.merge,
 	});
 	const manifestPath = opts.metricsDir
 		? writeManifest(manifest, { metricsDir: opts.metricsDir, project })
@@ -762,6 +860,12 @@ function finalizeParallelMetrics(opts: {
 
 export async function executeTask(opts: ExecuteTaskOptions): Promise<TaskResult> {
 	const { cwd, model, systemPrompt, signal, verificationTimeoutMs, onUpdate, onSwap } = opts;
+	// R2: the merge-failure artifact targets <metricsDir>/<project>/; resolved
+	// once here (the parallel path's worker-failure + merge-failure writes
+	// both use these).
+	const metricsDir = opts.metricsDir;
+	const project = opts.project ?? deriveProjectName(cwd);
+	const budget = opts.budget;
 	const parallel = opts.parallel ?? 1;
 	const subSpecs = opts.subSpecs && opts.subSpecs.length > 0 ? opts.subSpecs : undefined;
 
@@ -884,9 +988,12 @@ export async function executeTask(opts: ExecuteTaskOptions): Promise<TaskResult>
 
 	// ─── Parallel path (Phase 6) ─────────────────────────────────────
 	// Each worker runs in an isolated jj workspace rooted at the task
-	// base; afterwards every workspace's commits are squashed into the
-	// base (sequential — each squash rewrites the base in place) and the
-	// workspaces are removed. Merge conflicts are surfaced, never dropped.
+	// base; afterwards every workspace's commits are combined into the
+	// base in ONE jj operation (mergeWorkspacesAtomic, R1), textual
+	// conflicts resolve deterministically via the union ladder (R4), and
+	// the workspaces are removed only after the consistency gate (R3)
+	// and verification pass. On merge failure the workspaces are NEVER
+	// forgotten (R2) — the merge-failure artifact records them.
 
 	const runStartMs = Date.now();
 	// R1: the pre-run task base commit id (@- of the main working copy —
@@ -1003,7 +1110,17 @@ export async function executeTask(opts: ExecuteTaskOptions): Promise<TaskResult>
 	);
 
 	let results: WorkerResult[] = [];
-	const mergedWorkspaceNames: string[] = [];
+	// R2: merge-failure state — set when the MERGE path throws (the worker
+	// failure path above keeps its existing cleanup). The finally block then
+	// PRESERVES the worker workspaces so recovery is scripted from the
+	// merge-failure artifact instead of LLM-discovered.
+	let mergeFailed: Error | null = null;
+	// R1/R4/R5: merge metrics for the aggregate manifest (atomic combine,
+	// union resolution, overlap classification).
+	const mergeMetrics: MergeMetrics = { resolved_union: [], conflicts: [], overlaps: [] };
+	// Workspace @ commit ids captured BEFORE the atomic combine — the
+	// dangling ids when the merge fails (R2).
+	const workspaceAtIds = new Map<string, string>();
 	try {
 		// Await all yields concurrently (each session streams its own turns)
 		const settled = await Promise.allSettled(sessions.map((s) => s.result));
@@ -1025,54 +1142,152 @@ export async function executeTask(opts: ExecuteTaskOptions): Promise<TaskResult>
 		}
 		results = (settled as PromiseFulfilledResult<WorkerResult>[]).map((r) => r.value);
 
-		// Merge each workspace into the task base. Sequential: each squash
-		// rewrites the base, and mergeWorkspace re-resolves its current
-		// commit id from the (stable) change id before squashing. The
-		// per-squash merge events are informational only — the authoritative
-		// conflict list is computed ONCE on the final base (R3), below.
-		// R4: a mid-loop squash failure leaves a PARTIAL merge — earlier
-		// squashes already landed in the base, the rest did not. Name exactly
-		// which workspaces merged and which did not; cleanup still runs via the
-		// outer finally.
+		// ── Merge path (R1/R2/R3/R4/R5) — a failure here never forgets the
+		// workspaces (R2): the artifact records names + dangling ids, the
+		// finally block keeps the workspaces alive for scripted recovery.
 		try {
+			// R5: pre-merge overlap classification — per-worker changed-file
+			// sets; comment/whitespace-only overlaps take the deterministic
+			// union path (R4), substantive overlaps are flagged in the merge
+			// report BEFORE merging. Also collects the union of added/modified
+			// files for the R3 consistency gate.
+			const expectedFiles = new Set<string>();
+			const fileWorkers = new Map<string, string[]>();
 			for (let i = 0; i < workerCount; i++) {
-				const outcome = await mergeWorkspace(cwd, workspaces[i].name, baseChangeId);
-				mergedWorkspaceNames.push(workspaces[i].name);
-				onUpdate?.({ type: "merge", index: i, conflicts: outcome.conflicts });
+				const name = workspaces[i].name;
+				const changes = await workspaceFileChanges(cwd, baseChangeId, name);
+				for (const c of changes) {
+					if (c.kind !== "D") expectedFiles.add(c.file);
+					const list = fileWorkers.get(c.file) ?? [];
+					list.push(name);
+					fileWorkers.set(c.file, list);
+				}
+			}
+			const overlaps: FileOverlap[] = [];
+			for (const [file, names] of fileWorkers) {
+				if (names.length < 2) continue;
+				const diffs: string[] = [];
+				for (const name of names) diffs.push(await diffForWorkspacePath(cwd, baseChangeId, name, file));
+				overlaps.push({ file, workers: names, kind: classifyOverlapDiffs(diffs) });
+			}
+			mergeMetrics.overlaps = overlaps.map((o) => ({ file: o.file, kind: o.kind }));
+			onUpdate?.({ type: "merge_report", overlaps });
+
+			// R1: ATOMIC combine — every workspace's commits land in the task
+			// base in ONE jj operation (a single squash of all workspace
+			// ranges; no incremental per-workspace squash into a moving base —
+			// the mid-loop partial-merge failure class cannot occur).
+			for (const ws of workspaces) {
+				workspaceAtIds.set(ws.name, await workspaceCommitId(cwd, ws.name));
+			}
+			const mergeOutcome = await mergeWorkspacesAtomic(
+				cwd,
+				workspaces.map((w) => w.name),
+				baseChangeId,
+			);
+			onUpdate?.({ type: "merge", conflicts: mergeOutcome.conflicts });
+
+			// R3: post-merge consistency gate — every workspace's @ reachable
+			// from the merged result, merged tree non-empty, union of worker
+			// file changes present. Fail → merge-failure artifact + run failure
+			// (never a false success). Runs BEFORE cleanup (the gate needs the
+			// workspaces alive) and BEFORE verification (which then provably
+			// runs on the merged tree).
+			try {
+				await assertMerged(cwd, workspaces.map((w) => w.name), baseChangeId, {
+					expectedFiles: [...expectedFiles],
+				});
+				// The merged base must remain a VISIBLE commit: a stale-target
+				// squash can hide the whole base chain, which assertMerged's
+				// re-resolution would surface only as a raw jj error (a hidden
+				// change resolves to the 40-zero commit id).
+				await assertVisibleCommit(cwd, baseChangeId);
+			} catch (err) {
+				throw new Error(`Parallel merge consistency check failed: ${(err as Error).message}`);
+			}
+
+			// R4: deterministic conflict ladder — rung 1 (jj 3-way merge) ran
+			// inside the squash; rung 2 resolves every remaining conflicted
+			// file with the jj-native "union" merge tool (git merge-file
+			// --union). No markers remain → accept and record resolved:"union"
+			// (manifest). Only files that STILL carry markers escalate
+			// (LLM/manual) — with just the conflicted hunks (artifact +
+			// result); the verification gate below always validates the final
+			// tree.
+			const conflictsBeforeUnion = await detectChangeConflicts(cwd, baseChangeId);
+			if (conflictsBeforeUnion.length > 0) {
+				await resolveConflictsWithUnion(cwd, baseChangeId, conflictsBeforeUnion);
+				const conflictsAfterUnion = await detectChangeConflicts(cwd, baseChangeId);
+				mergeMetrics.resolved_union = conflictsBeforeUnion.filter(
+					(f) => !conflictsAfterUnion.includes(f),
+				);
+				mergeMetrics.conflicts = conflictsAfterUnion;
+				if (conflictsAfterUnion.length > 0) {
+					// Escalate: the union ladder is exhausted. The merge-failure
+					// artifact records the conflicted files + hunks (recovery is
+					// scripted); the run reports failure below (success=false).
+					// Nothing dangles — the atomic combine already landed every
+					// worker commit in the base.
+					writeMergeFailureArtifact({
+						cause:
+							`merge conflicts remain after the deterministic union ladder ` +
+							`(${conflictsAfterUnion.length} file(s))`,
+						workspaces: workspaces.map((w) => ({
+							name: w.name,
+							commit_id: workspaceAtIds.get(w.name) ?? "",
+						})),
+						danglingCommitIds: [],
+						conflictedFiles: conflictsAfterUnion,
+						conflictHunks: await conflictHunks(cwd, baseChangeId, conflictsAfterUnion),
+						metricsDir,
+						project,
+						specMarkdown,
+						tier: budget,
+					});
+					onUpdate?.({ type: "merge_conflicts", files: conflictsAfterUnion });
+				}
 			}
 		} catch (err) {
-			const notMerged = workspaces.slice(mergedWorkspaceNames.length).map((w) => w.name);
-			throw new Error(
-				`Parallel merge failed partway: ${mergedWorkspaceNames.length}/${workspaces.length} workspace(s) ` +
-					`already merged into the base (merged: ${mergedWorkspaceNames.join(", ") || "none"}; ` +
-					`not merged: ${notMerged.join(", ") || "none"}). Cause: ${(err as Error).message}`,
-			);
-		}
-		// R2 (todo #71, observation 3): provable-integration gate — every
-		// workspace's @ AND the main working copy must sit on the CURRENT
-		// merged base with zero remaining diff. The observed corruption left
-		// the workers' files in a rewritten/hidden revision while the main
-		// working copy had no changes and verification passed trivially;
-		// assertMerged fails the run instead of verifying a broken tree.
-		// Runs BEFORE cleanup (the gate needs the workspaces alive) and
-		// BEFORE verification (which then provably runs on the merged tree).
-		try {
-			await assertMerged(cwd, workspaces.map((w) => w.name), baseChangeId);
-			// The merged base must remain a VISIBLE commit: a stale-target
-			// squash can hide the whole base chain, which assertMerged's
-			// re-resolution would surface only as a raw jj error (a hidden
-			// change resolves to the 40-zero commit id).
-			await assertVisibleCommit(cwd, baseChangeId);
-		} catch (err) {
-			throw new Error(`Parallel merge integrity check failed: ${(err as Error).message}`);
+			// R2: merge failure — write the merge-failure artifact (workspace
+			// names, dangling commit ids, conflicted files) BEFORE rethrowing,
+			// so recovery is scripted rather than LLM-discovered. The finally
+			// block below preserves the workspaces (never forgotten).
+			const cause = err instanceof Error ? err.message : String(err);
+			mergeFailed = err instanceof Error ? err : new Error(cause);
+			writeMergeFailureArtifact({
+				cause,
+				workspaces: workspaces.map((w) => ({
+					name: w.name,
+					commit_id: workspaceAtIds.get(w.name) ?? "",
+				})),
+				danglingCommitIds: [...workspaceAtIds.values()].filter((id) => id.length > 0),
+				conflictedFiles: [],
+				metricsDir,
+				project,
+				specMarkdown,
+				tier: budget,
+			});
+			throw err;
 		}
 	} finally {
-		// Cleanup runs even when a worker fails or an abort fires.
-		for (const ws of workspaces) {
-			try {
-				await removeWorkspace(cwd, ws.name, ws.dir);
-			} catch (err) {
-				console.warn(`workspace cleanup "${ws.name}": ${(err as Error).message}`);
+		// R2: on merge failure the worker workspaces are NEVER forgotten —
+		// recovery is scripted from the merge-failure artifact (workspace
+		// names + dangling commit ids). On any other outcome (worker failure,
+		// success, escalation) cleanup runs as before.
+		if (mergeFailed) {
+			console.warn(
+				`task: parallel merge failed — worker workspaces PRESERVED for recovery: ` +
+					`${workspaces.map((w) => w.name).join(", ")} ` +
+					"(see the merge-failure artifact in <metricsDir>/<project>/; recover by squashing " +
+					"each workspace's commits into the task base manually)",
+			);
+		} else {
+			for (const ws of workspaces) {
+				try {
+					await removeWorkspace(cwd, ws.name, ws.dir);
+				} catch (err) {
+					console.warn(`workspace cleanup "${ws.name}": ${(err as Error).message}`);
+				}
 			}
 		}
 		const parents = new Set(workspaces.map((w) => dirname(w.dir)));
@@ -1097,10 +1312,12 @@ export async function executeTask(opts: ExecuteTaskOptions): Promise<TaskResult>
 		}
 	}
 
-	// 6. Verification (bash hard gate, zero tokens) — once, after merge, on
-	// the merged tree. assertMerged ran above (before cleanup), so the main
-	// working copy provably sits on the merged base holding every worker's
-	// changes; conflicts, if any, are visible here as conflict markers.
+	// 6. Verification (bash hard gate, zero tokens) — once, after merge and
+	// after the deterministic union ladder, on the final tree. assertMerged
+	// ran above (before cleanup), so the main working copy provably sits on
+	// the merged base holding every worker's changes; escalated conflicts
+	// (markers still present after the union tool), if any, are visible
+	// here as conflict markers. The gate always validates the final tree.
 	const verification = await runVerification(
 		spec.verification,
 		cwd,
@@ -1108,14 +1325,15 @@ export async function executeTask(opts: ExecuteTaskOptions): Promise<TaskResult>
 		signal,
 	);
 
-	// R3: unresolved conflicts in the FINAL base tree — detected ONCE after
-	// all squashes. Per-squash conflict states are stale: a later squash's
-	// changes can resolve an earlier conflict (and the old per-squash union
-	// would keep failing the task on it). The result must reflect the final
-	// tree.
-	const conflicts = await detectChangeConflicts(cwd, baseChangeId);
-	// R5: the merged base's commit id resolved AFTER the last squash. The
-	// workers' pre-squash commit ids were abandoned by `jj squash` — pointing
+	// R3/R4: the final conflict state comes from the ladder's post-union
+	// detection (the authoritative final-tree check — per-squash conflict
+	// states are stale; the union tool rewrote the base, so the state is
+	// re-detected after it). Nothing changes the base tree between the
+	// ladder and here, so this is the final state.
+	const conflicts = mergeMetrics.conflicts;
+	// The merged base's commit id resolved AFTER the atomic combine and the
+	// union ladder (both rewrite the base commit). The workers' pre-squash
+	// commit ids were abandoned by the single `jj squash` — pointing
 	// TaskResult.commits at them would return dead revisions. Same
 	// change-id→commit-id resolution workspace.ts does everywhere.
 	const baseCommitId = await resolveCommitId(cwd, baseChangeId);
@@ -1148,6 +1366,9 @@ export async function executeTask(opts: ExecuteTaskOptions): Promise<TaskResult>
 		filesChanged: results.flatMap((r) => r.yield.files_changed),
 		insertions: diffStat.insertions,
 		deletions: diffStat.deletions,
+		// R1/R4/R5: atomic combine + union-ladder + overlap classification
+		// record (resolved:"union" files, remaining conflicts, overlaps).
+		merge: mergeMetrics,
 	});
 
 	return {

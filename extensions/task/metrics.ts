@@ -72,6 +72,23 @@ export interface FixLoopPhaseMetrics {
 	cost_usd: number;
 }
 
+/**
+ * Parallel-merge record (R1/R4/R5): how the worker commits combined and
+ * how conflicts were settled. Present on parallel runs (empty arrays when
+ * nothing happened); absent for single-worker runs and direct callers
+ * that don't supply it (backward compatible).
+ */
+export interface MergeMetrics {
+	/** Files whose conflicts were resolved deterministically by the union
+	 *  merge tool (jj resolve --tool union, git merge-file --union). */
+	resolved_union: string[];
+	/** Files still conflicted after the union ladder — escalated. */
+	conflicts: string[];
+	/** Pre-merge overlap classification (R5): files changed by ≥2 workers,
+	 *  each marked comment-only (union-safe) or substantive (flagged). */
+	overlaps: Array<{ file: string; kind: "comment-only" | "substantive" }>;
+}
+
 export interface MetricsConfig {
 	budget: string;
 	prewalk_model: string;
@@ -106,6 +123,9 @@ export interface RunManifest {
 		review: ReviewPhaseMetrics | null;
 		fix_loop: FixLoopPhaseMetrics;
 	};
+	/** Parallel-merge record (R1/R4/R5) — see MergeMetrics. Absent when not
+	 *  supplied (single-worker runs, direct callers). */
+	merge?: MergeMetrics;
 	totals: {
 		cost_usd: number;
 		duration_ms: number;
@@ -195,6 +215,10 @@ export interface BuildManifestInput {
 	 *  supplied). */
 	insertions?: number;
 	deletions?: number;
+	/** Parallel-merge record (R1/R4/R5): resolved_union, remaining
+	 *  conflicts, and the pre-merge overlap classification. Absent when not
+	 *  supplied (single-worker runs, direct callers). */
+	merge?: MergeMetrics;
 	/** Override the generated run id (deterministic tests). */
 	runId?: string;
 	now?: Date;
@@ -242,6 +266,7 @@ export function buildRunManifest(input: BuildManifestInput): RunManifest {
 			insertions: input.insertions ?? 0,
 			deletions: input.deletions ?? 0,
 		},
+		merge: input.merge,
 		received_at: input.receivedAt,
 		dispatched_at: input.dispatchedAt,
 		completed_at: input.completedAt,
@@ -455,6 +480,26 @@ export interface FailureArtifact {
 	idle_ms?: number;
 	last_tool?: { name: string; args: string } | null;
 	stderr_tail?: string;
+	/** Merge-failure record (R2): present when a parallel run's merge path
+	 *  fails or escalates — names the worker workspaces (NEVER forgotten on
+	 *  merge failure), the dangling worker commit ids, and the conflicted
+	 *  files, so recovery is scripted rather than LLM-discovered. */
+	merge?: MergeFailureRecord;
+}
+
+/**
+ * The merge-failure record (R2): workspace names + their working-copy
+ * commit ids (dangling when the merge did not land), the dangling commit
+ * ids, and the conflicted files. `conflict_hunks` carries the conflict
+ * marker content of each escalated file, bounded per file (the
+ * orchestrator caps it) — the "just the conflicted hunks" escalation
+ * payload.
+ */
+export interface MergeFailureRecord {
+	workspaces: Array<{ name: string; commit_id: string }>;
+	dangling_commit_ids: string[];
+	conflicted_files: string[];
+	conflict_hunks?: Record<string, string>;
 }
 
 export function buildFailureArtifact(input: {
@@ -467,6 +512,9 @@ export function buildFailureArtifact(input: {
 	idleMs?: number;
 	lastTool?: { name: string; args: string } | null;
 	stderrTail?: string;
+	/** R2: merge-failure record (workspaces, dangling commit ids, conflicted
+	 *  files + hunks). Present on parallel merge failures/escalations. */
+	merge?: MergeFailureRecord;
 }): FailureArtifact {
 	return {
 		run_id: generateRunId(input.now ?? new Date()),
@@ -479,6 +527,7 @@ export function buildFailureArtifact(input: {
 		idle_ms: input.idleMs,
 		last_tool: input.lastTool,
 		stderr_tail: input.stderrTail,
+		merge: input.merge,
 	};
 }
 

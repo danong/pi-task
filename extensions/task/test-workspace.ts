@@ -27,12 +27,16 @@ import {
 	assertCleanWorkingCopy,
 	assertMerged,
 	assertVisibleCommit,
+	conflictHunks,
 	createAiTaskBase,
 	createWorkspace,
 	detectChangeConflicts,
 	mergeWorkspace,
+	mergeWorkspacesAtomic,
+	parseSummaryChanges,
 	removeWorkspace,
 	resolveCommitId,
+	resolveConflictsWithUnion,
 	taskBaseChangeId,
 } from "./workspace.ts";
 
@@ -780,6 +784,265 @@ async function testForkProofReadOnly(errors: string[]): Promise<void> {
 	console.log("✓ fork-proof read-only commands: no snapshot ops, no op-log fork under concurrency (R3)");
 }
 
+// ─── Section 10: atomic combine (R1) ────────────────────────────────
+
+/**
+ * R1: ALL worker commits land in the task base in ONE jj operation — a
+ * single squash of every workspace range. No incremental per-workspace
+ * squash into a moving base, so a mid-loop failure can no longer leave a
+ * partial merge. Proof: the op-store delta across mergeWorkspacesAtomic
+ * is EXACTLY ONE, and every workspace @ ends up on the rewritten base
+ * with zero remaining diff.
+ */
+async function testAtomicCombine(errors: string[]): Promise<void> {
+	const check = (cond: boolean, msg: string): void => {
+		if (!cond) errors.push(msg);
+	};
+
+	const testDir = mkdtempSync(join(tmpdir(), "pi-task-ws-atomic-"));
+	try {
+		initRepo(testDir);
+		const baseChange = await taskBaseChangeId(testDir);
+
+		const w1 = await createWorkspace(testDir, "atom-1");
+		const w2 = await createWorkspace(testDir, "atom-2");
+		const w3 = await createWorkspace(testDir, "atom-3");
+
+		// w1 makes TWO commits (multi-commit range), w2/w3 one each.
+		writeFileSync(join(w1, "a1.txt"), "one\n", "utf-8");
+		jj(["commit", "-m", "atom w1 c1"], w1);
+		writeFileSync(join(w1, "a2.txt"), "two\n", "utf-8");
+		jj(["commit", "-m", "atom w1 c2"], w1);
+		writeFileSync(join(w2, "b.txt"), "three\n", "utf-8");
+		jj(["commit", "-m", "atom w2"], w2);
+		writeFileSync(join(w3, "c.txt"), "four\n", "utf-8");
+		jj(["commit", "-m", "atom w3"], w3);
+
+		const opsBefore = opCount(testDir);
+		const outcome = await mergeWorkspacesAtomic(testDir, ["atom-1", "atom-2", "atom-3"], baseChange);
+		const opsAfter = opCount(testDir);
+
+		check(opsAfter - opsBefore === 1,
+			`atomic combine must be ONE jj operation (op delta ${opsAfter - opsBefore})`);
+		check(outcome.conflicts.length === 0,
+			`atomic combine should be clean, got ${JSON.stringify(outcome.conflicts)}`);
+
+		// Every worker's content is in the merged tree (main working copy).
+		for (const f of ["a1.txt", "a2.txt", "b.txt", "c.txt"]) {
+			check(existsSync(join(testDir, f)), `${f} should be in the merged tree`);
+		}
+		check(jj(["st"], testDir).includes("The working copy has no changes"),
+			"main working copy clean after the atomic combine");
+
+		// Provable integration: every workspace @ sits on the current base,
+		// diff-empty, and the base resolves to ONE visible commit.
+		await assertMerged(testDir, ["atom-1", "atom-2", "atom-3"], baseChange, {
+			expectedFiles: ["a1.txt", "a2.txt", "b.txt", "c.txt"],
+		});
+		const baseId = await resolveCommitId(testDir, baseChange);
+		const mainParent = jj(["log", "-r", "@-", "--no-graph", "-T", "commit_id"], testDir).trim();
+		check(mainParent === baseId, `main @- should BE the merged base, got ${mainParent} vs ${baseId}`);
+
+		// Cleanup still works (workspaces are empty after the combine).
+		await cleanupWorkspace(testDir, "atom-1", w1);
+		await cleanupWorkspace(testDir, "atom-2", w2);
+		await cleanupWorkspace(testDir, "atom-3", w3);
+	} finally {
+		rmSync(testDir, { recursive: true, force: true });
+	}
+	console.log("✓ atomic combine: N workspaces in ONE jj op, all content present (R1)");
+}
+
+// ─── Section 11: consistency gate catches dangling commits (R3) ──────
+
+/**
+ * R3: the post-merge consistency gate is a HARD gate — every workspace's
+ * @ must be a DESCENDANT of the merged result (not merely diff-equal on
+ * some other chain), the merged tree non-empty, and the union of worker
+ * file changes present. A dangling commit (work stranded outside the
+ * merged result — the todo #71 corruption mode) fails loud, never a
+ * false success.
+ */
+async function testConsistencyGateDangling(errors: string[]): Promise<void> {
+	const check = (cond: boolean, msg: string): void => {
+		if (!cond) errors.push(msg);
+	};
+
+	const testDir = mkdtempSync(join(tmpdir(), "pi-task-ws-dangle-"));
+	try {
+		initRepo(testDir);
+		// A second commit makes the repo root a proper ancestor of the task
+		// base: the dangling manufacture below roots the worker's chain at
+		// the ROOT (a visible ancestor of everything — the base change must
+		// NOT diverge; rebasing onto the old hidden base commit would
+		// resurrect it and make the change divergent).
+		const rootCommitId = jj(["log", "-r", "@-", "-T", "commit_id", "--no-graph"], testDir).trim();
+		writeFileSync(join(testDir, "base.txt"), "base\n", "utf-8");
+		jj(["commit", "-m", "base"], testDir);
+		const baseChange = await taskBaseChangeId(testDir);
+
+		const w1 = await createWorkspace(testDir, "dang-1");
+		const w2 = await createWorkspace(testDir, "dang-2");
+		writeFileSync(join(w1, "a.txt"), "one\n", "utf-8");
+		jj(["commit", "-m", "dang w1"], w1);
+		// Worker 2 commits on a DETACHED revision (the dangling class the
+		// gate must catch): the workspace @ is rooted at the repo ROOT, not
+		// the task base — its commits are unreachable from the merged
+		// result. (`jj rebase -d <root>` would be a no-op — everything
+		// descends from the root.)
+		jj(["new", rootCommitId, "-m", "detached"], w2);
+		writeFileSync(join(w2, "b.txt"), "two\n", "utf-8");
+		jj(["commit", "-m", "dang w2"], w2);
+
+		// Merge ONLY w1 — w2's work is still outside the base.
+		await mergeWorkspacesAtomic(testDir, ["dang-1"], baseChange);
+
+		// The gate must fail loud, naming the dangling workspace — never
+		// let verification run on a tree without the integrated work.
+		try {
+			await assertMerged(testDir, ["dang-1", "dang-2"], baseChange, {
+				expectedFiles: ["a.txt", "b.txt"],
+			});
+			errors.push("assertMerged should fail when a workspace commit dangles outside the merged result");
+		} catch (err) {
+			const msg = (err as Error).message;
+			check(msg.includes("NOT a descendant"), `gate should name the dangling workspace, got: ${msg}`);
+			check(msg.includes("dang-2"), `gate error should name the workspace, got: ${msg}`);
+			check(msg.includes("b.txt"), `gate error should name the stranded file, got: ${msg}`);
+		}
+
+		// The union-file-presence half of the gate: a file the workers
+		// changed but the merged tree lacks fails too.
+		try {
+			await assertMerged(testDir, ["dang-1"], baseChange, {
+				expectedFiles: ["a.txt", "never-written.txt"],
+			});
+			errors.push("assertMerged should fail when a worker file is missing from the merged tree");
+		} catch (err) {
+			check((err as Error).message.includes("never-written.txt"),
+				`missing-file error should name the file, got: ${(err as Error).message}`);
+		}
+
+		// Recovery: move the detached chain (work commit + empty @) back
+		// onto the merged base and merge it — the gate then passes
+		// (scripted recovery works).
+		const ws2At = jj(["workspace", "list"], testDir)
+			.split("\n")
+			.find((l) => l.startsWith("dang-2:"))!
+			.split(/\s+/)[2];
+		const work2 = jj(["log", "-r", `${ws2At}-`, "-T", "commit_id", "--no-graph"], testDir).trim();
+		jj(["rebase", "-s", work2, "-d", await resolveCommitId(testDir, baseChange)], testDir);
+		await mergeWorkspacesAtomic(testDir, ["dang-2"], baseChange);
+		await assertMerged(testDir, ["dang-1", "dang-2"], baseChange, {
+			expectedFiles: ["a.txt", "b.txt"],
+		});
+		check(existsSync(join(testDir, "a.txt")) && existsSync(join(testDir, "b.txt")),
+			"both workers' files in the merged tree after recovery");
+
+		await cleanupWorkspace(testDir, "dang-1", w1);
+		await cleanupWorkspace(testDir, "dang-2", w2);
+	} finally {
+		rmSync(testDir, { recursive: true, force: true });
+	}
+	console.log("✓ consistency gate: dangling commit fails loud, recovery + union files verified (R3)");
+}
+
+// ─── Section 12: deterministic union ladder (R4) ─────────────────────
+
+/**
+ * R4: the deterministic conflict ladder — jj 3-way merge first (inside
+ * the squash); each remaining conflicted file resolves via the jj-native
+ * "union" merge tool (git merge-file --union). Comment-only conflicts
+ * resolve with both versions kept; substantive text conflicts also
+ * resolve (both sides unioned); binary conflicts FAIL the union tool and
+ * remain conflicted (escalation — never a false "resolved").
+ */
+async function testUnionLadder(errors: string[]): Promise<void> {
+	const check = (cond: boolean, msg: string): void => {
+		if (!cond) errors.push(msg);
+	};
+
+	const testDir = mkdtempSync(join(tmpdir(), "pi-task-ws-union-"));
+	try {
+		initRepo(testDir);
+		writeFileSync(join(testDir, "comments.txt"), "// base note\ncode\n", "utf-8");
+		writeFileSync(join(testDir, "code.txt"), "line1\nline2\nline3\n", "utf-8");
+		writeFileSync(join(testDir, "blob.bin"), Buffer.from([0, 1, 2, 3, 4]));
+		jj(["commit", "-m", "base files"], testDir);
+		const baseChange = await taskBaseChangeId(testDir);
+
+		const w1 = await createWorkspace(testDir, "uni-1");
+		const w2 = await createWorkspace(testDir, "uni-2");
+		// Both workers touch all three files; the two text files conflict
+		// (same lines changed differently), the binary file conflicts too.
+		writeFileSync(join(w1, "comments.txt"), "// worker one\ncode\n", "utf-8");
+		writeFileSync(join(w1, "code.txt"), "line1\nLEFT\nline3\n", "utf-8");
+		writeFileSync(join(w1, "blob.bin"), Buffer.from([9, 9, 9, 9]));
+		jj(["commit", "-m", "uni w1"], w1);
+		writeFileSync(join(w2, "comments.txt"), "// worker two\ncode\n", "utf-8");
+		writeFileSync(join(w2, "code.txt"), "line1\nRIGHT\nline3\n", "utf-8");
+		writeFileSync(join(w2, "blob.bin"), Buffer.from([8, 8, 8, 8, 8, 8]));
+		jj(["commit", "-m", "uni w2"], w2);
+
+		await mergeWorkspacesAtomic(testDir, ["uni-1", "uni-2"], baseChange);
+		const conflictsBefore = await detectChangeConflicts(testDir, baseChange);
+		check(conflictsBefore.length === 3, `expected 3 conflicts, got ${JSON.stringify(conflictsBefore)}`);
+
+		// Rung 2: the union tool — text conflicts resolve deterministically.
+		await resolveConflictsWithUnion(testDir, baseChange, conflictsBefore);
+		const conflictsAfter = await detectChangeConflicts(testDir, baseChange);
+
+		check(!conflictsAfter.includes("comments.txt"),
+			"comment-only conflict should resolve via the union tool");
+		const comments = readFileSync(join(testDir, "comments.txt"), "utf-8");
+		check(comments.includes("// worker one") && comments.includes("// worker two"),
+			`union should keep BOTH comment versions, got: ${JSON.stringify(comments)}`);
+		check(!comments.includes("<<<<<<<"), "no conflict markers may remain after the union tool");
+
+		check(!conflictsAfter.includes("code.txt"), "substantive text conflict should also resolve via union");
+		const code = readFileSync(join(testDir, "code.txt"), "utf-8");
+		check(code.includes("LEFT") && code.includes("RIGHT"),
+			`union should keep BOTH code versions, got: ${JSON.stringify(code)}`);
+
+		// Binary conflicts: git merge-file fails (exit 255) → the conflict
+		// REMAINS — escalation, never a false "resolved" with empty content.
+		check(conflictsAfter.includes("blob.bin"),
+			`binary conflict must remain after the union tool (escalation), got ${JSON.stringify(conflictsAfter)}`);
+
+		// Escalation payload: the conflicted hunks are retrievable (bounded).
+		const hunks = await conflictHunks(testDir, baseChange, ["blob.bin"]);
+		check("blob.bin" in hunks && hunks["blob.bin"].length > 0, "conflict hunks retrievable for escalation");
+
+		await cleanupWorkspace(testDir, "uni-1", w1);
+		await cleanupWorkspace(testDir, "uni-2", w2);
+	} finally {
+		rmSync(testDir, { recursive: true, force: true });
+	}
+	console.log("✓ union ladder: comment + substantive conflicts resolved, binary escalates (R4)");
+}
+
+// ─── Section 13: summary parsing (R3/R5 input) ───────────────────────
+
+/** parseSummaryChanges: jj diff --summary lines → path + kind (renames
+ *  resolve to the NEW path). Pure. */
+function testParseSummaryChanges(errors: string[]): void {
+	const check = (cond: boolean, msg: string): void => {
+		if (!cond) errors.push(msg);
+	};
+
+	const changes = parseSummaryChanges(["M shared.txt", "A new.txt", "D old.txt", "R {a.txt => renamed.txt}"]);
+	check(changes.length === 4, `expected 4 changes, got ${changes.length}`);
+	check(changes[0].kind === "M" && changes[0].file === "shared.txt", "modified change parsed");
+	check(changes[1].kind === "A" && changes[1].file === "new.txt", "added change parsed");
+	check(changes[2].kind === "D" && changes[2].file === "old.txt", "deleted change parsed");
+	check(changes[3].kind === "R" && changes[3].file === "renamed.txt",
+		`rename should resolve to the NEW path, got ${JSON.stringify(changes[3])}`);
+	check(parseSummaryChanges([]).length === 0, "empty input → empty changes");
+	check(parseSummaryChanges(["   ", "junk"]).length === 0, "blank/garbage lines skipped");
+
+	console.log("✓ parseSummaryChanges: kinds + rename-to-new-path (R3/R5 input)");
+}
+
 // ─── Runner ──────────────────────────────────────────────────────────
 
 export async function runTests(): Promise<void> {
@@ -798,6 +1061,10 @@ export async function runTests(): Promise<void> {
 	await testAiTaskBase(errors);
 	await testSingleWorkerIdentity(errors);
 	await testForkProofReadOnly(errors);
+	await testAtomicCombine(errors);
+	await testConsistencyGateDangling(errors);
+	await testUnionLadder(errors);
+	testParseSummaryChanges(errors);
 
 	if (errors.length > 0) {
 		throw new Error("test-workspace failed:\n  ✗ " + errors.join("\n  ✗ "));
