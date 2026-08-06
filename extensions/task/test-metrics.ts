@@ -30,6 +30,7 @@ import {
 	summarizeRuns,
 	renderTaskStats,
 	formatDuration,
+	runLatencyMs,
 	type PhaseMetrics,
 	type BuildManifestInput,
 	type RunManifest,
@@ -122,6 +123,16 @@ export async function runTests(): Promise<void> {
 		check(m.totals.duration_ms === 1000, "totals.duration_ms passed through");
 		check(m.totals.read_duplication_tokens === 0, "read_duplication_tokens passed through");
 		check(Array.isArray(m.totals.session_files) && m.totals.session_files.length === 0, "session_files defaults to []");
+		// R1/R2: new fields are ABSENT/ZERO when not supplied (backward compatible).
+		check(m.received_at === undefined && m.dispatched_at === undefined && m.completed_at === undefined,
+			"run-lifecycle timestamps absent when not supplied");
+		check(m.main_session_tokens === 0, `main_session_tokens defaults to 0, got ${m.main_session_tokens}`);
+		check(JSON.stringify(m.totals.files_changed) === "[]", `files_changed defaults to [], got ${JSON.stringify(m.totals.files_changed)}`);
+		check(m.totals.insertions === 0 && m.totals.deletions === 0, "insertions/deletions default to 0");
+		// JSON serialization drops the undefined timestamps (absent in the file).
+		const serialized = JSON.parse(JSON.stringify(m)) as RunManifest;
+		check(!("received_at" in serialized) && !("dispatched_at" in serialized) && !("completed_at" in serialized),
+			"timestamps absent from serialized JSON when not supplied");
 	}
 
 	// ─── buildRunManifest: cost summation across all phases + overrides ───
@@ -158,6 +169,61 @@ export async function runTests(): Promise<void> {
 		check(m.totals.read_duplication_tokens === 1234, "read_duplication_tokens preserved");
 		check(m.totals.session_files.length === 1 && m.totals.session_files[0] === "/tmp/s/worker-1.jsonl",
 			"session_files preserved");
+	}
+
+	// ─── buildRunManifest: R1 run-lifecycle fields pass through ───
+	{
+		const m = buildRunManifest(
+			baseInput({
+				receivedAt: "2026-08-05T00:00:00.000Z",
+				dispatchedAt: "2026-08-05T00:00:05.000Z",
+				completedAt: "2026-08-05T01:30:00.000Z",
+				mainSessionTokens: 12345,
+				filesChanged: ["a.ts", "b/c.ts"],
+				insertions: 42,
+				deletions: 7,
+			}),
+		);
+		check(m.received_at === "2026-08-05T00:00:00.000Z" && m.dispatched_at === "2026-08-05T00:00:05.000Z"
+			&& m.completed_at === "2026-08-05T01:30:00.000Z", "run-lifecycle timestamps pass through");
+		check(m.main_session_tokens === 12345, `main_session_tokens pass through, got ${m.main_session_tokens}`);
+		check(JSON.stringify(m.totals.files_changed) === JSON.stringify(["a.ts", "b/c.ts"]), "files_changed pass through");
+		check(m.totals.insertions === 42 && m.totals.deletions === 7, "insertions/deletions pass through");
+	}
+
+	// ─── runLatencyMs (R4): wall-clock latency, worker-duration fallback ───
+	{
+		const mk = (over: Partial<RunManifest>): RunManifest => ({
+			run_id: "r",
+			config: { budget: "full", prewalk_model: "p", execute_model: "e", review_model: "r",
+				swap_trigger: "first-edit", checklist: true, review_forked: false, sandbox: false },
+			task: { spec_hash: "h", requirements: 1 },
+			phases: {
+				prewalk: null,
+				execute: phase(),
+				verify: { passed: true, commands: 1, duration_ms: 10 },
+				review: null,
+				fix_loop: { iterations: 0, cost_usd: 0 },
+			},
+			totals: { cost_usd: 0, duration_ms: 1000, read_duplication_tokens: 0, session_files: [],
+				files_changed: [], insertions: 0, deletions: 0 },
+			...over,
+		});
+		const withTimestamps = mk({
+			received_at: "2026-08-05T00:00:00.000Z",
+			completed_at: "2026-08-05T00:01:30.000Z",
+		});
+		check(runLatencyMs(withTimestamps) === 90_000, `latency from timestamps (90s), got ${runLatencyMs(withTimestamps)}`);
+		check(runLatencyMs(mk({})) === 1000, "no timestamps → totals.duration_ms fallback");
+		const onlyReceived = mk({ received_at: "2026-08-05T00:00:00.000Z" });
+		check(runLatencyMs(onlyReceived) === 1000, "received_at only → fallback (completed_at missing)");
+		const inverted = mk({
+			received_at: "2026-08-05T00:05:00.000Z",
+			completed_at: "2026-08-05T00:00:00.000Z",
+		});
+		check(runLatencyMs(inverted) === 1000, "completed < received (inverted) → fallback");
+		const unparseable = mk({ received_at: "not-a-date", completed_at: "also-not" });
+		check(runLatencyMs(unparseable) === 1000, "unparseable timestamps → fallback");
 	}
 
 	// ─── splitPhases ───
@@ -413,6 +479,59 @@ export async function runTests(): Promise<void> {
 
 			const empty = renderTaskStats(summarizeRuns(join(metricsDir, "nonexistent")));
 			check(empty.some((l) => l.includes("no task runs recorded yet")), "empty summary message");
+		} finally {
+			rmSync(metricsDir, { recursive: true, force: true });
+		}
+	}
+
+	// summarizeRuns/renderTaskStats latency (R4): manifests WITH the wall-clock
+	// timestamps report completed_at − received_at; the headline p50/p90 and
+	// recent-run durations use it. Manifests without timestamps fall back to
+	// totals.duration_ms.
+	{
+		const metricsDir = mkdtempSync(join(tmpdir(), "pi-task-lat-"));
+		try {
+			const manifest = (over: Record<string, unknown> = {}): Record<string, unknown> => ({
+				run_id: "20260805T0000-abcd",
+				config: { budget: "full" },
+				task: { spec_hash: "abc", requirements: 2 },
+				phases: {
+					prewalk: null,
+					execute: { model: "m", turns: 1, tokens_in: 1, tokens_out: 1, reads: 0, edits: 0, duration_ms: 1000, cost_usd: 0.01 },
+					verify: { passed: true, commands: 1, duration_ms: 100 },
+					review: null,
+					fix_loop: { iterations: 0, cost_usd: 0 },
+				},
+				totals: { cost_usd: 0.01, duration_ms: 1000, read_duplication_tokens: 0, session_files: [] },
+				...over,
+			});
+			const write = (runId: string, m: Record<string, unknown>): void => {
+				const dir = join(metricsDir, "proj");
+				mkdirSync(dir, { recursive: true });
+				writeFileSync(join(dir, `${runId}.json`), JSON.stringify(m), "utf-8");
+			};
+			// With timestamps: worker duration 10s, wall latency 2m30s (150s).
+			write("20260805T0001-abcd", manifest({
+				run_id: "20260805T0001-abcd",
+				received_at: "2026-08-05T00:00:00.000Z",
+				dispatched_at: "2026-08-05T00:00:01.000Z",
+				completed_at: "2026-08-05T00:02:30.000Z",
+				totals: { cost_usd: 0.01, duration_ms: 10000, read_duplication_tokens: 0, session_files: [] },
+			}));
+			// No timestamps: falls back to totals.duration_ms (45s).
+			write("20260805T0002-abcd", manifest({
+				run_id: "20260805T0002-abcd",
+				totals: { cost_usd: 0.01, duration_ms: 45000, read_duplication_tokens: 0, session_files: [] },
+			}));
+
+			const s = summarizeRuns(metricsDir);
+			check(s.rows[0].durationMs === 150_000, `latency from timestamps (150s), got ${s.rows[0].durationMs}`);
+			check(s.rows[1].durationMs === 45_000, `fallback to totals.duration_ms (45s), got ${s.rows[1].durationMs}`);
+			// p50/p90 (sorted [45000, 150000]): both come from the latency values.
+			check(s.p50DurationMs === 45_000, `p50 uses latency/fallback, got ${s.p50DurationMs}`);
+			check(s.p90DurationMs === 150_000, `p90 uses latency, got ${s.p90DurationMs}`);
+			const lines = renderTaskStats(s);
+			check(lines[0].includes("p50 45s · p90 2m30s"), `headline uses latency: ${lines[0]}`);
 		} finally {
 			rmSync(metricsDir, { recursive: true, force: true });
 		}

@@ -17,6 +17,7 @@ import {
 	blockersOf,
 	isBlocker,
 	buildFixPrompt,
+	parseDiffStat,
 } from "./orchestrator.ts";
 import type { Finding, ReviewResult } from "./schemas/findings.ts";
 
@@ -226,6 +227,73 @@ function testFixLoop(errors: string[]): void {
 	console.log("✓ fix loop: decideFixLoop, blocker policy, buildFixPrompt");
 }
 
+/** parseDiffStat: added/removed line counts from `jj diff --git` output
+ *  (R1 diff stats — the pure half of the orchestrator's diff-stat wiring). */
+function testParseDiffStat(errors: string[]): void {
+	const check = (cond: boolean, msg: string): void => {
+		if (!cond) errors.push(msg);
+	};
+
+	// Added/removed lines counted; +++/--- hunk headers excluded.
+	const diff = [
+		"diff --git a/a.ts b/a.ts",
+		"--- a/a.ts",
+		"+++ b/a.ts",
+		"@@ -1,1 +1,3 @@",
+		" unchanged",
+		"+added line",
+		"-removed line",
+		"+another added",
+		"",
+	].join("\n");
+	const s = parseDiffStat(diff);
+	check(s.insertions === 2 && s.deletions === 1,
+		`expected 2 insertions / 1 deletion, got ${s.insertions}/${s.deletions}`);
+
+	// New-file diff: +++ header at content start must not count.
+	const newFile = [
+		"diff --git a/new.txt b/new.txt",
+		"new file mode 100644",
+		"index 0000000..3b18e5d",
+		"--- /dev/null",
+		"+++ b/new.txt",
+		"@@ -0,0 +1,2 @@",
+		"+one",
+		"+two",
+	].join("\n");
+	check(parseDiffStat(newFile).insertions === 2 && parseDiffStat(newFile).deletions === 0,
+		"new-file diff: only content lines count");
+
+	// Empty / header-only / binary diffs count nothing.
+	check(parseDiffStat("").insertions === 0 && parseDiffStat("").deletions === 0, "empty diff → 0/0");
+	const headersOnly = "--- a/x\n+++ b/x\n@@ -1,1 +1,1 @@\n";
+	check(parseDiffStat(headersOnly).insertions === 0 && parseDiffStat(headersOnly).deletions === 0,
+		"header-only diff → 0/0");
+	const binary = "diff --git a/img.png b/img.png\nnew file mode 100644\nindex 0000000..1111111\nBinary files differ\n";
+	check(parseDiffStat(binary).insertions === 0 && parseDiffStat(binary).deletions === 0, "binary diff → 0/0");
+
+	// Multi-file diff sums across files.
+	const multi = [
+		"diff --git a/x.ts b/x.ts",
+		"--- a/x.ts",
+		"+++ b/x.ts",
+		"@@ -1 +1 @@",
+		"-old",
+		"+new",
+		"diff --git a/y.ts b/y.ts",
+		"--- a/y.ts",
+		"+++ b/y.ts",
+		"@@ -1 +1,2 @@",
+		"+one",
+		"+two",
+	].join("\n");
+	const ms = parseDiffStat(multi);
+	check(ms.insertions === 3 && ms.deletions === 1,
+		`multi-file sums (3/1), got ${ms.insertions}/${ms.deletions}`);
+
+	console.log("✓ parseDiffStat: added/removed line counts (hunk headers excluded)");
+}
+
 export async function runTests(): Promise<void> {
 	const errors: string[] = [];
 	console.log("── test-orchestrator: spec parse + splitSpec + aggregateSubSpecs + runVerification + fix loop ──");
@@ -234,6 +302,7 @@ export async function runTests(): Promise<void> {
 	testAggregateSubSpecs(errors);
 	await testRunVerification(errors);
 	testFixLoop(errors);
+	testParseDiffStat(errors);
 
 	if (errors.length > 0) {
 		throw new Error("test-orchestrator failed:\n  ✗ " + errors.join("\n  ✗ "));

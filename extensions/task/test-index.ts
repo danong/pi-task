@@ -37,6 +37,7 @@ import {
 	isLockedBudget,
 	normalizeBudgetMode,
 	readBudgetOverride,
+	readSessionTokensBefore,
 	renderInPlace,
 	renderReviewReport,
 	resolveBudgetMode,
@@ -340,6 +341,24 @@ function testBudgetOverridePersistence(errors: string[]): void {
 	check(readBudgetOverride(fakeCtx([budgetEntry("economy"), budgetEntry("bogus")])) === "auto", "invalid latest normalizes to auto");
 	check(readBudgetOverride(fakeCtx([budgetEntry("free", "pi-task-other"), budgetEntry("economy")])) === "economy", "non-budget entries ignored");
 
+	// R1: readSessionTokensBefore — the main session's pre-dispatch token
+	// spend, summed from assistant message usage in the session entries
+	// (reads the session the same way readBudgetOverride does).
+	const msgEntry = (role: string, usage?: unknown): unknown => ({
+		type: "message",
+		message: { role, ...(usage !== undefined ? { usage } : {}) },
+	});
+	check(readSessionTokensBefore(fakeCtx([])) === 0, "no entries → 0 tokens");
+	check(readSessionTokensBefore(fakeCtx([msgEntry("user"), msgEntry("toolResult")])) === 0,
+		"non-assistant entries contribute 0");
+	check(readSessionTokensBefore(fakeCtx([msgEntry("assistant", { totalTokens: 1000 }), msgEntry("assistant", { totalTokens: 2500 })])) === 3500,
+		"assistant totalTokens summed");
+	check(readSessionTokensBefore(fakeCtx([msgEntry("assistant", { input: 800, output: 200 })])) === 1000,
+		"no totalTokens → input + output fallback");
+	check(readSessionTokensBefore(fakeCtx([msgEntry("assistant")])) === 0, "assistant without usage → 0");
+	check(readSessionTokensBefore(fakeCtx([budgetEntry("economy"), msgEntry("assistant", { totalTokens: 42 })])) === 42,
+		"custom entries (budget overrides) contribute 0");
+
 	// todo #69 regression: a /task-budget session lock must drive the task
 	// call's tier even though the CLI flag value never changes. The task
 	// tool handler feeds the SESSION mode (stored override, else flag) into
@@ -355,6 +374,7 @@ function testBudgetOverridePersistence(errors: string[]): void {
 	check(plan.tier === "economy", "plan carries the locked tier");
 
 	console.log("✓ readBudgetOverride: last matching session entry wins; /task-budget lock survives into the task call");
+	console.log("✓ readSessionTokensBefore: assistant-message token sums (R1 main-session spend)");
 }
 
 function testResultMapping(errors: string[]): void {

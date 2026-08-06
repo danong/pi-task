@@ -11,6 +11,14 @@
  * Approximations (documented, validation-grade not exact):
  * - read_duplication_tokens: ≈ content-length/4 of files read in both the
  *   prewalk and execute phases (see computeReadDuplication, Phase 8 chunk 3).
+ * - Wall-clock run lifecycle: received_at/dispatched_at/completed_at ISO
+ *   timestamps plus main_session_tokens (the main agent's pre-dispatch
+ *   spend) are supplied by the task tool + orchestrator; direct callers
+ *   that omit them get absent/zero values (backward compatible).
+ * - totals.insertions/deletions: line counts parsed from `jj diff --git`
+ *   over the task base..head range (added/removed lines, hunk headers
+ *   excluded — see orchestrator.ts parseDiffStat); totals.files_changed is
+ *   the union of the workers' schema-validated yield lists.
  * - config.budget is the resolved budget tier (Phase 10); it falls back to
  *   "default" when a direct executeTask caller omits the label.
  * - Parallel runs produce ONE aggregate manifest: phases.execute SUMS
@@ -71,6 +79,17 @@ export interface MetricsConfig {
 
 export interface RunManifest {
 	run_id: string;
+	/** Wall-clock timestamps of the run lifecycle (ISO strings, task tool +
+	 *  orchestrator). Absent when a direct caller doesn't supply them —
+	 *  backward compatible. received_at: task tool execute starts;
+	 *  dispatched_at: worker session spawns; completed_at: run finishes. */
+	received_at?: string;
+	dispatched_at?: string;
+	completed_at?: string;
+	/** Main-session tokens consumed before the task call (the main agent's
+	 *  cumulative spend at dispatch — the worker phases are separate).
+	 *  Absent (0) when not supplied. */
+	main_session_tokens?: number;
 	config: MetricsConfig;
 	task: { spec_hash: string; requirements: number };
 	phases: {
@@ -85,6 +104,14 @@ export interface RunManifest {
 		duration_ms: number;
 		read_duplication_tokens: number;
 		session_files: string[];
+		/** Aggregate files changed across the run's worker commits (the
+		 *  workers' schema-validated yield lists, unioned). Empty when not
+		 *  supplied. */
+		files_changed: string[];
+		/** Added/removed line counts from the worker commit diffs (parsed from
+		 *  `jj diff --git` over the task base..head range). 0 when not supplied. */
+		insertions: number;
+		deletions: number;
 	};
 }
 
@@ -145,6 +172,22 @@ export interface BuildManifestInput {
 	durationMs: number;
 	readDuplicationTokens: number;
 	sessionFiles?: string[];
+	/** Wall-clock timestamps (R1): received_at (task tool execute starts),
+	 *  dispatched_at (worker session spawns), completed_at (run finishes).
+	 *  Optional — absent/undefined when a direct caller doesn't supply them,
+	 *  so existing callers and tests pass unchanged. */
+	receivedAt?: string;
+	dispatchedAt?: string;
+	completedAt?: string;
+	/** Main-session tokens consumed before the task call (0 when not supplied). */
+	mainSessionTokens?: number;
+	/** Aggregate files changed across the run's worker commits ([] when not
+	 *  supplied). */
+	filesChanged?: string[];
+	/** Added/removed line counts from the worker commit diffs (0 when not
+	 *  supplied). */
+	insertions?: number;
+	deletions?: number;
 	/** Override the generated run id (deterministic tests). */
 	runId?: string;
 	now?: Date;
@@ -188,7 +231,14 @@ export function buildRunManifest(input: BuildManifestInput): RunManifest {
 			duration_ms: input.durationMs,
 			read_duplication_tokens: input.readDuplicationTokens,
 			session_files: input.sessionFiles ?? [],
+			files_changed: input.filesChanged ?? [],
+			insertions: input.insertions ?? 0,
+			deletions: input.deletions ?? 0,
 		},
+		received_at: input.receivedAt,
+		dispatched_at: input.dispatchedAt,
+		completed_at: input.completedAt,
+		main_session_tokens: input.mainSessionTokens ?? 0,
 	};
 }
 
@@ -508,6 +558,22 @@ function percentile(sortedMs: number[], p: number): number {
 }
 
 /**
+ * Wall-clock latency of a run (R1): completed_at − received_at when both ISO
+ * timestamps are present and parseable (completed >= received), else the
+ * worker-measured totals.duration_ms. The /task-stats p50/p90 (and recent-run
+ * durations) come from this — real wall time includes dispatch overhead the
+ * worker cannot see. Pure.
+ */
+export function runLatencyMs(manifest: RunManifest): number {
+	const received = manifest.received_at !== undefined ? Date.parse(manifest.received_at) : NaN;
+	const completed = manifest.completed_at !== undefined ? Date.parse(manifest.completed_at) : NaN;
+	if (Number.isFinite(received) && Number.isFinite(completed) && completed >= received) {
+		return completed - received;
+	}
+	return manifest.totals?.duration_ms ?? 0;
+}
+
+/**
  * Summarize run manifests under <metricsDir>/<project>/<run_id>.json
  * (optional project filter). Lenient: malformed files count in
  * `unreadable` and are skipped; *.failure.json artifacts count in
@@ -548,7 +614,10 @@ export function summarizeRuns(metricsDir: string, project?: string): RunSummary 
 				project: proj,
 				tier: manifest.config?.budget ?? "unknown",
 				requirements: manifest.task?.requirements ?? 0,
-				durationMs: manifest.totals?.duration_ms ?? 0,
+				// R1: wall-clock latency when the manifest carries the run-lifecycle
+				// timestamps (completed_at − received_at), else the worker-measured
+				// totals.duration_ms — the /task-stats headline p50/p90 come from this.
+				durationMs: runLatencyMs(manifest),
 				costUsd: manifest.totals?.cost_usd ?? 0,
 				verifyPassed: manifest.phases.verify.passed === true,
 				fixIterations: manifest.phases.fix_loop?.iterations ?? 0,

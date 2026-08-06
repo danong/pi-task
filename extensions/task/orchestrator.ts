@@ -215,6 +215,13 @@ export interface ExecuteTaskOptions {
 	 *  requires metricsDir). Implies the worker persists its session. */
 	preserveSessions?: boolean;
 	onUpdate?: (partial: unknown) => void;
+	/** Wall-clock run-lifecycle timestamps + pre-dispatch main-session spend
+	 *  (R1). The task tool records received_at + main_session_tokens when the
+	 *  tool call starts (main-session tokens read via sessionManager); direct
+	 *  callers may omit them (manifest fields then absent/zero — backward
+	 *  compatible). dispatched_at/completed_at are stamped by the orchestrator. */
+	receivedAt?: string;
+	mainSessionTokens?: number;
 }
 
 export interface VerificationCommandResult {
@@ -488,6 +495,41 @@ function computeDiff(cwd: string, fromRev: string): Promise<string> {
 	});
 }
 
+/**
+ * Parse `jj diff --git` output into added/removed line counts (R1 diff
+ * stats): every line starting with "+" counts as an insertion, "-" as a
+ * deletion, EXCLUDING the "+++"/"---" hunk headers. Binary diffs and
+ * rename-only changes count nothing. Pure — hermetically tested.
+ */
+export function parseDiffStat(diff: string): { insertions: number; deletions: number } {
+	let insertions = 0;
+	let deletions = 0;
+	for (const line of diff.split("\n")) {
+		if (line.startsWith("+++") || line.startsWith("---")) continue;
+		if (line.startsWith("+")) insertions++;
+		else if (line.startsWith("-")) deletions++;
+	}
+	return { insertions, deletions };
+}
+
+/**
+ * Best-effort diff stats for the manifest: a metrics failure (e.g. a jj
+ * error at finalize) must not fail an otherwise-successful run — record
+ * 0/0 and keep going (collection is external; workers don't know they're
+ * being measured).
+ */
+async function computeDiffStatBestEffort(
+	cwd: string,
+	fromRev: string,
+): Promise<{ insertions: number; deletions: number }> {
+	try {
+		return parseDiffStat(await computeDiff(cwd, fromRev));
+	} catch {
+		// Best effort — the run's outcome is already decided; metrics are additive.
+		return { insertions: 0, deletions: 0 };
+	}
+}
+
 // ─── Metrics assembly + persistence (Phase 8) ────────────────────────
 
 interface ReviewMetricsInput {
@@ -514,6 +556,20 @@ function assembleManifest(opts: {
 	fixLoop: { iterations: number; costUsd: number };
 	/** Whether the worker sandbox was ACTIVE for this run (R3). */
 	sandbox?: boolean;
+	/** Run-lifecycle timestamps (R1): dispatched_at (worker spawn) and the
+	 *  main-session pre-dispatch token spend (task tool supplies received_at
+	 *  + mainSessionTokens; completed_at is stamped by finalizeMetrics). */
+	receivedAt?: string;
+	dispatchedAt?: string;
+	completedAt?: string;
+	mainSessionTokens?: number;
+	/** Aggregate files changed + added/removed line counts (R1). */
+	filesChanged?: string[];
+	insertions: number;
+	deletions: number;
+	/** Supplied by finalizeMetrics (the run id + preserved session traces). */
+	runId: string;
+	sessionFiles: string[];
 }): RunManifest {
 	const split = splitPhases({
 		turnUsage: opts.worker.turnUsage,
@@ -559,6 +615,13 @@ function assembleManifest(opts: {
 		durationMs: opts.totalDurationMs,
 		readDuplicationTokens: computeReadDuplication(opts.worker.reads, opts.swapTurn).tokens,
 		sessionFiles: opts.sessionFiles,
+		receivedAt: opts.receivedAt,
+		dispatchedAt: opts.dispatchedAt,
+		completedAt: opts.completedAt,
+		mainSessionTokens: opts.mainSessionTokens,
+		filesChanged: opts.filesChanged,
+		insertions: opts.insertions,
+		deletions: opts.deletions,
 	});
 }
 
@@ -573,7 +636,7 @@ function finalizeMetrics(opts: {
 	metricsDir?: string;
 	preserveSessions?: boolean;
 	worker: WorkerResult;
-	assemble: Omit<Parameters<typeof assembleManifest>[0], "runId" | "sessionFiles">;
+	assemble: Omit<Parameters<typeof assembleManifest>[0], "runId" | "sessionFiles" | "completedAt">;
 }): { manifest: RunManifest; manifestPath?: string } {
 	const project = opts.project ?? deriveProjectName(opts.cwd);
 	const runId = generateRunId();
@@ -589,7 +652,14 @@ function finalizeMetrics(opts: {
 		});
 	}
 
-	const manifest = assembleManifest({ ...opts.assemble, runId, sessionFiles: savedSessions });
+	// completed_at = the moment the run finishes: manifest assembly is the
+	// last step before the result is returned (R1 wall-clock lifecycle).
+	const manifest = assembleManifest({
+		...opts.assemble,
+		runId,
+		sessionFiles: savedSessions,
+		completedAt: new Date().toISOString(),
+	});
 	const manifestPath = opts.metricsDir
 		? writeManifest(manifest, { metricsDir: opts.metricsDir, project })
 		: undefined;
@@ -634,6 +704,14 @@ function finalizeParallelMetrics(opts: {
 	parallelDurationMs: number;
 	totalDurationMs: number;
 	verification: VerificationResult;
+	/** Run-lifecycle timestamps + main-session spend + diff stats (R1). */
+	receivedAt?: string;
+	dispatchedAt?: string;
+	mainSessionTokens?: number;
+	/** Aggregate files changed across the workers (R1). */
+	filesChanged?: string[];
+	insertions: number;
+	deletions: number;
 }): { manifest: RunManifest; manifestPath?: string } {
 	const project = opts.project ?? deriveProjectName(opts.cwd);
 	const manifest = buildRunManifest({
@@ -661,6 +739,13 @@ function finalizeParallelMetrics(opts: {
 		},
 		durationMs: opts.totalDurationMs,
 		readDuplicationTokens: 0,
+		receivedAt: opts.receivedAt,
+		dispatchedAt: opts.dispatchedAt,
+		completedAt: new Date().toISOString(),
+		mainSessionTokens: opts.mainSessionTokens,
+		filesChanged: opts.filesChanged,
+		insertions: opts.insertions,
+		deletions: opts.deletions,
 	});
 	const manifestPath = opts.metricsDir
 		? writeManifest(manifest, { metricsDir: opts.metricsDir, project })
@@ -779,6 +864,11 @@ export async function executeTask(opts: ExecuteTaskOptions): Promise<TaskResult>
 			sandbox,
 			aiAuthorName: aiName,
 			aiAuthorEmail: aiEmail,
+			// R1: the task tool records these when its execute starts (received_at
+			// + the main session's pre-dispatch token spend); direct callers may
+			// omit them (manifest fields then absent/zero).
+			receivedAt: opts.receivedAt,
+			mainSessionTokens: opts.mainSessionTokens,
 		});
 	}
 
@@ -794,6 +884,13 @@ export async function executeTask(opts: ExecuteTaskOptions): Promise<TaskResult>
 	// workspaces are removed. Merge conflicts are surfaced, never dropped.
 
 	const runStartMs = Date.now();
+	// R1: the pre-run task base commit id (@- of the main working copy —
+	// captured BEFORE the AI base/workspace creation, read-only, no snapshot
+	// op with --ignore-working-copy). The run's diff stats are the range
+	// taskBaseCommitId..final-@- (the merged base at finalize time), which
+	// covers every worker's commits in both identity modes (the AI base is
+	// empty and contributes nothing).
+	const taskBaseCommitId = await headCommitId(cwd, "@-");
 
 	// Worker count: sub_specs mode spawns exactly one worker per sub-spec
 	// (caller-controlled, no clamp — every sub-spec is validated to have at
@@ -838,6 +935,10 @@ export async function executeTask(opts: ExecuteTaskOptions): Promise<TaskResult>
 	// R6: the parallel phase's WALL time — workers run concurrently, so this
 	// is the manifest's phases.execute.duration_ms (not the sum of workers).
 	const parallelStartMs = Date.now();
+	// R1: dispatched_at — the moment the parallel workers' sessions spawn
+	// (the wall-clock lifecycle stamp; the manifest's completed_at is set by
+	// finalizeParallelMetrics).
+	const dispatchedAt = new Date().toISOString();
 	const sessions = workspaces.map((ws, i) =>
 		spawnWorkerSession({
 			cwd: ws.dir,
@@ -1012,6 +1113,9 @@ export async function executeTask(opts: ExecuteTaskOptions): Promise<TaskResult>
 
 	// R6: parallel runs produce ONE aggregate RunManifest (no per-worker
 	// manifests — aggregate approximation, documented in finalizeParallelMetrics).
+	// R1: diff stats over taskBaseCommitId..final-@- (the merged base) — best
+	// effort (a metrics jj failure must not fail an otherwise-green run).
+	const diffStat = await computeDiffStatBestEffort(cwd, taskBaseCommitId);
 	const metrics = finalizeParallelMetrics({
 		cwd,
 		project: opts.project,
@@ -1029,6 +1133,12 @@ export async function executeTask(opts: ExecuteTaskOptions): Promise<TaskResult>
 		parallelDurationMs: Date.now() - parallelStartMs,
 		totalDurationMs: Date.now() - runStartMs,
 		verification,
+		receivedAt: opts.receivedAt,
+		dispatchedAt,
+		mainSessionTokens: opts.mainSessionTokens,
+		filesChanged: results.flatMap((r) => r.yield.files_changed),
+		insertions: diffStat.insertions,
+		deletions: diffStat.deletions,
 	});
 
 	return {
@@ -1087,6 +1197,10 @@ async function executeSingle(
 		/** AI commit identity (todo #84) — already formatted ({model} resolved). */
 		aiAuthorName?: string;
 		aiAuthorEmail?: string;
+		/** R1: the task tool's received_at + pre-dispatch main-session spend
+		 *  (absent for direct callers — manifest fields then absent/zero). */
+		receivedAt?: string;
+		mainSessionTokens?: number;
 	},
 ): Promise<TaskResult> {
 	const {
@@ -1130,7 +1244,10 @@ async function executeSingle(
 			throw err;
 		}
 	}
-	const baseCommit = review ? await headCommitId(cwd) : "";
+	// The task base for the run's diff stats: the recorded @ AFTER the AI
+	// base creation (the AI base is empty, so diffing from it or from @- is
+	// equivalent; the review fork also anchors its review diff here).
+	const baseCommit = await headCommitId(cwd);
 
 	// Metrics: run timing + the swap turn (captured by wrapping the caller's
 	// onSwap — the swap fires on the worker's first edit).
@@ -1144,6 +1261,8 @@ async function executeSingle(
 	try {
 		// 4. Spawn worker — the spec markdown (plus map section) IS the task prompt.
 		const workerStartMs = Date.now();
+		// R1: dispatched_at — the moment the worker session spawns.
+		const dispatchedAt = new Date(workerStartMs).toISOString();
 		const session = spawnWorkerSession({
 			cwd,
 			model: usePrewalk ? prewalkModel! : executeModel,
@@ -1207,6 +1326,9 @@ async function executeSingle(
 		// ── Review disabled: unchanged verify-once path (plus metrics) ──
 		if (!review) {
 			const verification = await runVerification(spec.verification, cwd, verifyTimeout, signal);
+			// R1 diff stats: the worker's commits are baseCommit..@- (the worker
+			// leaves @ as an empty working-copy commit after its last `jj commit`).
+			const diffStat = await computeDiffStatBestEffort(cwd, baseCommit);
 			const metrics = finalizeMetrics({
 				cwd, project, metricsDir, preserveSessions, worker,
 				assemble: {
@@ -1224,6 +1346,12 @@ async function executeSingle(
 					verification,
 					review: null,
 					fixLoop: { iterations: 0, costUsd: 0 },
+					receivedAt: opts.receivedAt,
+					dispatchedAt,
+					mainSessionTokens: opts.mainSessionTokens,
+					filesChanged: worker.yield.files_changed,
+					insertions: diffStat.insertions,
+					deletions: diffStat.deletions,
 				},
 			});
 			return {
@@ -1338,6 +1466,10 @@ async function executeSingle(
 		}
 
 		// Metrics: assemble + persist (traces preserved first, if configured).
+		// R1 diff stats: reuse the LAST loop diff (baseCommit..@- recomputed
+		// after every fix worker) — no extra jj call, and parseDiffStat is
+		// pure. files_changed is the deduped union incl. fix workers.
+		const diffStat = parseDiffStat(diff);
 		const metrics = finalizeMetrics({
 			cwd, project, metricsDir, preserveSessions, worker,
 			assemble: {
@@ -1355,6 +1487,12 @@ async function executeSingle(
 				verification,
 				review: reviewResult ? { result: reviewResult, costUsd: reviewCostUsd } : null,
 				fixLoop: { iterations: fixesUsed + 1, costUsd: fixesCostUsd },
+				receivedAt: opts.receivedAt,
+				dispatchedAt,
+				mainSessionTokens: opts.mainSessionTokens,
+				filesChanged: [...new Set(files)],
+				insertions: diffStat.insertions,
+				deletions: diffStat.deletions,
 			},
 		});
 

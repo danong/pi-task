@@ -510,6 +510,36 @@ export function readBudgetOverride(
 	return latest;
 }
 
+/**
+ * Main-session token spend BEFORE the task call (R1): the cumulative
+ * tokens of every assistant message in the session entries — the main
+ * agent's own consumption (worker tokens land in the manifest's phases;
+ * this is what the session burned to get to the dispatch). Reads the
+ * session the same way readBudgetOverride does
+ * (ctx.sessionManager.getEntries() — no new API surface). Lenient:
+ * entries without a usage object contribute 0 (tool results, custom
+ * entries, user messages, compaction entries...). totalTokens preferred;
+ * falls back to input+output when a provider omits it. Pure — tested
+ * hermetically.
+ */
+export function readSessionTokensBefore(ctx: {
+	sessionManager: { getEntries(): unknown[] };
+}): number {
+	let total = 0;
+	for (const entry of ctx.sessionManager.getEntries()) {
+		const e = entry as {
+			type?: string;
+			message?: { role?: string; usage?: { totalTokens?: number; input?: number; output?: number } };
+		};
+		if (e.type !== "message" || e.message?.role !== "assistant") continue;
+		const u = e.message.usage;
+		if (!u) continue;
+		if (typeof u.totalTokens === "number") total += u.totalTokens;
+		else total += (u.input ?? 0) + (u.output ?? 0);
+	}
+	return total;
+}
+
 export default function (pi: ExtensionAPI) {
 	// ── Config (Phase 11: refreshed, not factory-only) ────────────────
 	// task.toml (budget tiers + defaults) is loaded at factory time so the
@@ -616,6 +646,13 @@ export default function (pi: ExtensionAPI) {
 				const heartbeat = setInterval(emitProgress, 1000);
 
 				try {
+					// R1: received_at = the moment the task tool's execute starts, and
+					// the main session's token spend up to this point (worker tokens
+					// are the manifest's phases — this is the pre-dispatch spend, read
+					// the same way readBudgetOverride reads the session). Both land in
+					// the RunManifest via ExecuteTaskOptions.
+					const receivedAt = new Date().toISOString();
+					const mainSessionTokens = readSessionTokensBefore(ctx);
 					const result = await executeTask({
 						cwd: ctx.cwd,
 						model: tierConfig.executeModel,
@@ -638,6 +675,8 @@ export default function (pi: ExtensionAPI) {
 						signal,
 						onUpdate: handleUpdate,
 						metricsDir: METRICS_DIR,
+						receivedAt,
+						mainSessionTokens,
 					});
 					const ret = taskResultToToolReturn(result);
 					return { content: [{ type: "text", text: summarizeResult(result) }], details: ret };

@@ -1180,6 +1180,10 @@ don't know they're being measured.
 ```typescript
 interface RunManifest {
   run_id: string;
+  received_at?: string;         // ISO — task tool execute starts (task tool)
+  dispatched_at?: string;       // ISO — worker session spawns (orchestrator)
+  completed_at?: string;        // ISO — run finishes (manifest assembly)
+  main_session_tokens?: number; // main-agent tokens consumed before the task
   config: {
     budget: string;
     prewalk_model: string;
@@ -1204,6 +1208,9 @@ interface RunManifest {
     duration_ms: number;
     read_duplication_tokens: number;
     session_files: string[];
+    files_changed: string[];   // aggregate worker-yield file lists
+    insertions: number;        // added lines in the worker commit diffs
+    deletions: number;         // removed lines in the worker commit diffs
   };
 }
 
@@ -1225,6 +1232,27 @@ execution phase re-reads the same file, those tokens count as duplication.
 If prewalk's context continuity works, this is near zero. If it's high, the
 swap isn't preserving context effectively. This single number validates or
 falsifies the core cost-savings claim on our models and tasks.
+
+**`received_at` / `dispatched_at` / `completed_at`** are the wall-clock run
+lifecycle (ISO strings): `received_at` is stamped when the task tool's
+execute starts, `dispatched_at` when the worker session(s) spawn, and
+`completed_at` when the manifest is assembled (the run finishes).
+`main_session_tokens` is the main agent's cumulative token spend read from
+the session entries at dispatch time (worker tokens stay in `phases`). All
+four are optional: direct `executeTask` callers that don't supply them get
+absent/zero fields (backward compatible). **`/task-stats` latency** (the
+headline p50/p90 and the recent-run durations) is `completed_at −
+received_at` when both timestamps exist — real wall time includes dispatch
+overhead the worker cannot see — falling back to `totals.duration_ms`
+(see `runLatencyMs` in metrics.ts).
+
+**`totals.files_changed` / `insertions` / `deletions`** describe the worker
+commits: `files_changed` is the union of the workers' schema-validated
+yield lists, and `insertions`/`deletions` are line counts parsed from `jj
+diff --git` over the task base..head range (added/removed lines, `+++`/
+`---` hunk headers excluded — see `parseDiffStat` in orchestrator.ts).
+Best-effort: a metrics jj failure records 0/0 rather than failing an
+otherwise-successful run.
 
 ### Storage
 
