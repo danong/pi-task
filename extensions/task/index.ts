@@ -10,7 +10,9 @@
  *    shared goal — no scope leak by construction). The typed TaskResult is
  *    mapped to the tool's return shape (taskResultToToolReturn); progress
  *    streams to the TUI via onUpdate / renderResult — no LLM tokens burned
- *    for the chrome.
+ *    for the chrome. Completion surfaces a one-line summary — wall-clock
+ *    latency · cost · verify status · tier (completionSummaryLine) — as the
+ *    content text's first line and the TUI's completion line (R1/R4).
  *
  * 2. Budget enforcement — the `--task-budget` CLI flag + `/task-budget`
  *    session command. When a concrete tier is locked, the `budget`
@@ -67,7 +69,7 @@ import {
 } from "./progress.ts";
 import { buildMap, formatMapOverview, formatMapPrompt, loadCachedMap, loadRepoMapConfig, sliceRelevant } from "./repo-map.ts";
 import type { ReviewResult } from "./schemas/findings.ts";
-import { renderTaskStats, summarizeRuns } from "./metrics.ts";
+import { renderTaskStats, runLatencyMs, summarizeRuns } from "./metrics.ts";
 import type { RunManifest } from "./metrics.ts";
 import {
 	budgetModes,
@@ -290,6 +292,10 @@ export interface TaskToolReturn {
 	files_changed: string[];
 	review: ReviewResult | null;
 	metrics: RunManifest | null;
+	/** Total run wall time (ms) — the completion summary's latency fallback
+	 *  when the run left no manifest (defensive: the task tool always has
+	 *  one, single AND parallel). */
+	duration_ms: number;
 	/** Present on parallel runs: repo-relative unresolved merge conflicts. */
 	conflicts?: string[];
 	/** True when a requested review was skipped (review is single-worker
@@ -317,6 +323,7 @@ export function taskResultToToolReturn(result: TaskResult): TaskToolReturn {
 		files_changed: result.files_changed,
 		review: result.review ?? null,
 		metrics: result.manifest ?? null,
+		duration_ms: result.durationMs,
 		...(result.conflicts !== undefined ? { conflicts: result.conflicts } : {}),
 		...(result.reviewSkipped ? { review_skipped: true } : {}),
 		verification: {
@@ -350,19 +357,74 @@ export function renderReviewReport(review: ReviewResult): string {
 	return lines.join("\n");
 }
 
+export interface CompletionSummaryInput {
+	/** Whether the run succeeded — "task done" vs "task failed". */
+	success: boolean;
+	/** The run's RunManifest — the latency/cost/verify/tier source (R1).
+	 *  Null for direct executeTask callers without one (defensive: the task
+	 *  tool always builds a manifest, single AND parallel). */
+	manifest: RunManifest | null;
+	/** Worker-measured duration fallback when the manifest is absent. */
+	durationMs: number;
+	/** Failed verification commands — refine the passed count when some
+	 *  commands failed (the manifest's verify phase only carries the passed
+	 *  boolean and the command total). */
+	verificationFailures: unknown[];
+}
+
+/**
+ * The one-line task completion summary for the main session (R1):
+ * "task done in 84s · $0.006 · 5/5 verified (economy)". Latency is the
+ * wall clock (completed_at − received_at) when the manifest carries both
+ * timestamps, else the worker-measured totals.duration_ms (runLatencyMs);
+ * cost, verify status, and tier come from the manifest (totals.cost_usd,
+ * phases.verify passed/commands, config.budget). Verify status is the
+ * passed/total verification-command count — "N/N verified" when the phase
+ * passed, else refined from the failure list. Without a manifest, degrades
+ * to the duration only. Pure — tested hermetically.
+ */
+export function completionSummaryLine(input: CompletionSummaryInput): string {
+	const { success, manifest, durationMs, verificationFailures } = input;
+	const duration = manifest ? runLatencyMs(manifest) : durationMs;
+	const done = success ? "done" : "failed";
+	if (!manifest) return `task ${done} in ${formatDuration(duration)}`;
+	const verify = manifest.phases.verify;
+	const passed = verify.passed
+		? verify.commands
+		: Math.max(0, verify.commands - verificationFailures.length);
+	return [
+		`task ${done} in ${formatDuration(duration)}`,
+		`$${formatCost(manifest.totals.cost_usd)}`,
+		`${passed}/${verify.commands} verified (${manifest.config.budget})`,
+	].join(" · ");
+}
+
 /** One-line (plus expanded) summary of a TaskResult — the LLM-visible text. */
 export function summarizeResult(result: TaskResult): string {
 	const parts = [
+		// R1/R4: the one-line completion summary owns latency (wall-clock when
+		// the manifest carries the run-lifecycle timestamps, else the worker
+		// duration), cost, verify status, and tier — shown for single and
+		// parallel runs alike (the parallel aggregate manifest has the same
+		// shape) and for failures ("task failed", failure lines follow).
+		completionSummaryLine({
+			success: result.success,
+			manifest: result.manifest ?? null,
+			durationMs: result.durationMs,
+			verificationFailures: result.verification.failures,
+		}),
 		`Task ${result.success ? "succeeded" : "failed"}: ${result.commits.length} commit(s), ` +
 			`tests ${result.tests}, ${result.files_changed.length} file(s) changed.`,
 	];
-	// R4: total duration always; tokens/cost when derivable (manifest first,
-	// else aggregated worker usage snapshots).
-	const { durationMs, tokensIn, tokensOut, costUsd } = deriveRunMetrics(result);
+	// Token detail only — the summary line above already carries duration and
+	// cost (R4: no duplication). Cost appears here again ONLY when the run
+	// left no manifest (the summary line cannot show it then — defensive;
+	// the task tool always has one). Tokens: manifest phases first, else
+	// aggregated worker usage snapshots.
+	const { tokensIn, tokensOut, costUsd } = deriveRunMetrics(result);
 	const metricsLine = [
-		`Took ${formatDuration(durationMs)}.`,
 		tokensIn !== null ? `Tokens: ${tokensIn} in / ${tokensOut} out.` : null,
-		costUsd !== null ? `Cost: $${formatCost(costUsd)}.` : null,
+		!result.manifest && costUsd !== null ? `Cost: $${formatCost(costUsd)}.` : null,
 	].filter((s): s is string => s !== null).join(" ");
 	if (metricsLine) parts.push(metricsLine);
 	if (result.conflicts && result.conflicts.length > 0) {
@@ -710,20 +772,31 @@ export default function (pi: ExtensionAPI) {
 					return renderInPlace(context, theme.fg("muted", d.progress));
 				}
 				const ret = d as TaskToolReturn;
+				// R1/R4: the completion line IS the one-line summary — wall-clock
+				// latency, cost, verify status, tier. The audit trail (commits,
+				// files, review, conflicts) stays in the content text and the
+				// expanded view; the collapsed line remains a single line.
+				const summary = completionSummaryLine({
+					success: ret.success,
+					manifest: ret.metrics,
+					durationMs: ret.duration_ms,
+					verificationFailures: ret.verification.failures,
+				});
 				let text = ret.success
-					? theme.fg("success", theme.bold("✓ task complete"))
-					: theme.fg("error", theme.bold("✗ task failed"));
-				text += ` — ${ret.commits.length} commit${ret.commits.length === 1 ? "" : "s"}, tests ${ret.tests}`;
-				if (ret.conflicts && ret.conflicts.length > 0) {
-					text += `, ${ret.conflicts.length} conflict${ret.conflicts.length === 1 ? "" : "s"}`;
-				}
+					? theme.fg("success", theme.bold(`✓ ${summary}`))
+					: theme.fg("error", theme.bold(`✗ ${summary}`));
 				if (options.expanded) {
+					const extras: string[] = [];
+					if (ret.conflicts && ret.conflicts.length > 0) {
+						extras.push(`Conflicts: ${ret.conflicts.join(", ")}`);
+					}
 					if (ret.files_changed.length > 0) {
-						text += "\n" + ret.files_changed.map((f) => `  ${f}`).join("\n");
+						extras.push(...ret.files_changed.map((f) => `  ${f}`));
 					}
 					if (ret.review) {
-						text += `\nReview: ${ret.review.verdict} (${ret.review.findings.length} findings)`;
+						extras.push(`Review: ${ret.review.verdict} (${ret.review.findings.length} findings)`);
 					}
+					if (extras.length > 0) text += "\n" + extras.join("\n");
 				}
 				return new Text(text, 0, 0);
 			},
