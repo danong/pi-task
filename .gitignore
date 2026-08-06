@@ -13,3 +13,5 @@ cache/
 # Editor/OS noise
 *.tsbuildinfo
 .DS_Store
+# Per-project todo list (pi extension)
+.pi/TODO.json
