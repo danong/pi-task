@@ -18,6 +18,7 @@ import {
 	isBlocker,
 	buildFixPrompt,
 	parseDiffStat,
+	classifyOverlapDiffs,
 } from "./orchestrator.ts";
 import type { Finding, ReviewResult } from "./schemas/findings.ts";
 
@@ -296,6 +297,51 @@ function testParseDiffStat(errors: string[]): void {
 	console.log("✓ parseDiffStat: added/removed line counts (hunk headers excluded)");
 }
 
+/** classifyOverlapDiffs: R5 pre-merge overlap classification — comment/
+ *  whitespace-only overlaps take the deterministic union path (R4),
+ *  substantive overlaps are flagged in the merge report before merging. */
+function testClassifyOverlapDiffs(errors: string[]): void {
+	const check = (cond: boolean, msg: string): void => {
+		if (!cond) errors.push(msg);
+	};
+
+	// All changed lines are comments (any language prefix) → union path.
+	const commentDiffs = [
+		"diff --git a/x.ts b/x.ts\n--- a/x.ts\n+++ b/x.ts\n@@ -1 +1 @@\n-// old note\n+// new note\n",
+		"diff --git a/x.ts b/x.ts\n--- a/x.ts\n+++ b/x.ts\n@@ -1 +1 @@\n-/* block */\n+/* other */\n",
+	];
+	check(classifyOverlapDiffs(commentDiffs) === "comment-only",
+		"comment-only lines (// and /*) → comment-only");
+
+	// Language-agnostic prefixes: # -- ; ' <!-- and whitespace-only lines.
+	const prefixDiffs = [
+		"--- a/a.py\n+++ b/a.py\n-# old\n+# new\n",
+		"--- a/a.sql\n+++ b/a.sql\n--- old\n+-- new\n",
+		"--- a/a.ini\n+++ b/a.ini\n-; old\n+; new\n",
+	];
+	check(classifyOverlapDiffs(prefixDiffs) === "comment-only", "# -- ; comment prefixes → comment-only");
+	const wsDiffs = ["--- a/a.ts\n+++ b/a.ts\n-   \n+    \n"];
+	check(classifyOverlapDiffs(wsDiffs) === "comment-only", "whitespace-only lines → comment-only");
+	check(classifyOverlapDiffs([]) === "comment-only", "empty diffs → comment-only (vacuous)");
+
+	// Headers and context lines are never treated as changed lines.
+	const headerOnly = ["diff --git a/x b/x\nindex 000..111\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n context\n"];
+	check(classifyOverlapDiffs(headerOnly) === "comment-only", "headers/context only → comment-only");
+
+	// ANY worker changing a code line (or a binary file) → substantive.
+	const codeDiffs = [
+		"--- a/x.ts\n+++ b/x.ts\n-// note\n+// note\n",
+		"--- a/x.ts\n+++ b/x.ts\n-const a = 1;\n+const a = 2;\n",
+	];
+	check(classifyOverlapDiffs(codeDiffs) === "substantive", "one worker's code line → substantive");
+	check(classifyOverlapDiffs(["--- a/x\n+++ b/x\n+code()\n"]) === "substantive", "added code line → substantive");
+	check(classifyOverlapDiffs(["Binary files differ\n"]) === "substantive", "binary diff → substantive");
+	// A comment-only worker plus a code-changing worker → substantive.
+	check(classifyOverlapDiffs([commentDiffs[0], codeDiffs[1]]) === "substantive", "mixed comment + code → substantive");
+
+	console.log("✓ classifyOverlapDiffs: comment/whitespace → union path, code/binary → substantive (R5)");
+}
+
 export async function runTests(): Promise<void> {
 	const errors: string[] = [];
 	console.log("── test-orchestrator: spec parse + splitSpec + aggregateSubSpecs + runVerification + fix loop ──");
@@ -305,6 +351,7 @@ export async function runTests(): Promise<void> {
 	await testRunVerification(errors);
 	testFixLoop(errors);
 	testParseDiffStat(errors);
+	testClassifyOverlapDiffs(errors);
 
 	if (errors.length > 0) {
 		throw new Error("test-orchestrator failed:\n  ✗ " + errors.join("\n  ✗ "));

@@ -538,24 +538,72 @@ workspace's working-copy commit id is resolved from `jj workspace list`
 (columns: name, change id, commit id). `jj squash --into <commit>` rewrites
 the target in place: same change id, new commit id. The merge base is
 therefore tracked by its **change id** and re-resolved to a commit id before
-EVERY squash — squashing into a stale commit id silently diverges (both
-workspaces merge into the old snapshot; no conflict). A divergent change
-(two or more visible commits sharing a change id — the op-log-fork
-signature) makes `jj log -r <change>` fail with "Change ID ... is
+the single atomic squash — squashing into a stale commit id silently
+diverges (both workspaces merge into the old snapshot; no conflict). A
+divergent change (two or more visible commits sharing a change id — the
+op-log-fork signature) makes `jj log -r <change>` fail with "Change ID ... is
 divergent"; resolution never picks a stale or arbitrary revision, it fails
 loudly. `JJ_EDITOR=true` is forced in the child env because jj opens the
 editor for squash even with `--from/--into` when descriptions differ. jj
 0.43 has no `jj workspace remove` — cleanup is `jj workspace forget` plus
 deleting the directory.
 
-Every squash is followed by a **provable-integration check**: the
-workspace's @ must sit on the CURRENT base with zero remaining diff (the
-whole `base..ws-@` range was consumed). After the last squash an
-`assertMerged` gate re-checks every workspace's @ AND the main working copy
-against the current base before verification runs — a merge that targeted a
-stale/pre-rewrite base leaves the workers' changes outside the visible
-base, and the run fails loudly instead of verifying a working copy without
-the integrated work.
+**Atomic combine (R1).** All worker commits land in the task base in ONE
+jj operation: a single `jj squash --from '<base>..<ws-1-@>|<base>..<ws-2-@>|…'
+--into <base>` (revset union is `|` — `+` is not a binary operator in jj
+0.43 revsets). There is no incremental per-workspace squash into a moving
+base, so the observed failure class — a mid-loop squash failure leaving a
+partial merge with dangling sibling commits — cannot occur. After the
+squash, a provable-integration check verifies every workspace @ sits on
+the rewritten base with zero remaining diff (the whole range was
+consumed). Conflicts do not fail the squash — they land in the base commit
+(jj 3-way merge is rung 1 of the R4 conflict ladder) — detected via `jj
+resolve --list -r <base>` (exit 0 + "<path> N-sided conflict" lines; exit 2
++ "No conflicts found" when clean).
+
+**Deterministic union ladder (R4).** Each remaining conflicted file is
+resolved with the jj-native "union" merge tool — configured at runtime via
+`--config` (`merge-tools.union.program` + `merge-args` with the
+$base/$left/$right/$output placeholders; jj 0.43's merge-tools contract,
+verified) — backed by `git merge-file --union` (both sides' hunks kept,
+deterministic, no markers; a sh wrapper redirects `-p` stdout into
+$output, and `&& test -s "$output"` keeps the binary/error case conflicted
+instead of falsely "resolving" to empty content). ONE FILE PER INVOCATION:
+`jj resolve --tool <tool> <p1> <p2>` aborts the whole command on the first
+tool failure (a binary file makes git merge-file exit 255), which would
+strand every later path's conflict — per-file, a failed file stays
+conflicted (escalation) while the rest still resolve. Each successful
+resolve rewrites the base commit, so its commit id is re-resolved before
+every file. If no conflict markers remain → accepted and recorded as
+resolved:"union" in the manifest; only files that still carry markers
+escalate (LLM/manual) with just the conflicted hunks (bounded per file);
+the verification gate always validates the final tree.
+
+**Post-merge consistency gate (R3).** `assertMerged` runs BEFORE workspace
+cleanup and BEFORE verification: every workspace @ must be a DESCENDANT of
+the merged result (its commits reachable from it — `jj log -r
+'<ws-@>..<base>'` empty, not merely diff-equal on some other chain) with
+zero remaining diff, the main working copy must sit directly on the merged
+base, and the merged tree must be non-empty and hold the union of the
+workers' added/modified files (computed pre-merge). Fail → the run fails
+loudly (never a false success) with a merge-failure artifact.
+
+**Overlap classification (R5).** Before merging, each worker's
+changed-file set is computed (`jj diff --from <base> --to <ws-@>
+--summary`); files changed by ≥2 workers are classified from their `jj diff
+--git` output: comment/whitespace-only overlaps (every changed line
+matches a language-agnostic comment prefix or is whitespace) → the
+deterministic union path (R4); substantive overlaps (any code line or
+binary file) → flagged in the merge report before merging.
+
+**Merge-failure artifact (R2).** On any merge-path failure the worker
+workspaces are NEVER forgotten: a `.failure.json` (the metrics.ts
+writeFailureArtifact pattern) records the workspace names, their
+working-copy commit ids (dangling when the merge did not land), the
+dangling commit ids, and the conflicted files (+ bounded hunks), and the
+workspaces are left in place so recovery is scripted from the artifact
+rather than LLM-discovered (`jj workspace list` names survive; each
+dangling id can be squashed into the base manually).
 
 Orchestrator read-only jj commands (`jj log -r @-`, review diffs, repo-map
 `jj file list`) pass `--ignore-working-copy`: jj snapshots the working copy
@@ -572,29 +620,37 @@ jj workspace add /tmp/pi-task-run/ws-1 --name pi-task-1
 jj workspace add /tmp/pi-task-run/ws-2 --name pi-task-2
 
 # Workers run in their respective workspace cwds
-# After all yield, merge each workspace into the base (sequential — each
-# squash rewrites the base in place, so re-resolve its commit id first):
+# After all yield, ONE atomic combine — every workspace's commits land in
+# the base in a single squash (revset union |):
 jj log -r '@-' -T 'change_id' --ignore-working-copy   # task base CHANGE id (stable)
-jj squash --from '<base>..<ws-1-@>' --into <base-commit-id>
-jj squash --from '<base>..<ws-2-@>' --into <base-commit-id>
+jj squash --from '(<base>..<ws-1-@>)|(<base>..<ws-2-@>)' --into <base-commit-id>
 
-# Conflicts do not fail the squash; they land in the base commit:
-jj resolve --list -r <base-commit-id>         # "<path> N-sided conflict"
+# Rung 1 conflicts landed in the base (jj 3-way merge); rung 2 resolves
+# each remaining conflicted file deterministically with the union tool:
+jj resolve --list -r <base-commit-id>                 # "<path> N-sided conflict"
+jj resolve --tool union -r <base-commit-id> -- <path> # per file (git merge-file --union)
 
-# Provable-integration gate (before verification, before cleanup): every
-# workspace @ and the main @- must sit on the current base, diff-empty
-jj diff --from <base-commit-id> --to <ws-@> --summary
+# R3 consistency gate (before verification, before cleanup): every
+# workspace @ and the main @- sit on the merged base, diff-empty, and the
+# merged tree holds the union of worker file changes:
+jj log -r '<ws-@>..<base-commit-id>' --no-graph        # must be EMPTY (reachability)
+jj diff --from <base-commit-id> --to <ws-@> --summary  # must be empty
+jj file list -r <base-commit-id>                       # non-empty, holds every worker file
 
-# Cleanup: forget the (now-empty) workspace @, then delete the dirs
+# On merge failure the workspaces are PRESERVED (never forgotten) and a
+# .failure.json records names + dangling commit ids + conflicted files.
+# On success, cleanup: forget the (now-empty) workspace @s, delete the dirs
 jj workspace forget pi-task-1
 jj workspace forget pi-task-2
 ```
 
-If merge produces conflicts, the orchestrator returns them in the result
-(`conflicts: string[]`, repo-relative paths) and `success` is `false`. The
-conversational model decides how to resolve (dispatch a fix worker, or
+If the union ladder leaves conflicts (markers still present — typically
+binary files), the orchestrator records them (escalation payload: paths +
+bounded hunks, via the merge-failure artifact) and returns them in the
+result (`conflicts: string[]`, repo-relative paths) with `success` `false`.
+The conversational model decides how to resolve (dispatch a fix worker, or
 handle interactively). Verification runs once, after the merge and after
-the integration gate — the main working copy provably sits on the merged
+the consistency gate — the main working copy provably sits on the merged
 base holding every worker's changes; conflict markers, if any, are visible
 there.
 
@@ -764,8 +820,10 @@ async function executeTask(spec, parallel): Promise<TaskResult> {
   const yields = await Promise.all(workers.map(w => w.waitForYield()));
   metrics.recordPhase("execute", workers);
 
-  // 7. Merge workspaces
-  if (parallel) await mergeWorkspaces(workspaces);
+  // 7. Merge workspaces — ONE atomic combine of every workspace's commits
+  //    into the task base (mergeWorkspacesAtomic, R1), deterministic union
+  //    ladder for conflicts (R4), then the assertMerged consistency gate (R3)
+  if (parallel) await mergeWorkspacesAtomic(workspaces, baseChangeId);
 
   // 8. Verification + review fix loop (bounded)
   let review = null;

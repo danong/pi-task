@@ -7,7 +7,8 @@
  *   execution are exercised only by test-e2e.ts, which is NOT imported
  *   here). test.ts itself imports only the fast test modules listed below.
  * - Hermetic + deterministic: pure-function unit tests plus real jj /
- *   real bash on temp dirs. No network. Full suite well under 15s.
+ *   real bash on temp dirs. No network. The run's own timing line is
+ *   authoritative (the real-jj workspace suite dominates).
  * - Each module exports `runTests(): Promise<void>` and can also be run
  *   standalone (`npx tsx extensions/task/test-<name>.ts`).
  *

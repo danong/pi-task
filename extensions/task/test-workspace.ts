@@ -12,6 +12,9 @@
  *    commit id; the workers' pre-squash commits are abandoned.
  * 5. Clean-working-copy guard (R1): clean passes; untracked/modified
  *    files throw with a precise message + status excerpt.
+ * 14. Merge-failure artifact (R2): a simulated merge failure writes the
+ *    .failure.json recording workspace names, dangling commit ids, and
+ *    conflicted files — the workspaces survive for scripted recovery.
  *
  * splitSpec moved to test-orchestrator.ts; the parallel LLM integration
  * moved to test-e2e.ts section 5.
@@ -23,6 +26,7 @@ import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
 import { aiIdentityToml } from "./config.ts";
+import { writeMergeFailureArtifact } from "./orchestrator.ts";
 import {
 	assertCleanWorkingCopy,
 	assertMerged,
@@ -38,23 +42,34 @@ import {
 	resolveCommitId,
 	resolveConflictsWithUnion,
 	taskBaseChangeId,
+	workspaceCommitId,
 } from "./workspace.ts";
 
 // ─── Helpers ─────────────────────────────────────────────────────────
+
+/** Child env for jj: deterministic and hermetic. JJ_EDITOR=true keeps
+ *  jj out of the interactive editor; the harness's JJ_CONFIG (the agent
+ *  worker identity) is stripped — the tests simulate a USER repo whose
+ *  identity comes from the repo config (initRepo), never from the host. */
+function jjEnv(): Record<string, string> {
+	const env: Record<string, string> = { ...process.env, JJ_EDITOR: "true" };
+	delete env.JJ_CONFIG;
+	return env;
+}
 
 function jj(args: string[], cwd: string): string {
 	return execFileSync("jj", args, {
 		cwd,
 		encoding: "utf8",
 		stdio: ["pipe", "pipe", "pipe"],
-		env: { ...process.env, JJ_EDITOR: "true" },
+		env: jjEnv(),
 	});
 }
 
 /** Async jj — the child process runs in the OS concurrently with others. */
 function jjAsync(args: string[], cwd: string): Promise<string> {
 	return new Promise((resolve, reject) => {
-		execFile("jj", args, { cwd, env: { ...process.env, JJ_EDITOR: "true" } }, (error, stdout) => {
+		execFile("jj", args, { cwd, env: jjEnv() }, (error, stdout) => {
 			if (error) reject(error);
 			else resolve(stdout.toString());
 		});
@@ -62,7 +77,22 @@ function jjAsync(args: string[], cwd: string): Promise<string> {
 }
 
 function initRepo(dir: string): void {
-	jj(["git", "init", "--colocate"], dir);
+	// Deterministic repo identity — the suite must not depend on the host's
+	// jj config (or its absence). jj commit PRESERVES the working-copy
+	// commit's author, so the initial WC is created with the Test User
+	// identity via --config (the init commit inherits it); the repo config
+	// keeps every later commit (restore `jj new` steps) on the same
+	// identity. The harness's JJ_CONFIG is stripped by jjEnv().
+	jj(
+		[
+			"--config", 'user.name="Test User"',
+			"--config", 'user.email="user@test.dev"',
+			"git", "init", "--colocate",
+		],
+		dir,
+	);
+	jj(["config", "set", "--repo", "user.name", "Test User"], dir);
+	jj(["config", "set", "--repo", "user.email", "user@test.dev"], dir);
 	writeFileSync(join(dir, "README.md"), "# Test repo\n", "utf-8");
 	jj(["commit", "-m", "init"], dir);
 }
@@ -330,11 +360,13 @@ async function testSingleWorkerIdentity(errors: string[]): Promise<void> {
 			env: { ...process.env, JJ_EDITOR: "true", JJ_CONFIG: identityFile },
 		});
 
-		// 3. The restore step from executeSingle's finally.
-		execFileSync("jj", ["new"], { cwd: testDir, encoding: "utf8", env: { ...process.env, JJ_EDITOR: "true" } });
+		// 3. The restore step from executeSingle's finally (user identity —
+		// no JJ_CONFIG, the repo config's Test User applies).
+		const restoreEnv = jjEnv();
+		execFileSync("jj", ["new"], { cwd: testDir, encoding: "utf8", env: restoreEnv });
 		const leftover = jj(["log", "-r", "@-", "-T", "if(empty, 'EMPTY', 'X')", "--no-graph"], testDir).trim();
 		check(leftover === "EMPTY", `the worker's leftover WC is empty and abandoned, got: ${leftover}`);
-		execFileSync("jj", ["abandon", "@-"], { cwd: testDir, encoding: "utf8", env: { ...process.env, JJ_EDITOR: "true" } });
+		execFileSync("jj", ["abandon", "@-"], { cwd: testDir, encoding: "utf8", env: restoreEnv });
 
 		// 4. Assertions: work is AI-authored, the WC is back to the user's
 		// identity, and the history is clean (work directly on the user's
@@ -1043,11 +1075,123 @@ function testParseSummaryChanges(errors: string[]): void {
 	console.log("✓ parseSummaryChanges: kinds + rename-to-new-path (R3/R5 input)");
 }
 
+// ─── Section 14: merge-failure artifact (R2) ─────────────────────────
+
+/**
+ * R2: on merge failure the engine NEVER forgets the worker workspaces —
+ * the merge-failure artifact (.failure.json, the metrics.ts write path)
+ * records workspace names, their working-copy commit ids (dangling when
+ * the merge did not land), the dangling commit ids, and the conflicted
+ * files, so recovery is scripted rather than LLM-discovered. Simulated
+ * failure: real workspaces with real commits whose merge never ran —
+ * their @s ARE the dangling ids — plus conflicted files; the written
+ * artifact must round-trip the full R2 record.
+ */
+async function testMergeFailureArtifact(errors: string[]): Promise<void> {
+	const check = (cond: boolean, msg: string): void => {
+		if (!cond) errors.push(msg);
+	};
+
+	const testDir = mkdtempSync(join(tmpdir(), "pi-task-ws-failart-"));
+	const metricsDir = mkdtempSync(join(tmpdir(), "pi-task-ws-failart-metrics-"));
+	try {
+		initRepo(testDir);
+		const baseChange = await taskBaseChangeId(testDir);
+
+		const w1 = await createWorkspace(testDir, "fail-1");
+		const w2 = await createWorkspace(testDir, "fail-2");
+		writeFileSync(join(w1, "a.txt"), "one\n", "utf-8");
+		jj(["commit", "-m", "fail w1"], w1);
+		writeFileSync(join(w2, "b.txt"), "two\n", "utf-8");
+		jj(["commit", "-m", "fail w2"], w2);
+		const at1 = await workspaceCommitId(testDir, "fail-1");
+		const at2 = await workspaceCommitId(testDir, "fail-2");
+		// Simulated failure: the atomic combine never ran — the @s are
+		// dangling (nothing landed in the base), both files conflicted.
+		writeMergeFailureArtifact({
+			cause: "simulated merge failure",
+			workspaces: [
+				{ name: "fail-1", commit_id: at1 },
+				{ name: "fail-2", commit_id: at2 },
+			],
+			danglingCommitIds: [at1, at2],
+			conflictedFiles: ["a.txt", "b.txt"],
+			conflictHunks: { "a.txt": "<<<<<<< one\n" },
+			metricsDir,
+			project: "proj",
+			specMarkdown: "## Goal\nX\n## Requirements\n- R1: x\n## Verification\n- true\n",
+			tier: "economy",
+		});
+
+		// The artifact exists and round-trips the full R2 record.
+		const dir = join(metricsDir, "proj");
+		const files = readdirSync(dir).filter((f) => f.endsWith(".failure.json"));
+		check(files.length === 1, `exactly one failure artifact expected, got ${JSON.stringify(files)}`);
+		const parsed = JSON.parse(readFileSync(join(dir, files[0]), "utf-8")) as {
+			kind: string;
+			cause: string;
+			merge?: {
+				workspaces: Array<{ name: string; commit_id: string }>;
+				dangling_commit_ids: string[];
+				conflicted_files: string[];
+				conflict_hunks?: Record<string, string>;
+			};
+		};
+		check(parsed.kind === "parallel", `artifact kind should be parallel, got ${parsed.kind}`);
+		check(parsed.cause.includes("simulated merge failure"), `cause recorded, got ${parsed.cause}`);
+		check(parsed.merge !== undefined, "merge record present (R2)");
+		check(
+			parsed.merge!.workspaces.length === 2 &&
+				parsed.merge!.workspaces[0].name === "fail-1" &&
+				parsed.merge!.workspaces[1].name === "fail-2",
+			`workspace names recorded, got ${JSON.stringify(parsed.merge!.workspaces)}`,
+		);
+		check(
+			parsed.merge!.workspaces[0].commit_id === at1 && parsed.merge!.workspaces[1].commit_id === at2,
+			"workspace commit ids recorded (the dangling ids)",
+		);
+		check(
+			parsed.merge!.dangling_commit_ids.length === 2 &&
+				parsed.merge!.dangling_commit_ids.includes(at1) &&
+				parsed.merge!.dangling_commit_ids.includes(at2),
+			`dangling commit ids recorded, got ${JSON.stringify(parsed.merge!.dangling_commit_ids)}`,
+		);
+		check(
+			parsed.merge!.conflicted_files.includes("a.txt") && parsed.merge!.conflicted_files.includes("b.txt"),
+			`conflicted files recorded, got ${JSON.stringify(parsed.merge!.conflicted_files)}`,
+		);
+		check(parsed.merge!.conflict_hunks?.["a.txt"] === "<<<<<<< one\n", "conflict hunks recorded");
+
+		// No metricsDir → no artifact, no throw (the best-effort contract).
+		writeMergeFailureArtifact({
+			cause: "x",
+			workspaces: [],
+			danglingCommitIds: [],
+			conflictedFiles: [],
+			project: "proj",
+			specMarkdown: "s",
+		});
+
+		// The failure did NOT forget the workspaces: they still exist and
+		// their @s still hold the unmerged commits (scripted recovery).
+		const list = jj(["workspace", "list"], testDir);
+		check(list.includes("fail-1:") && list.includes("fail-2:"), "workspaces survive the simulated failure");
+		check((await workspaceCommitId(testDir, "fail-1")) === at1, "fail-1 @ still holds its commit");
+
+		await cleanupWorkspace(testDir, "fail-1", w1);
+		await cleanupWorkspace(testDir, "fail-2", w2);
+	} finally {
+		rmSync(testDir, { recursive: true, force: true });
+		rmSync(metricsDir, { recursive: true, force: true });
+	}
+	console.log("✓ merge-failure artifact: workspaces + dangling ids + conflicted files recorded (R2)");
+}
+
 // ─── Runner ──────────────────────────────────────────────────────────
 
 export async function runTests(): Promise<void> {
 	const errors: string[] = [];
-	console.log("── test-workspace: jj mechanics + conflict + final-state conflicts + commit ids + guard + merge integrity + fork-proof (real jj) ──");
+	console.log("── test-workspace: jj mechanics + conflict + final-state conflicts + commit ids + guard + merge integrity + fork-proof + atomic combine + consistency gate + union ladder + failure artifact (real jj) ──");
 	await testMechanics(errors);
 	await testConflict(errors);
 	await testFinalStateConflicts(errors);
@@ -1064,6 +1208,7 @@ export async function runTests(): Promise<void> {
 	await testAtomicCombine(errors);
 	await testConsistencyGateDangling(errors);
 	await testUnionLadder(errors);
+	await testMergeFailureArtifact(errors);
 	testParseSummaryChanges(errors);
 
 	if (errors.length > 0) {
