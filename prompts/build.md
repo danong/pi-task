@@ -19,3 +19,7 @@ The spec:
   quotes, no prose). Each line must exit 0 when the work is done.
 
 Then call the task tool with the spec (and sub_specs when parallelizing).
+Sub_specs entries may be markdown spec strings or objects
+{goal, requirements: string[], verification: string[], context?} — the tool
+accepts both and renders objects to the same markdown. When sub_specs is
+given, the top-level spec may be omitted.

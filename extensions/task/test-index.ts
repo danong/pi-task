@@ -39,12 +39,15 @@ import {
 	formatDuration,
 	isLockedBudget,
 	normalizeBudgetMode,
+	normalizeSubSpecs,
 	readBudgetOverride,
 	readSessionTokensBefore,
 	renderInPlace,
 	renderReviewReport,
+	renderSubSpecObject,
 	resolveBudgetMode,
 	resolveBudgetTier,
+	resolveSubSpecs,
 	summarizeResult,
 	taskResultToToolReturn,
 	taskToolSchema,
@@ -58,6 +61,7 @@ import {
 // cap test derives the bound from the rendered output so a change to the
 // constant (in index.ts) can't silently pass a stale test.
 import type { Finding, ReviewResult } from "./schemas/findings.ts";
+import { parseSpec } from "./schemas/spec.ts";
 
 /** Extract the property names from a TypeBox schema's JSON form. */
 function schemaProperties(schema: ReturnType<typeof taskToolSchema>): string[] {
@@ -242,6 +246,71 @@ function testSubSpecsPrecedence(errors: string[]): void {
 	check(deriveParallel([], 5) === 5, "empty sub_specs falls back to parallel");
 
 	console.log("✓ sub_specs precedence: sub_specs.length wins; empty/spec fall back");
+}
+
+function testSubSpecNormalization(errors: string[]): void {
+	const check = (cond: boolean, msg: string): void => {
+		if (!cond) errors.push(msg);
+	};
+
+	// Schema: spec is optional (not in required), and sub_specs accepts
+	// BOTH markdown strings and {goal, requirements, verification, context?}
+	// objects (serialized as items.anyOf — verified against typebox 1.3.7's
+	// actual JSON form, no Value.Check in this version).
+	const json = JSON.parse(JSON.stringify(taskToolSchema(false))) as { required?: string[] };
+	check(!(json.required ?? []).includes("spec"), "spec is NOT required (optional when sub_specs is given)");
+	check(!(json.required ?? []).includes("sub_specs"), "sub_specs is optional");
+	const subSchema = propertyJson(taskToolSchema(false), "sub_specs") as {
+		items?: { anyOf?: Array<{ type?: string; properties?: Record<string, unknown> }> };
+	};
+	const anyOf = subSchema.items?.anyOf;
+	check(Array.isArray(anyOf) && anyOf.length === 2 && anyOf[0].type === "string", "sub_specs accepts markdown strings");
+	check(
+		anyOf?.[1]?.type === "object" &&
+			["goal", "requirements", "verification", "context"].every((k) => k in (anyOf![1].properties ?? {})),
+		"sub_specs accepts {goal, requirements, verification, context?} objects",
+	);
+
+	// Guard: neither spec nor sub_specs → a precise error naming both options.
+	let guardErr = "";
+	try {
+		resolveSubSpecs({});
+	} catch (e) {
+		guardErr = (e as Error).message;
+	}
+	check(guardErr.includes("spec") && guardErr.includes("sub_specs"), `guard message names both options, got ${guardErr}`);
+
+	// Normalization: strings pass through; objects render to the worker contract.
+	const md = "## Goal\nx\n## Requirements\n- R1: y\n## Verification\ntrue";
+	const normalized = normalizeSubSpecs([
+		md,
+		{ goal: "g2", requirements: ["a", "b"], verification: ["test -f x", "npm test"], context: "see docs/foo" },
+	]);
+	check(normalized.length === 2 && normalized[0] === md, "string entry passes through unchanged");
+	const rendered = parseSpec(normalized[1]);
+	check(rendered.goal === "g2", `object goal renders, got ${rendered.goal}`);
+	check(JSON.stringify(rendered.requirements) === JSON.stringify(["R1: a", "R2: b"]), "object requirements render as R1/R2");
+	check(JSON.stringify(rendered.verification) === JSON.stringify(["test -f x", "npm test"]), "object verification renders verbatim");
+	check(normalized[1].includes("## Context") && normalized[1].includes("see docs/foo"), "context renders as a ## Context section");
+
+	// Empty requirements/verification in an object → a precise error.
+	let objErr = "";
+	try {
+		renderSubSpecObject({ goal: "g", requirements: [], verification: ["true"] });
+	} catch (e) {
+		objErr = (e as Error).message;
+	}
+	check(objErr.includes("requirements") && objErr.includes("verification"), `object guard message, got ${objErr}`);
+
+	// resolveSubSpecs returns normalized strings for the orchestrator.
+	const resolved = resolveSubSpecs({ sub_specs: [{ goal: "g3", requirements: ["r"], verification: ["true"] }] });
+	check(resolved.hasSubSpecs && resolved.subSpecs.length === 1 && resolved.spec === "", "resolveSubSpecs normalizes object entries");
+	check(
+		resolveSubSpecs({ spec: "  s  " }).spec === "  s  " && !resolveSubSpecs({ spec: "  s  " }).hasSubSpecs,
+		"spec path passes through",
+	);
+
+	console.log("✓ sub_specs normalization: objects ≡ markdown strings; spec optional with sub_specs; guards");
 }
 
 function testAutoHeuristicAndCounting(errors: string[]): void {
@@ -931,6 +1000,7 @@ export async function runTests(): Promise<void> {
 	testAutoHeuristicAndCounting(errors);
 	testBudgetOverridePersistence(errors);
 	testSubSpecsPrecedence(errors);
+	testSubSpecNormalization(errors);
 	testResultMapping(errors);
 	testReviewReport(errors);
 	testRenderInPlace(errors);

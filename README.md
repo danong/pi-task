@@ -47,8 +47,11 @@ The `delegation` skill (loaded automatically when relevant) covers when to
 dispatch vs. edit directly and the spec discipline; `/build` scaffolds a spec
 from a work request. Large or parallelizable work decomposes into parallel
 `sub_specs` — each a self-contained spec with its own Goal / Requirements /
-Verification. `/task-stats` summarizes recorded runs (latency, cost, verify
-pass rate) from the agent-dir metrics — all projects, or one with an argument.
+Verification, given as a markdown string or a {goal, requirements,
+verification, context?} object (both accepted; spec may be omitted when
+sub_specs is given). `/task-stats` summarizes recorded runs (latency, cost,
+verify pass rate) from the agent-dir metrics — all projects, or one with an
+argument.
 
 ## Configuration
 

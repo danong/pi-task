@@ -201,6 +201,45 @@ export function countSubSpecsRequirements(subSpecs: string[]): number | null {
 	return counted > 0 ? total : null;
 }
 
+/** Render a structured sub-spec entry to the worker markdown contract. */
+export function renderSubSpecObject(o: SubSpecObject): string {
+	if (o.requirements.length === 0 || o.verification.length === 0) {
+		throw new Error("Invalid sub_specs entry: requirements and verification must each have at least one item.");
+	}
+	const lines = ["## Goal", o.goal.trim(), "", "## Requirements"];
+	o.requirements.forEach((r, i) => lines.push(`- R${i + 1}: ${r.trim()}`));
+	lines.push("", "## Verification");
+	o.verification.forEach((v) => lines.push(v.trim()));
+	if (o.context && o.context.trim()) lines.push("", "## Context", o.context.trim());
+	return lines.join("\n");
+}
+
+/** Normalize sub_specs entries: markdown strings pass through; objects render to markdown. */
+export function normalizeSubSpecs(subSpecs: (string | SubSpecObject)[]): string[] {
+	return subSpecs.map((s) => (typeof s === "string" ? s : renderSubSpecObject(s)));
+}
+
+/**
+ * Resolve the tool's spec input: guard (spec or sub_specs required) and
+ * normalize object entries to the markdown contract. Pure — tested
+ * hermetically. Throws a precise error when neither is given.
+ */
+export function resolveSubSpecs(p: {
+	spec?: string;
+	sub_specs?: (string | SubSpecObject)[];
+}): { hasSubSpecs: boolean; spec: string; subSpecs: string[] } {
+	const hasSubSpecs = Array.isArray(p.sub_specs) && p.sub_specs.length > 0;
+	if (!hasSubSpecs && !(p.spec && p.spec.trim())) {
+		throw new Error(
+			"The task tool needs work to do — pass 'spec' (markdown) or 'sub_specs' " +
+				"(one spec per worker: markdown strings or {goal, requirements, verification} objects).",
+		);
+	}
+	return hasSubSpecs
+		? { hasSubSpecs: true, spec: "", subSpecs: normalizeSubSpecs(p.sub_specs!) }
+		: { hasSubSpecs: false, spec: p.spec ?? "", subSpecs: [] };
+}
+
 /**
  * Resolve the effective TIER: the mode from `resolveBudgetMode` (locked
  * session mode > locked param > config default) mapped to a concrete
@@ -224,10 +263,22 @@ export function resolveBudgetTier(
 
 // ─── Task tool schema (budget param gated by the lock) ───────────────
 
+/** Structured sub-spec entry — normalized to the worker markdown contract. */
+export interface SubSpecObject {
+	/** One sentence describing the outcome (## Goal). */
+	goal: string;
+	/** WHATs that must be true when done (## Requirements; rendered as "- R1: ..."). */
+	requirements: string[];
+	/** Plain bash commands, one per line — each exits 0 when the work is done (## Verification). */
+	verification: string[];
+	/** Optional pointers/context for the worker (## Context; ignored by spec parsing). */
+	context?: string;
+}
+
 /** The task tool's runtime params (superset of both schema shapes). */
 export interface TaskToolParams {
 	spec?: string;
-	sub_specs?: string[];
+	sub_specs?: (string | SubSpecObject)[];
 	parallel?: number;
 	budget?: string;
 }
@@ -245,20 +296,43 @@ export function taskToolSchema(
 	tiers: Record<BudgetTier, BudgetTierConfig> = DEFAULT_BUDGET_TIERS,
 ): TSchema {
 	const base = {
-		spec: Type.String({
-			description:
-				"Markdown task spec: ## Goal (one sentence), ## Requirements (numbered list, e.g. '- R1: ...'), " +
-				"and ## Verification — PLAIN bash commands, one per line, no backticks, no quotes, no prose " +
-				"(each line must be a shell command that exits 0 on success). Required unless sub_specs is given.",
-		}),
-		sub_specs: Type.Optional(
-			Type.Array(Type.String(), {
+		spec: Type.Optional(
+			Type.String({
 				description:
-					"Per-worker encapsulated specs — takes precedence over spec + parallel: one isolated worker runs " +
-					"per sub-spec, no splitting. Each must be fully self-contained (its own ## Goal / ## Requirements / " +
-					"## Verification; no cross-references to other partitions). Their verification commands are unioned " +
-					"into the single post-merge gate.",
+					"Markdown task spec: ## Goal (one sentence), ## Requirements (numbered list, e.g. '- R1: ...'), " +
+					"and ## Verification — PLAIN bash commands, one per line, no backticks, no quotes, no prose " +
+					"(each line must be a shell command that exits 0 on success). Optional when sub_specs is given.",
 			}),
+		),
+		sub_specs: Type.Optional(
+			Type.Array(
+				Type.Union([
+					Type.String(),
+					Type.Object({
+						goal: Type.String({ description: "One sentence describing the outcome (## Goal)." }),
+						requirements: Type.Array(Type.String(), {
+							description: "WHATs that must be true when done (## Requirements; rendered as '- R1: ...').",
+						}),
+						verification: Type.Array(Type.String(), {
+							description:
+								"Plain bash commands, one per line, no backticks/quotes/prose — each exits 0 when done (## Verification).",
+						}),
+						context: Type.Optional(
+							Type.String({ description: "Extra pointers for the worker (## Context; optional)." }),
+						),
+					}),
+				]),
+				{
+					description:
+						"Per-worker encapsulated specs — takes precedence over spec + parallel: one isolated worker runs " +
+						"per entry, no splitting. Each is a markdown spec string (its own ## Goal / ## Requirements / " +
+						"## Verification; no cross-references to other partitions) OR an object " +
+						"{goal, requirements: string[], verification: string[], context?} rendered to the same markdown. " +
+						"Their verification commands are unioned into the single post-merge gate. " +
+						'Example: {goal: "Make the build green", requirements: ["Fix the failing test"], ' +
+						'verification: ["test -f out.txt"]}.',
+				},
+			),
 		),
 		parallel: Type.Optional(
 			Type.Integer({
@@ -650,11 +724,11 @@ export default function (pi: ExtensionAPI) {
 
 			async execute(_toolCallId, rawParams, signal, onUpdate, ctx) {
 				const p = rawParams as TaskToolParams;
-				const hasSubSpecs = Array.isArray(p.sub_specs) && p.sub_specs.length > 0;
+				const { hasSubSpecs, spec, subSpecs } = resolveSubSpecs(p);
 				// Auto-heuristic requirement count: sub_specs win, else the spec.
 				const reqCount = hasSubSpecs
-					? countSubSpecsRequirements(p.sub_specs!)
-					: countSpecRequirements(p.spec ?? "");
+					? countSubSpecsRequirements(subSpecs)
+					: countSpecRequirements(spec);
 				// The session budget mode (stored /task-budget override, else the
 				// CLI flag — resolved at session_start, mutated by the command) is
 				// the user's lock. The raw flag value is NOT a valid input here:
@@ -668,7 +742,7 @@ export default function (pi: ExtensionAPI) {
 				);
 				const tierConfig = taskConfig.tiers[tier];
 
-				const parallel = hasSubSpecs ? p.sub_specs!.length : Math.max(1, p.parallel ?? 1);
+				const parallel = hasSubSpecs ? subSpecs.length : Math.max(1, p.parallel ?? 1);
 				// The orchestrator clamps mechanical splits to the requirement count;
 				// mirror it so the view matches the number of workers dispatched.
 				const workerCount =
@@ -718,7 +792,7 @@ export default function (pi: ExtensionAPI) {
 					const result = await executeTask({
 						cwd: ctx.cwd,
 						model: tierConfig.executeModel,
-						...(hasSubSpecs ? { subSpecs: p.sub_specs } : { spec: p.spec ?? "" }),
+						...(hasSubSpecs ? { subSpecs } : { spec }),
 						parallel: hasSubSpecs ? undefined : parallel,
 						prewalkModel: tierConfig.prewalkModel ?? undefined,
 						executeModel: tierConfig.executeModel,
