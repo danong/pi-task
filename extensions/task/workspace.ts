@@ -285,13 +285,17 @@ async function diffSummary(projectDir: string, from: string, to: string): Promis
 /**
  * Parse `jj diff --summary` lines into file changes. Renames print as a
  * single token "R {old => new}" (verified on jj 0.43) — the NEW path is
- * the one whose presence matters for the merged-tree gate. Pure.
+ * the one whose presence matters for the merged-tree gate. The path token
+ * itself may contain spaces ("{old => new}"), so the kind is split off
+ * with a first-token match, never `split(/\s+/)` (which would cut the
+ * rename token at its inner spaces). Pure.
  */
 export function parseSummaryChanges(lines: string[]): WorkspaceFileChange[] {
 	const changes: WorkspaceFileChange[] = [];
 	for (const line of lines) {
-		const [kind, pathToken] = line.trim().split(/\s+/, 2);
-		if (!kind || !pathToken) continue;
+		const match = /^(\S+)\s+(.*)$/.exec(line.trim());
+		if (!match) continue;
+		const [, kind, pathToken] = match;
 		const rename = /^\{([^}]+) => ([^}]+)\}$/.exec(pathToken);
 		changes.push({ kind, file: rename ? rename[2] : pathToken });
 	}
@@ -433,8 +437,17 @@ export async function mergeWorkspacesAtomic(
  * R4 rung 2: resolve the given conflicted files with the jj-native
  * "union" merge tool (git merge-file --union — both sides' hunks are
  * kept, deterministic, no markers). Runs on the base commit directly
- * (`jj resolve --tool union -r <base> <paths>` — resolves in the
+ * (`jj resolve --tool union -r <base> <path>` — resolves in the
  * commit's tree, rewriting it; verified on jj 0.43).
+ *
+ * ONE FILE PER INVOCATION: `jj resolve --tool <tool> <p1> <p2> ...`
+ * ABORTS the whole command on the first tool failure (e.g. a binary
+ * file makes git merge-file exit 255 — "Error: Failed to resolve
+ * conflicts", no op written), which would strand every later path's
+ * conflict unresolved. Resolving per-file keeps each failure isolated:
+ * a failed file stays conflicted (escalation) while the rest still
+ * resolve. Each successful resolve REWRITES the base commit, so the
+ * commit id is re-resolved before every file.
  *
  * Best-effort by design: a tool failure (binary file, tool error) leaves
  * the conflict in place — the authoritative post-check
@@ -446,13 +459,14 @@ export async function resolveConflictsWithUnion(
 	changeId: string,
 	paths: string[],
 ): Promise<void> {
-	if (paths.length === 0) return;
-	const commitId = await resolveCommitId(projectDir, changeId);
-	await execJjConfigured(
-		["resolve", "--tool", UNION_TOOL, "-r", commitId, ...paths],
-		projectDir,
-		unionToolConfigArgs(),
-	);
+	for (const path of paths) {
+		const commitId = await resolveCommitId(projectDir, changeId);
+		await execJjConfigured(
+			["resolve", "--tool", UNION_TOOL, "-r", commitId, "--", path],
+			projectDir,
+			unionToolConfigArgs(),
+		);
+	}
 }
 
 /**
