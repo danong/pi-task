@@ -91,6 +91,24 @@ timeout 900 npx tsx extensions/task/test-e2e.ts  # one real-LLM e2e, manual
 real-LLM e2e (`extensions/task/test-e2e.ts`) stays manual and is intentionally
 not part of `mise run test`.
 
+## Regression benchmarking
+
+`extensions/task/bench-regression.ts` is a standalone canned-task regression
+runner: it runs tiny deterministic specs (defined in `BENCH_SPECS` — see the
+file header) against real pi + real LLM per budget tier (tiers come from
+`task.toml`), then reports latency and cost against shipped per-spec-per-tier
+baselines. Manifests land through the normal metrics write path
+(`<agent-dir>/results/bench-<specId>/`) and are read back via `summarizeRuns`,
+so `/task-stats` sees them too. Dry-run first (prints the plan, spawns nothing):
+
+```sh
+npx tsx extensions/task/bench-regression.ts --dry-run
+npx tsx extensions/task/bench-regression.ts [--tier <name>]
+```
+
+Exit codes: 0 ok · 1 a run failed · 2 regressions vs. baselines (thresholds
+and the baseline table live in `extensions/task/bench-regression.ts`).
+
 ## How it stays location-independent
 
 The engine resolves the pi agent dir via `getAgentDir()` from

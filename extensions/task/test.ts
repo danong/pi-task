@@ -33,6 +33,7 @@ import { runTests as runWorkspaceTests } from "./test-workspace.ts";
 import { runTests as runSandboxTests } from "./test-sandbox.ts";
 import { runTests as runRepoMapTests } from "./test-repo-map.ts";
 import { runTests as runIndexTests } from "./test-index.ts";
+import { runTests as runBenchRegressionTests } from "./test-bench-regression.ts";
 
 const SUITES: Array<{ name: string; run: () => Promise<void> }> = [
 	{ name: "jsonl", run: runJsonlTests },
@@ -51,6 +52,7 @@ const SUITES: Array<{ name: string; run: () => Promise<void> }> = [
 	{ name: "sandbox", run: runSandboxTests },
 	{ name: "repo-map", run: runRepoMapTests },
 	{ name: "index", run: runIndexTests },
+	{ name: "bench-regression", run: runBenchRegressionTests },
 ];
 
 async function main(): Promise<void> {
