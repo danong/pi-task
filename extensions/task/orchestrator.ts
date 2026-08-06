@@ -177,6 +177,25 @@ export function classifyOverlapDiffs(diffsByWorker: string[]): OverlapKind {
 }
 
 /**
+ * Best effort: preserve an aborted single-worker's WIP as a "rescue:"
+ * commit so it survives in history and the next run starts from a clean
+ * working copy. Only commits when the working copy is dirty (a clean
+ * abort leaves nothing to save); swallows errors — never masks the
+ * original failure. Exported for the hermetic test (real jj on a temp
+ * repo).
+ */
+export async function rescueAbortedWorkBestEffort(cwd: string, err: unknown): Promise<void> {
+	try {
+		const status = await execJj(["status"], cwd);
+		if (status.code !== 0 || /has no changes/i.test(status.stdout)) return;
+		const cause = err instanceof Error ? err.message.slice(0, 140) : "unknown cause";
+		await execJj(["commit", "-m", `rescue: aborted task run (${cause})`], cwd);
+	} catch {
+		// Best effort — the original failure propagates regardless.
+	}
+}
+
+/**
  * Best-effort failure artifact: write the run's failure state to
  * <metricsDir>/<project>/<run_id>.failure.json when a worker, review, or
  * parallel run dies without a manifest, so timeouts and aborts are
@@ -1130,9 +1149,26 @@ export async function executeTask(opts: ExecuteTaskOptions): Promise<TaskResult>
 		const failures = settled.filter((r): r is PromiseRejectedResult => r.status === "rejected");
 		if (failures.length > 0) {
 			const message = `Parallel workers failed: ${failures.map((f) => (f.reason as Error).message).join("; ")}`;
-			writeFailureArtifactBestEffort({
-				err: new Error(message),
-				kind: "parallel",
+			// R2 (extended): a worker failure preserves the workspaces TOO — a
+			// wall-abort may have committed real per-requirement work, and
+			// losing it is the aborted-work class the artifact exists for. The
+			// record names the workspaces + their @ commit ids (best-effort
+			// resolution — the workers may have died mid-tool); the finally
+			// block below keeps them alive for scripted recovery.
+			mergeFailed = new Error(message);
+			writeMergeFailureArtifact({
+				cause: message,
+				workspaces: await Promise.all(
+					workspaces.map(async (w) => {
+						try {
+							return { name: w.name, commit_id: await workspaceCommitId(cwd, w.name) };
+						} catch {
+							return { name: w.name, commit_id: "" };
+						}
+					}),
+				),
+				danglingCommitIds: [],
+				conflictedFiles: [],
 				metricsDir,
 				project,
 				specMarkdown,
@@ -1270,10 +1306,10 @@ export async function executeTask(opts: ExecuteTaskOptions): Promise<TaskResult>
 			throw err;
 		}
 	} finally {
-		// R2: on merge failure the worker workspaces are NEVER forgotten —
-		// recovery is scripted from the merge-failure artifact (workspace
-		// names + dangling commit ids). On any other outcome (worker failure,
-		// success, escalation) cleanup runs as before.
+		// R2: on merge failure OR worker failure the worker workspaces are
+		// NEVER forgotten — recovery is scripted from the failure artifact
+		// (workspace names + commit ids). On success (or a model-swap error,
+		// which aborts before any real work) cleanup runs as before.
 		if (mergeFailed) {
 			console.warn(
 				`task: parallel merge failed — worker workspaces PRESERVED for recovery: ` +
@@ -1542,6 +1578,11 @@ async function executeSingle(
 			worker = await session.result;
 		} catch (err) {
 			if (swapError) throw swapError;
+			// Keep the aborted worker's WIP: rescue-commit a dirty working
+			// copy ("rescue:" prefix) so the work survives in history and the
+			// next run starts from a clean copy. Best effort — never masks
+			// the original failure.
+			await rescueAbortedWorkBestEffort(cwd, err);
 			writeFailureArtifactBestEffort({
 				err,
 				kind: "worker",

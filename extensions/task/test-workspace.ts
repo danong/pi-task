@@ -26,7 +26,7 @@ import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
 import { aiIdentityToml } from "./config.ts";
-import { writeMergeFailureArtifact } from "./orchestrator.ts";
+import { rescueAbortedWorkBestEffort, writeMergeFailureArtifact } from "./orchestrator.ts";
 import {
 	assertCleanWorkingCopy,
 	assertMerged,
@@ -1075,6 +1075,35 @@ function testParseSummaryChanges(errors: string[]): void {
 	console.log("✓ parseSummaryChanges: kinds + rename-to-new-path (R3/R5 input)");
 }
 
+// ─── Rescue-commit for an aborted single-worker's WIP ────────────────
+
+async function testRescueAbortedWork(errors: string[]): Promise<void> {
+	const check = (cond: boolean, msg: string): void => {
+		if (!cond) errors.push(msg);
+	};
+	const testDir = mkdtempSync(join(tmpdir(), "pi-task-ws-rescue-"));
+	try {
+		initRepo(testDir);
+		// Dirty working copy (untracked WIP) → rescue commit preserves it.
+		writeFileSync(join(testDir, "wip.txt"), "half-done\n", "utf-8");
+		await rescueAbortedWorkBestEffort(testDir, new Error("wall-clock budget expired"));
+		const msg = jj(["log", "-r", "@-", "--no-graph", "-T", "description.first_line()"], testDir).trim();
+		check(msg.startsWith("rescue: aborted task run"), `rescue commit named, got: ${msg}`);
+		check(existsSync(join(testDir, "wip.txt")), "rescued file survives in the working copy");
+		check(jj(["file", "list"], testDir).includes("wip.txt"), "rescued file tracked in the rescue commit");
+
+		// Clean working copy → NO rescue commit created.
+		jj(["new"], testDir);
+		const before = jj(["log", "-r", "all()", "-T", "description.first_line()"], testDir).trim().length;
+		await rescueAbortedWorkBestEffort(testDir, new Error("worker error"));
+		const after = jj(["log", "-r", "all()", "-T", "description.first_line()"], testDir).trim().length;
+		check(before === after, "clean working copy → no rescue commit");
+	} finally {
+		rmSync(testDir, { recursive: true, force: true });
+	}
+	console.log("✓ rescue-commit: aborted single-worker WIP preserved (dirty), skipped when clean");
+}
+
 // ─── Section 14: merge-failure artifact (R2) ─────────────────────────
 
 /**
@@ -1210,6 +1239,7 @@ export async function runTests(): Promise<void> {
 	await testUnionLadder(errors);
 	await testMergeFailureArtifact(errors);
 	testParseSummaryChanges(errors);
+	await testRescueAbortedWork(errors);
 
 	if (errors.length > 0) {
 		throw new Error("test-workspace failed:\n  ✗ " + errors.join("\n  ✗ "));

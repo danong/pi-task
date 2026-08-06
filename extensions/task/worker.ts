@@ -304,6 +304,7 @@ and call yield() when complete.
 Use checklist() to track your progress through requirements.
 Make atomic jj commits as you complete each requirement.
 Run verification commands after your changes.
+Write scratch/debug probes under /tmp, never in the repo — check jj file list before yielding so no debug files are tracked.
 
 Your first edit should be your most confident change.`;
 

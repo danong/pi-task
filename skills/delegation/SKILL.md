@@ -45,6 +45,8 @@ Your job before dispatching is orientation, not investigation:
 - Parallel sub_specs must have DISJOINT file scopes: state which files each
   worker owns in its spec, and instruct workers not to edit files outside
   their scope (overlapping edits are the main source of merge conflicts).
+- Verification can assert hygiene: add a command that fails when scratch/debug
+  files leaked into the repo (e.g. `! ls dbg-* 2>/dev/null | grep .`).
 - Use `/build` to scaffold a spec from a work request.
 
 ## Recovering a failed parallel merge

@@ -69,13 +69,14 @@ wall_timeout_ms = 2700000
 
 [budget.economy]
 # Fast model throughout. prewalk_model == execute_model, so the prewalk
-# machinery auto-skips (zero overhead). Cheaper tiers get a shorter wall
-# (25 min) so a stuck run burns less budget.
+# machinery auto-skips (zero overhead). The wall matches max/full (45
+# min): a big build under fast models needs the headroom — a 25-min wall
+# aborted real suites mid-run (the "merged unverified work" class).
 prewalk_model = "opencode-go/deepseek-v4-flash"
 execute_model = "opencode-go/deepseek-v4-flash"
 review_model = "opencode-go/deepseek-v4-flash"
 review = false
-wall_timeout_ms = 1500000
+wall_timeout_ms = 2700000
 
 [budget.free]
 # Fastest model, no review. prewalk_model == execute_model (no prewalk).
