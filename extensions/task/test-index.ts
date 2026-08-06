@@ -9,7 +9,9 @@
  * helper (todo #68), and the dispatch-plan + progress render (buildRunPlan /
  * applyProgressEvent / buildProgressText) — including the live phase/total
  * durations, completed-phase checkmarks, and the review-phase freeze (R1-R3)
- * — plus the completion-summary metrics (duration + tokens/cost, R4).
+ * — plus the completion-summary metrics (duration + tokens/cost, R4) and the
+ * one-line task completion summary (wall-clock latency · cost · verify
+ * status · tier — R1/R4).
  *
  * The flag→schema-locking TIMING (CLI values only readable at
  * session_start, not at factory time) was verified empirically with a real
@@ -28,6 +30,7 @@ import {
 	applyProgressEvent,
 	buildProgressText,
 	buildRunPlan,
+	completionSummaryLine,
 	countSpecRequirements,
 	countSubSpecsRequirements,
 	createProgressState,
@@ -386,6 +389,7 @@ function testResultMapping(errors: string[]): void {
 	check(ret.success === true && ret.tests === "passing", "mapping carries success/tests");
 	check(ret.commits.length === 1 && ret.commits[0] === "abc123", "mapping carries commits");
 	check(ret.files_changed.includes("hello.txt"), "mapping carries files_changed");
+	check(ret.duration_ms === 65000, "mapping carries the run duration (the completion summary's latency fallback)");
 	check(ret.review === null, "review is null when absent");
 	check(ret.metrics === null, "metrics is null when absent");
 	check(!("conflicts" in ret), "conflicts omitted when absent");
@@ -749,10 +753,12 @@ function testSummaryMetrics(errors: string[]): void {
 		totals: { cost_usd: 0.0075, duration_ms: 65000, read_duplication_tokens: 0, session_files: [] },
 	};
 	const single = summarizeResult(fakeResult({ manifest, durationMs: 1 }));
-	check(single.includes("Took 1m05s."), `single manifest: duration from totals.duration_ms, got: ${single}`);
+	check(single.includes("task done in 1m05s · $0.0075 · 1/1 verified (full)"),
+		`single manifest: one-line summary (duration from totals.duration_ms, cost/verify/tier from the manifest), got: ${single.split("\n")[0]}`);
 	check(single.includes("Tokens: 1000 in / 500 out."), `single manifest: tokens sum phases, got: ${single}`);
-	check(single.includes("Cost: $0.0075."), `single manifest: cost from totals.cost_usd, got: ${single}`);
-	check(!single.includes("Took 1s."), "manifest duration beats result.durationMs");
+	check(single.includes("$0.0075"), `single manifest: cost in the summary line, got: ${single}`);
+	check(!single.includes("Took ") && !single.includes("Cost:"), "single manifest: duration/cost not duplicated (R4)");
+	check(!single.includes("task done in 1s"), "manifest latency beats result.durationMs");
 	check(single.includes("hello.txt"), "existing summary lines stay intact");
 
 	// Parallel fixture WITHOUT a manifest: tokens/cost aggregate the LAST
@@ -766,14 +772,14 @@ function testSummaryMetrics(errors: string[]): void {
 		],
 	});
 	const parSummary = summarizeResult(par);
-	check(parSummary.includes("Took 45s."), `parallel no-manifest: duration from durationMs, got: ${parSummary}`);
+	check(parSummary.includes("task done in 45s"), `parallel no-manifest: duration from durationMs, got: ${parSummary}`);
 	check(parSummary.includes("Tokens: 1000 in / 500 out."), `parallel no-manifest: last snapshots aggregated, got: ${parSummary}`);
 	check(parSummary.includes("Cost: $0.003."), `parallel no-manifest: usage cost summed, got: ${parSummary}`);
 
 	// No-manifest single-worker fixture (no usage snapshots): degrades to
 	// duration-only.
 	const bare = summarizeResult(fakeResult());
-	check(bare.includes("Took 1m05s."), `no-manifest single: duration still shown, got: ${bare}`);
+	check(bare.includes("task done in 1m05s"), `no-manifest single: duration still shown, got: ${bare}`);
 	check(!bare.includes("Tokens:"), `no-manifest single: no tokens, got: ${bare}`);
 	check(!bare.includes("Cost:"), `no-manifest single: no cost, got: ${bare}`);
 
@@ -805,7 +811,116 @@ function testSummaryMetrics(errors: string[]): void {
 		`failure message carries the last progress, got: ${withProgress}`);
 	check(failureMessageWithProgress("boom", "") === "boom", "empty progress leaves the message bare");
 
-	console.log("✓ summarizeResult/deriveRunMetrics: duration + tokens/cost, manifest preferred, usage fallback, duration-only degradation; failureMessageWithProgress");
+	console.log("✓ summarizeResult/deriveRunMetrics: one-line summary + tokens, manifest preferred, usage fallback, duration-only degradation; failureMessageWithProgress");
+}
+
+function testCompletionSummary(errors: string[]): void {
+	const check = (cond: boolean, msg: string): void => {
+		if (!cond) errors.push(msg);
+	};
+
+	// Minimal RunManifest fixture; mutate per case. The shape is shared by
+	// single and parallel runs (parallel produces ONE aggregate manifest),
+	// so the one-liner covers both paths (R2).
+	const mk = (overrides: Partial<RunManifest> = {}): RunManifest => ({
+		run_id: "run-1",
+		config: {
+			budget: "economy", prewalk_model: "prov/m", execute_model: "prov/m",
+			review_model: "prov/m", swap_trigger: "first-edit", checklist: true, review_forked: false, sandbox: false,
+		},
+		task: { spec_hash: "abc123", requirements: 1 },
+		phases: {
+			prewalk: null,
+			execute: { model: "prov/m", turns: 1, tokens_in: 100, tokens_out: 50, reads: 0, edits: 1, duration_ms: 60000, cost_usd: 0.005 },
+			verify: { passed: true, commands: 5, duration_ms: 5000 },
+			review: null,
+			fix_loop: { iterations: 0, cost_usd: 0 },
+		},
+		totals: { cost_usd: 0.006, duration_ms: 60000, read_duplication_tokens: 0, session_files: [], files_changed: [], insertions: 0, deletions: 0 },
+		...overrides,
+	});
+
+	// R1 happy path: the example's shape — latency · cost · verify status ·
+	// tier. Wall clock (completed_at − received_at = 84s) wins over the
+	// worker-measured totals and result.durationMs; the codebase's shared
+	// duration formatter renders it as "1m24s".
+	const wall = mk({
+		received_at: "2026-08-06T10:00:00.000Z",
+		completed_at: "2026-08-06T10:01:24.000Z",
+	});
+	const line = completionSummaryLine({ success: true, manifest: wall, durationMs: 1, verificationFailures: [] });
+	check(line === "task done in 1m24s · $0.006 · 5/5 verified (economy)",
+		`R1 one-liner (84s wall clock, 5/5 verified, economy), got: ${line}`);
+
+	// No timestamps → the worker-measured totals.duration_ms fallback.
+	const fallback = completionSummaryLine({ success: true, manifest: mk(), durationMs: 999999, verificationFailures: [] });
+	check(fallback === "task done in 1m · $0.006 · 5/5 verified (economy)",
+		`no timestamps → totals.duration_ms, got: ${fallback}`);
+
+	// Inverted/unparseable timestamps degrade the same way (runLatencyMs).
+	const inverted = mk({ received_at: "2026-08-06T10:01:24.000Z", completed_at: "2026-08-06T10:00:00.000Z" });
+	check(completionSummaryLine({ success: true, manifest: inverted, durationMs: 0, verificationFailures: [] }) ===
+		"task done in 1m · $0.006 · 5/5 verified (economy)", "inverted timestamps → totals.duration_ms fallback");
+
+	// Failure: "task failed" and the passed count refines from the failure
+	// list (the manifest only carries the passed boolean + command total).
+	const fail = mk();
+	fail.phases.verify = { passed: false, commands: 5, duration_ms: 5000 };
+	const failed = completionSummaryLine({ success: false, manifest: fail, durationMs: 0, verificationFailures: [1, 2, 3] });
+	check(failed === "task failed in 1m · $0.006 · 2/5 verified (economy)",
+		`failure one-liner (2/5 passed), got: ${failed}`);
+
+	// Tier comes from the manifest's config.budget.
+	const full = mk();
+	full.config.budget = "full";
+	check(completionSummaryLine({ success: true, manifest: full, durationMs: 0, verificationFailures: [] }).endsWith("(full)"),
+		"tier from the manifest budget");
+
+	// No manifest → degrades to the duration only (defensive; the task tool
+	// always has one).
+	check(completionSummaryLine({ success: true, manifest: null, durationMs: 65000, verificationFailures: [] }) === "task done in 1m05s",
+		"no manifest → duration only");
+	check(completionSummaryLine({ success: false, manifest: null, durationMs: 42000, verificationFailures: [] }) === "task failed in 42s",
+		"no-manifest failure degrades the same way");
+
+	// summarizeResult integration (R2/R4): the one-liner is the FIRST line;
+	// tokens stay; duration/cost are not duplicated on the manifest path.
+	const withManifest = fakeResult({
+		manifest: mk({ received_at: "2026-08-06T10:00:00.000Z", completed_at: "2026-08-06T10:00:42.000Z" }),
+	});
+	const summary = summarizeResult(withManifest);
+	check(summary.split("\n")[0] === "task done in 42s · $0.006 · 5/5 verified (economy)",
+		`summary first line, got: ${summary.split("\n")[0]}`);
+	check(summary.includes("Tokens: 100 in / 50 out."), `tokens stay, got: ${summary}`);
+	check(summary.includes("Task succeeded:"), "existing audit line stays");
+	check(summary.includes("hello.txt"), "files stay");
+	check(!summary.includes("Took "), "no duplicated duration (R4)");
+	check(!summary.includes("Cost:"), "no duplicated cost (R4)");
+
+	// Failure path: the one-liner says "task failed" AND the failure message
+	// is right below it (the manifest's verify phase reflects the failure).
+	const failManifest = mk();
+	failManifest.phases.verify = { passed: false, commands: 5, duration_ms: 5000 };
+	const failedResult = fakeResult({
+		success: false,
+		tests: "failing",
+		manifest: failManifest,
+		verification: {
+			passed: false, commands: 5, duration_ms: 5000,
+			failures: [
+				{ command: "a", exitCode: 1, output: "no" },
+				{ command: "b", exitCode: 1, output: "no" },
+				{ command: "c", exitCode: 1, output: "no" },
+			],
+		},
+	});
+	const failedSummary = summarizeResult(failedResult);
+	check(failedSummary.split("\n")[0] === "task failed in 1m · $0.006 · 2/5 verified (economy)",
+		`failure first line, got: ${failedSummary.split("\n")[0]}`);
+	check(failedSummary.includes("Task failed: 1 commit(s), tests failing"),
+		"failure message alongside the summary line");
+
+	console.log("✓ completionSummaryLine: wall-clock latency · cost · verify status · tier; summarizeResult first line (R1/R2/R4)");
 }
 
 export async function runTests(): Promise<void> {
@@ -822,6 +937,7 @@ export async function runTests(): Promise<void> {
 	testRunPlan(errors);
 	testProgressStateAndRender(errors);
 	testSummaryMetrics(errors);
+	testCompletionSummary(errors);
 
 	if (errors.length > 0) {
 		throw new Error("test-index failed:\n  ✗ " + errors.join("\n  ✗ "));

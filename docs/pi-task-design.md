@@ -121,6 +121,10 @@ Returns:
   conflicts: string[] | omitted      (parallel runs: unresolved merge
                                      conflicts, repo-relative)
   verification: { passed, failures[] }
+  duration_ms: number              (total run wall time — the completion
+                                     summary's latency fallback when no
+                                     manifest is present; the task tool
+                                     always has one, so defensive)
 ```
 
 The tool's **content text** (the only text the conversational model reliably
@@ -128,8 +132,9 @@ reads — the structured return above is chrome) is a compact summary, one
 section per line:
 
 ```
+task done in 1m05s · $0.0234 · 3/3 verified (full)
 Task succeeded: 1 commit(s), tests passing, 3 file(s) changed.
-Took 1m05s. Tokens: 12000 in / 8000 out. Cost: $0.0234.
+Tokens: 12000 in / 8000 out.
 Merge conflicts: src/a.ts, src/b.ts.
 Review: fix — 2 finding(s).
   Requirements: R1: met; R2: unmet
@@ -138,13 +143,23 @@ Review: fix — 2 finding(s).
 Files: src/auth.ts, src/api.ts, src/lib.ts
 ```
 
-- **Duration + metrics** — the second line always carries the run's total
-  duration ("Took 1m05s."); token counts and cost are appended when
-  derivable. Sources, in order of preference: the RunManifest (tokens sum
-  the prewalk+execute phase metrics, cost is totals.cost_usd including
-  review and fix loop) or, without a manifest, the workers' last per-turn
-  usage snapshots (tokens and cost aggregated across workers). With
-  neither, the summary degrades to the duration line only.
+- **Completion summary (first line)** — ONE line, shown for single and
+  parallel runs alike and for failures ("task failed" when the run
+  failed, with the failure lines following): "task done in 1m05s ·
+  $0.0234 · 3/3 verified (full)". Latency is the wall clock
+  (completed_at − received_at) when the manifest carries both
+  timestamps, else the worker-measured totals.duration_ms — the same
+  runLatencyMs the /task-stats p50/p90 use. Cost (totals.cost_usd),
+  verify status (passed verification commands / total — "3/3 verified"
+  when all passed, else refined from the failure list), and tier
+  (config.budget) come from the RunManifest. Without a manifest the
+  line degrades to the duration only. Implemented in
+  completionSummaryLine (extensions/task/index.ts).
+- **Tokens** — token counts when derivable: the RunManifest's prewalk +
+  execute phase metrics, or, without a manifest, the workers' last
+  per-turn usage snapshots aggregated across workers. Duration and cost
+  live in the completion-summary line above (R4: the content text does
+  not duplicate them).
 - **Review report** — when a review ran (single-worker, review-enabled
   tiers), the summary carries the full report: the verdict line, the
   per-requirement status (met/unmet/uncertain), and each finding as
