@@ -435,6 +435,22 @@ its truncated arguments. This is the bound for a hung tool that the
 no-progress watchdog cannot see: an in-flight tool counts as progress by
 design, so only the tool-call watchdog catches a tool that never returns.
 
+**Verification grace (`verification_timeout_ms`, bounded).** A spec's
+verification commands are bounded per-command by `[defaults]
+verification_timeout_ms` (default 15 min — the same as the tool-call
+budget; a hung suite command dies with exit 124 and the run reports the
+failure, never blocking work). Separately, when the worker wall-clock
+expires while a verification command is in flight, the worker gets a
+bounded grace (the same `verification_timeout_ms`) so the suite can
+finish and the worker can yield a real verification result — the wall
+must not kill an in-flight verification, which would leave work
+unverified or a run dead at the finish line. The grace ends early if the
+worker starts a non-verification tool after the wall expired.
+Verification provenance is recorded in the manifest (`verify.source`:
+"worker-tree" for the single-worker post-yield run, "union-gate" for the
+parallel post-merge gate; `verify.timed_out` when a command hit its
+bound).
+
 **Prewalk auto-skip rule:** if `prewalk_model == execute_model`, the prewalk
 machinery is disabled entirely. No planning instruction injection, no swap
 listener, no checklist nagging. The worker runs on one model start to finish.

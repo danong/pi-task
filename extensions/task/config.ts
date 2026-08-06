@@ -217,6 +217,14 @@ export const DEFAULT_SANDBOX_CONFIG: SandboxConfig = {
  */
 export const DEFAULT_TOOL_TIMEOUT_MS = 15 * 60_000;
 
+/**
+ * Default per-command budget for a spec's verification commands + the
+ * worker wall-clock grace granted when the wall expires mid-verification
+ * ([defaults] verification_timeout_ms). Mirrors the tool-call budget: a
+ * verification suite gets the same bound as any other tool.
+ */
+export const DEFAULT_VERIFICATION_TIMEOUT_MS = DEFAULT_TOOL_TIMEOUT_MS;
+
 export interface TaskConfig {
 	defaults: {
 		/** Effective budget mode when neither flag nor param locks a tier.
@@ -227,6 +235,10 @@ export interface TaskConfig {
 		/** Per-tool-call budget for a single worker tool execution (ms,
 		 * Phase 11). Default: {@link DEFAULT_TOOL_TIMEOUT_MS} (15 min). */
 		toolTimeoutMs: number;
+		/** Per-command budget for verification + the wall-clock grace cap
+		 * when the wall expires mid-verification (ms). Default:
+		 * {@link DEFAULT_VERIFICATION_TIMEOUT_MS} (15 min). */
+		verificationTimeoutMs: number;
 		/**
 		 * AI commit identity (todo #84): task-worker commits are authored as
 		 * aiAuthorName / aiAuthorEmail — jj reads them via the JJ_CONFIG env
@@ -256,6 +268,7 @@ export const DEFAULT_TASK_CONFIG: TaskConfig = {
 		budget: DEFAULT_BUDGET_TIER,
 		maxFixIterations: 2,
 		toolTimeoutMs: DEFAULT_TOOL_TIMEOUT_MS,
+		verificationTimeoutMs: DEFAULT_VERIFICATION_TIMEOUT_MS,
 		aiAuthorName: "Pi ({model})",
 		aiAuthorEmail: "noreply@danong.dev",
 	},
@@ -513,6 +526,17 @@ export function loadTaskConfig(configPath?: string): TaskConfig {
 		toolTimeoutMs = toolRaw;
 	}
 
+	// [defaults] verification_timeout_ms: positive integer ms; invalid →
+	// warn + the built-in 15-min default (mirrors tool_timeout_ms).
+	const verifyPresent = defaults?.["verification_timeout_ms"] !== undefined;
+	const verifyRaw = int(defaults, "verification_timeout_ms");
+	let verificationTimeoutMs = DEFAULT_TASK_CONFIG.defaults.verificationTimeoutMs;
+	if (verifyPresent && (verifyRaw === undefined || verifyRaw <= 0)) {
+		warn(`[defaults] verification_timeout_ms must be a positive integer (ms) — using ${verificationTimeoutMs}`);
+	} else if (verifyRaw !== undefined) {
+		verificationTimeoutMs = verifyRaw;
+	}
+
 	// [defaults] ai_author_name / ai_author_email: the AI commit identity
 	// (todo #84). Strings; an explicitly invalid value warns + falls back
 	// to the built-in default, per the warn-and-fallback policy.
@@ -536,5 +560,17 @@ export function loadTaskConfig(configPath?: string): TaskConfig {
 	// [sandbox]: worker sandbox policy; missing table → silent defaults.
 	const sandbox = loadSandbox(sections);
 
-	return { defaults: { budget, maxFixIterations, toolTimeoutMs, aiAuthorName, aiAuthorEmail }, tiers, tierOrder, sandbox };
+	return {
+		defaults: {
+			budget,
+			maxFixIterations,
+			toolTimeoutMs,
+			verificationTimeoutMs,
+			aiAuthorName,
+			aiAuthorEmail,
+		},
+		tiers,
+		tierOrder,
+		sandbox,
+	};
 }

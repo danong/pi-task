@@ -49,6 +49,13 @@ export interface VerifyPhaseMetrics {
 	passed: boolean;
 	commands: number;
 	duration_ms: number;
+	/** Where verification ran: "worker-tree" (single-worker, post-yield,
+	 *  on the worker's commits) | "union-gate" (parallel, post-merge, on
+	 *  the merged tree). A run that died before either produces a failure
+	 *  artifact, not a manifest — so "unverified" is never written. */
+	source: "worker-tree" | "union-gate";
+	/** True when a command was killed by its timeout (exit 124). */
+	timed_out?: boolean;
 }
 
 export interface ReviewPhaseMetrics {

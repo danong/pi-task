@@ -165,6 +165,8 @@ async function testRunVerification(errors: string[]): Promise<void> {
 		// Timeout path: sleep killed → exit code 124
 		const timeout = await runVerification(["sleep 5"], dir, 300);
 		check(timeout.failures[0].exitCode === 124, `timeout should report exit code 124, got ${timeout.failures[0].exitCode}`);
+		check(timeout.timed_out === true, "timed_out flag set when a command hits its bound");
+		check(pass.timed_out === undefined || pass.timed_out === false, "timed_out not set on a clean pass");
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}

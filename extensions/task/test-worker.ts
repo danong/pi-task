@@ -14,8 +14,10 @@ import {
 	decideIdleAction,
 	decideNoProgressAction,
 	decideToolTimeoutAction,
+	decideWallGraceAction,
 	estimateReadTokens,
 	formatDuration,
+	isVerificationCommand,
 	noProgressErrorMessage,
 	reduceWorkerEvent,
 	selectWorkerWallTimeout,
@@ -474,6 +476,52 @@ export async function runTests(): Promise<void> {
 			"no tier wall → the built-in 45-min default");
 		check(WORKER_WALL_TIMEOUT_MS === 45 * 60_000, "built-in wall is 45 min");
 		check(WORKER_TOOL_TIMEOUT_MS === 15 * 60_000, "built-in tool timeout is 15 min");
+	}
+
+	// 32. isVerificationCommand: lenient prefix/suffix/exact matching so the
+	//     wall grace recognizes the spec's suite commands however the worker
+	//     wraps them (cd, timeout, env prefixes...).
+	{
+		const cmds = ["flutter test", "npm test", "npx tsx extensions/task/test.ts"];
+		check(isVerificationCommand("flutter test", cmds) === true, "exact match");
+		check(isVerificationCommand("cd app && flutter test", cmds) === true, "suffix match (cd && cmd)");
+		check(isVerificationCommand("timeout 300 flutter test", cmds) === true, "prefix match (timeout wrapper)");
+		check(isVerificationCommand("flutter test --coverage", cmds) === true, "prefix match (flags)");
+		check(isVerificationCommand("make build", cmds) === false, "unrelated command does not match");
+		check(isVerificationCommand("flutter test", []) === false, "no commands → never matches");
+	}
+
+	// 33. decideWallGraceAction: the wall expiry aborts unless verification is
+	//     in flight; the grace is bounded and ends early on non-verification work.
+	{
+		const mk = (over: Record<string, unknown>) => ({
+			wallExpired: false,
+			graceExhausted: false,
+			verificationInFlight: false,
+			newToolIsVerification: null,
+			...over,
+		});
+		check(decideWallGraceAction(mk({})) === "continue", "wall not expired → continue");
+		check(
+			decideWallGraceAction(mk({ wallExpired: true, verificationInFlight: true })) === "continue",
+			"wall expired + verification in flight → grace continues",
+		);
+		check(
+			decideWallGraceAction(mk({ wallExpired: true, verificationInFlight: true, graceExhausted: true })) === "abort",
+			"grace exhausted → abort even mid-verification",
+		);
+		check(
+			decideWallGraceAction(mk({ wallExpired: true, verificationInFlight: false })) === "abort",
+			"wall expired + no verification → abort",
+		);
+		check(
+			decideWallGraceAction(mk({ wallExpired: true, verificationInFlight: true, newToolIsVerification: false })) === "abort",
+			"wall expired + worker left the suite → abort",
+		);
+		check(
+			decideWallGraceAction(mk({ wallExpired: true, verificationInFlight: true, newToolIsVerification: true })) === "continue",
+			"wall expired + new tool is another verification command → continue",
+		);
 	}
 
 	if (errors.length > 0) {

@@ -36,6 +36,11 @@ max_fix_iterations = 2
 # watchdog cannot catch it because an in-flight tool counts as progress.
 # 900000 = 15 min (the default when absent).
 tool_timeout_ms = 900000
+# Per-command budget (ms) for a spec's verification commands, and the
+# grace cap when the worker wall-clock expires mid-verification (the
+# suite gets to finish, bounded). 900000 = 15 min (the default when
+# absent — same as tool_timeout_ms).
+verification_timeout_ms = 900000
 # AI commit identity: task-worker commits are authored as this name/email
 # (jj reads it via a config override in the worker env; "{model}" is
 # replaced with the execute model's short name). Parallel runs build the

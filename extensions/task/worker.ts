@@ -83,6 +83,19 @@ export interface WorkerOptions {
 	 */
 	toolTimeoutMs?: number;
 	/**
+	 * The spec's verification commands (## Verification). When the wall
+	 * clock expires while one of these is in flight, the worker gets a
+	 * bounded grace (verificationTimeoutMs) so the suite can finish and the
+	 * worker can yield a real verification result — the wall must not kill
+	 * an in-flight verification (that produced the "merged unverified work"
+	 * failure class). The grace is capped and ends early if the worker
+	 * leaves the verification phase.
+	 */
+	verificationCommands?: string[];
+	/** Grace cap (ms) for the in-flight-verification wall extension. Default:
+	 *  {@link WORKER_VERIFICATION_GRACE_MS} (10 min). */
+	verificationTimeoutMs?: number;
+	/**
 	 * No-progress window (ms): a worker that emits NO RPC activity for this
 	 * long is aborted as hung (todo #74). Default:
 	 * {@link WORKER_NO_PROGRESS_TIMEOUT_MS}. Independent of the wall
@@ -193,6 +206,57 @@ export const WORKER_TOOL_TIMEOUT_MS = DEFAULT_TOOL_TIMEOUT_MS;
 /** Poll interval for the tool-call timeout watchdog (finer than the
  *  no-progress poll: a hung tool must be aborted close to its bound). */
 const TOOL_TIMEOUT_CHECK_INTERVAL_MS = 10_000;
+
+/**
+ * Default wall-clock grace for an in-flight verification (10 min — the
+ * worker wall may not kill a verification that is about to finish; the
+ * per-command verification timeout bounds each command, this bounds the
+ * whole extension). Mirrors the orchestrator's DEFAULT_VERIFICATION_
+ * TIMEOUT_MS fallback; the task tool passes [defaults]
+ * verification_timeout_ms instead.
+ */
+export const WORKER_VERIFICATION_GRACE_MS = 10 * 60 * 1000;
+
+/**
+ * True when a worker tool invocation matches one of the spec's
+ * verification commands. Lenient prefix/suffix matching covers the
+ * common wrappers ("cd … && <cmd>", "timeout 300 <cmd>", …); the exact
+ * string also matches. Pure — tested hermetically.
+ */
+export function isVerificationCommand(args: string, commands: string[]): boolean {
+	const a = args.trim();
+	return commands.some((cmd) => {
+		const c = cmd.trim();
+		return a === c || a.endsWith(c) || a.startsWith(c);
+	});
+}
+
+/**
+ * Pure wall-grace decision for the worker watchdog. The wall expiry
+ * aborts the worker UNLESS it is mid-verification (in flight) — then it
+ * continues until the grace is exhausted or the worker leaves the
+ * verification phase (starts a non-verification tool). Returns "abort"
+ * or "continue".
+ */
+export function decideWallGraceAction(opts: {
+	/** Wall already expired (grace active). */
+	wallExpired: boolean;
+	/** now - wallExpiredAt >= graceMs. */
+	graceExhausted: boolean;
+	/** A verification command is currently in flight. */
+	verificationInFlight: boolean;
+	/** Newly started tool is a verification command; null when no new tool. */
+	newToolIsVerification: boolean | null;
+}): "abort" | "continue" {
+	if (!opts.wallExpired) return "continue";
+	if (opts.graceExhausted) return "abort";
+	// The worker left the verification phase after the wall expired — it
+	// would keep burning budget on new work; the grace was only for the
+	// suite to finish.
+	if (opts.newToolIsVerification === false) return "abort";
+	if (!opts.verificationInFlight) return "abort";
+	return "continue";
+}
 
 /**
  * Default no-progress window (10 min — much shorter than the wall): a
@@ -835,6 +899,22 @@ export function spawnWorkerSession(opts: WorkerOptions): WorkerSession {
 			lastTool = { name: String(event.toolName ?? "tool"), args: summarizeToolArgs(event.args) };
 			toolStack.push({ name: lastTool.name, args: lastTool.args, startMs: Date.now() });
 			toolCallDepth = toolStack.length;
+			// Wall expired during verification (grace active): the worker may
+			// only keep running verification commands — a new NON-verification
+			// tool means it left the suite and would burn budget on new work.
+			if (wallExpiredAt !== null && wallGraceTimer !== null) {
+				const action = decideWallGraceAction({
+					wallExpired: true,
+					graceExhausted: false,
+					verificationInFlight: true,
+					newToolIsVerification: isVerificationCommand(lastTool.args, verificationCommands),
+				});
+				if (action === "abort") {
+					clearTimeout(wallGraceTimer);
+					wallGraceTimer = null;
+					failWorker(wallTimeoutErrorMessage(wallTimeoutMs));
+				}
+			}
 		}
 		if (event?.type === "tool_execution_end") {
 			if (toolStack.length > 0) toolStack.pop();
@@ -1044,8 +1124,32 @@ export function spawnWorkerSession(opts: WorkerOptions): WorkerSession {
 	// opts.timeoutMs (selectWorkerWallTimeout); cleared on close/error (see
 	// the close handler).
 	const wallTimeoutMs = selectWorkerWallTimeout(opts.timeoutMs);
+	const verificationCommands = opts.verificationCommands ?? [];
+	const wallGraceMs = opts.verificationTimeoutMs ?? WORKER_VERIFICATION_GRACE_MS;
+	let wallExpiredAt: number | null = null;
+	let wallGraceTimer: NodeJS.Timeout | null = null;
+	const verificationInFlight = (): boolean =>
+		toolStack.some((t) => isVerificationCommand(t.args, verificationCommands));
 	wallTimer = setTimeout(() => {
 		wallTimer = null;
+		// Wall expired mid-verification: grant a bounded grace so the suite
+		// can finish and the worker can yield a real verification result
+		// (each verification command is additionally bounded by the per-tool
+		// timeout). The grace ends early if the worker starts a
+		// non-verification tool (tool_execution_start handler) or when it
+		// exhausts the cap (this timer).
+		if (verificationCommands.length > 0 && wallExpiredAt === null && verificationInFlight()) {
+			wallExpiredAt = Date.now();
+			wallGraceTimer = setTimeout(() => {
+				wallGraceTimer = null;
+				failWorker(
+					`worker wall-clock budget (${formatDuration(wallTimeoutMs)}) expired during verification; ` +
+						`the verification grace (${formatDuration(wallGraceMs)}) was also exhausted — aborting. ` +
+						`A verification suite that consistently outruns the tier wall needs a larger wall_timeout_ms.`,
+				);
+			}, wallGraceMs);
+			return;
+		}
 		failWorker(wallTimeoutErrorMessage(wallTimeoutMs));
 	}, wallTimeoutMs);
 

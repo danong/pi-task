@@ -65,7 +65,7 @@ function baseInput(over: Partial<BuildManifestInput> = {}): BuildManifestInput {
 		phases: {
 			prewalk: null,
 			execute: phase({ cost_usd: 0.02 }),
-			verify: { passed: true, commands: 1, duration_ms: 50 },
+			verify: { passed: true, commands: 1, duration_ms: 50, source: "worker-tree" },
 			review: null,
 			fixLoop: { iterations: 1, cost_usd: 0 },
 		},
@@ -146,7 +146,7 @@ export async function runTests(): Promise<void> {
 				phases: {
 					prewalk: phase({ cost_usd: 0.01 }),
 					execute: phase({ cost_usd: 0.02 }),
-					verify: { passed: false, commands: 2, duration_ms: 75 },
+					verify: { passed: false, commands: 2, duration_ms: 75, source: "worker-tree" },
 					review: {
 						model: "rev/m", forked: true, context_inherited_tokens: 5000,
 						findings: 3, by_priority: countByPriority([finding("P0"), finding("P1"), finding("P2")]),
@@ -201,7 +201,7 @@ export async function runTests(): Promise<void> {
 			phases: {
 				prewalk: null,
 				execute: phase(),
-				verify: { passed: true, commands: 1, duration_ms: 10 },
+				verify: { passed: true, commands: 1, duration_ms: 10, source: "worker-tree" },
 				review: null,
 				fix_loop: { iterations: 0, cost_usd: 0 },
 			},
@@ -426,7 +426,7 @@ export async function runTests(): Promise<void> {
 				phases: {
 					prewalk: null,
 					execute: { model: "m", turns: 1, tokens_in: 1, tokens_out: 1, reads: 0, edits: 0, duration_ms: 1000, cost_usd: 0.01 },
-					verify: { passed: true, commands: 1, duration_ms: 100 },
+					verify: { passed: true, commands: 1, duration_ms: 100, source: "worker-tree" },
 					review: null,
 					fix_loop: { iterations: 0, cost_usd: 0 },
 				},
@@ -444,7 +444,7 @@ export async function runTests(): Promise<void> {
 			write("alpha", manifest({
 				run_id: "20260805T0002-abcd",
 				config: { budget: "full" },
-				phases: { verify: { passed: false, commands: 1, duration_ms: 100 } },
+				phases: { verify: { passed: false, commands: 1, duration_ms: 100, source: "worker-tree" } },
 				totals: { cost_usd: 0.03, duration_ms: 120000 },
 			}));
 			writeFileSync(join(metricsDir, "alpha", "20260805T0003-abcd.failure.json"), "{}", "utf-8");
@@ -498,7 +498,7 @@ export async function runTests(): Promise<void> {
 				phases: {
 					prewalk: null,
 					execute: { model: "m", turns: 1, tokens_in: 1, tokens_out: 1, reads: 0, edits: 0, duration_ms: 1000, cost_usd: 0.01 },
-					verify: { passed: true, commands: 1, duration_ms: 100 },
+					verify: { passed: true, commands: 1, duration_ms: 100, source: "worker-tree" },
 					review: null,
 					fix_loop: { iterations: 0, cost_usd: 0 },
 				},

@@ -328,6 +328,7 @@ export async function runVerification(
 		commands: commands.length,
 		duration_ms: Date.now() - start,
 		failures,
+		timed_out: failures.some((f) => f.exitCode === 124),
 	};
 }
 
@@ -608,6 +609,8 @@ function assembleManifest(opts: {
 				passed: opts.verification.passed,
 				commands: opts.verification.commands,
 				duration_ms: opts.verification.duration_ms,
+				source: "worker-tree",
+				timed_out: opts.verification.timed_out,
 			},
 			review,
 			fixLoop: { iterations: opts.fixLoop.iterations, cost_usd: opts.fixLoop.costUsd },
@@ -733,6 +736,8 @@ function finalizeParallelMetrics(opts: {
 				passed: opts.verification.passed,
 				commands: opts.verification.commands,
 				duration_ms: opts.verification.duration_ms,
+				source: "union-gate",
+				timed_out: opts.verification.timed_out,
 			},
 			review: null,
 			fixLoop: { iterations: 0, cost_usd: 0 },
@@ -963,9 +968,13 @@ export async function executeTask(opts: ExecuteTaskOptions): Promise<TaskResult>
 					onUpdate?.({ type: "workers_progress", done: ++doneCount, total: workerCount });
 				}
 			},
-			// Phase 11 (R4/R5): per-tier wall + per-tool-call budget.
+			// Phase 11 (R4/R5): per-tier wall + per-tool-call budget. The
+			// verification commands + grace: the wall must not kill an
+			// in-flight suite run — it gets a bounded grace instead.
 			timeoutMs: opts.workerTimeoutMs,
 			toolTimeoutMs: opts.toolTimeoutMs,
+			verificationCommands: spec.verification,
+			verificationTimeoutMs: opts.verificationTimeoutMs,
 		}),
 	);
 	// R6: a failed model swap aborts its session and surfaces as a precise
@@ -1275,9 +1284,13 @@ async function executeSingle(
 			aiAuthorName,
 			aiAuthorEmail,
 			onUpdate,
-			// Phase 11 (R4/R5): per-tier wall + per-tool-call budget.
+			// Phase 11 (R4/R5): per-tier wall + per-tool-call budget. The
+			// verification commands + grace: the wall must not kill an
+			// in-flight suite run — it gets a bounded grace instead.
 			timeoutMs: workerTimeoutMs,
 			toolTimeoutMs,
+			verificationCommands: spec.verification,
+			verificationTimeoutMs,
 		});
 		// Checklist relay (R4): streams the worker's real checklist state to the
 		// progress view via the existing worker event stream — observer-only,

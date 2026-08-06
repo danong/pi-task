@@ -803,6 +803,7 @@ export default function (pi: ExtensionAPI) {
 						// shared per-tool-call budget (both config-driven).
 						workerTimeoutMs: tierConfig.wallTimeoutMs,
 						toolTimeoutMs: taskConfig.defaults.toolTimeoutMs,
+						verificationTimeoutMs: taskConfig.defaults.verificationTimeoutMs,
 						// Todo #84: AI commit identity for worker commits.
 						aiAuthorName: taskConfig.defaults.aiAuthorName,
 						aiAuthorEmail: taskConfig.defaults.aiAuthorEmail,

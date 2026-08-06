@@ -21,6 +21,7 @@ import {
 	DEFAULT_TASK_CONFIG,
 	DEFAULT_TIER_WALL_TIMEOUT_MS,
 	DEFAULT_TOOL_TIMEOUT_MS,
+	DEFAULT_VERIFICATION_TIMEOUT_MS,
 	aiIdentityToml,
 	formatAiAuthorName,
 	loadTaskConfig,
@@ -76,6 +77,8 @@ function testMissingFile(errors: string[]): void {
 	// The missing-file defaults carry the Phase 11 budget surface.
 	check(cfg!.defaults.toolTimeoutMs === DEFAULT_TOOL_TIMEOUT_MS,
 		`missing file defaults should carry tool_timeout_ms, got ${cfg!.defaults.toolTimeoutMs}`);
+	check(cfg!.defaults.verificationTimeoutMs === DEFAULT_VERIFICATION_TIMEOUT_MS,
+		`missing file defaults should carry verification_timeout_ms, got ${cfg!.defaults.verificationTimeoutMs}`);
 	check(cfg!.defaults.aiAuthorName === "Pi ({model})" && cfg!.defaults.aiAuthorEmail === "noreply@danong.dev",
 		`missing file defaults should carry the AI commit identity, got ${cfg!.defaults.aiAuthorName} <${cfg!.defaults.aiAuthorEmail}>`);
 	check(JSON.stringify(cfg!.tierOrder) === JSON.stringify(["max", "full", "economy", "free"]),
@@ -93,6 +96,7 @@ function testValidFile(errors: string[]): void {
 budget = "auto"
 max_fix_iterations = 4
 tool_timeout_ms = 300000
+verification_timeout_ms = 600000
 ai_author_name = "Assistant ({model})"
 ai_author_email = "ai@example.dev"
 
@@ -136,6 +140,8 @@ extra_rw_binds = ["/build"]
 				`aiAuthorName override, got ${cfg!.defaults.aiAuthorName}`);
 			check(cfg!.defaults.aiAuthorEmail === "ai@example.dev",
 				`aiAuthorEmail override, got ${cfg!.defaults.aiAuthorEmail}`);
+			check(cfg!.defaults.verificationTimeoutMs === 600000,
+				`verificationTimeoutMs override, got ${cfg!.defaults.verificationTimeoutMs}`);
 			check(cfg!.tiers.full.prewalkModel === "provider/strong", "full.prewalkModel override");
 			check(cfg!.tiers.full.executeModel === "provider/fast", "full.executeModel override");
 			check(cfg!.tiers.full.review === true, "full.review override");
@@ -318,6 +324,7 @@ function testInvalidValues(errors: string[]): void {
 budget = "phantom"
 max_fix_iterations = -1
 tool_timeout_ms = "long"
+verification_timeout_ms = -5
 
 [budget.full]
 execute_model = ""
@@ -343,6 +350,8 @@ extra_rw_binds = [1, 2]
 			check(cfg!.defaults.maxFixIterations === 2, `invalid max_fix_iterations should fall back to 2, got ${cfg!.defaults.maxFixIterations}`);
 			check(cfg!.defaults.toolTimeoutMs === DEFAULT_TOOL_TIMEOUT_MS,
 				`invalid tool_timeout_ms should fall back to the 15-min default, got ${cfg!.defaults.toolTimeoutMs}`);
+			check(cfg!.defaults.verificationTimeoutMs === DEFAULT_VERIFICATION_TIMEOUT_MS,
+				`invalid verification_timeout_ms should fall back to the 15-min default, got ${cfg!.defaults.verificationTimeoutMs}`);
 			check(cfg!.tiers.full.executeModel === DEFAULT_BUDGET_TIERS.full.executeModel,
 				"empty execute_model should fall back");
 			check(cfg!.tiers.full.wallTimeoutMs === DEFAULT_BUDGET_TIERS.full.wallTimeoutMs,
@@ -358,6 +367,7 @@ extra_rw_binds = [1, 2]
 			check(warnings.some((w) => w.includes("budget") && w.includes("phantom")), "should warn about the invalid budget value");
 			check(warnings.some((w) => w.includes("max_fix_iterations")), "should warn about max_fix_iterations");
 			check(warnings.some((w) => w.includes("tool_timeout_ms")), "should warn about tool_timeout_ms");
+			check(warnings.some((w) => w.includes("verification_timeout_ms")), "should warn about verification_timeout_ms");
 			check(warnings.some((w) => w.includes("execute_model")), "should warn about the empty execute_model");
 			check(warnings.some((w) => w.includes("wall_timeout_ms")), "should warn about wall_timeout_ms");
 			check(!warnings.some((w) => w.includes("budget.mega")), "no unknown-tier-section warning for a tier actually present in the file");
