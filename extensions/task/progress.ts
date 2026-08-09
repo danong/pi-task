@@ -105,6 +105,9 @@ export interface ProgressState {
 	total: number;
 	/** Run start timestamp (ms) — the base of the total-elapsed clock (R1). */
 	startMs: number;
+	/** Parallel-merge outcome (set once by the "merge" event; R1 success
+	 *  line: merged commit id + files changed vs the pre-merge base). */
+	merge?: { commit_id: string; files_changed: number };
 }
 
 export function createProgressState(total: number, plan: RunPlan, nowMs: number): ProgressState {
@@ -152,6 +155,17 @@ export function applyProgressEvent(state: ProgressState, rawEvent: unknown, nowM
 	};
 
 	switch (ev.type) {
+		case "merge": {
+			// R1 success line: the atomic combine landed — record the merged
+			// commit id + file delta for the progress render.
+			if (typeof ev.commit_id === "string") {
+				state.merge = {
+					commit_id: ev.commit_id,
+					files_changed: typeof ev.files_changed === "number" ? ev.files_changed : 0,
+				};
+			}
+			return;
+		}
 		case "turn": {
 			const w = worker();
 			// R3: the reviewer is a separate process — its turn events must
@@ -254,6 +268,16 @@ export function buildProgressText(state: ProgressState, nowMs: number = Date.now
 	const lines: string[] = [renderPlanLine(state.plan), `${state.done}/${state.total} workers done`];
 	for (let i = 0; i < state.total; i++) {
 		lines.push(renderWorkerLine(state, i, nowMs));
+	}
+	// R1: the atomic-combine success line — merged N worker commits → id
+	// (X files vs base; worker commits consumed by the squash). This is
+	// the unambiguous "the merge worked" signal (the false-alarm error
+	// class reported deltas against a non-base reference instead).
+	if (state.merge) {
+		lines.push(
+			`merged ${state.total} worker commit(s) → ${state.merge.commit_id} ` +
+				`(${state.merge.files_changed} file(s) changed vs base; worker commits consumed)`,
+		);
 	}
 	return lines.join("\n");
 }

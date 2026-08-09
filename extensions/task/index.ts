@@ -487,8 +487,15 @@ export function summarizeResult(result: TaskResult): string {
 			durationMs: result.durationMs,
 			verificationFailures: result.verification.failures,
 		}),
-		`Task ${result.success ? "succeeded" : "failed"}: ${result.commits.length} commit(s), ` +
-			`tests ${result.tests}, ${result.files_changed.length} file(s) changed.`,
+		// R1: parallel runs report the merge outcome unambiguously — the
+		// merged commit id + the file delta vs the pre-merge base, and that
+		// the worker commits were consumed by the squash (no dangling state,
+		// no "left outside the base" ambiguity).
+		result.manifest?.merge
+			? `Task ${result.success ? "succeeded" : "failed"}: merged ${result.manifest.merge.worker_count ?? "?"} worker commit(s) → ` +
+				`${result.commits[0] ?? "?"} (${result.files_changed.length} file(s) changed vs base; worker commits consumed).`
+			: `Task ${result.success ? "succeeded" : "failed"}: ${result.commits.length} commit(s), ` +
+				`tests ${result.tests}, ${result.files_changed.length} file(s) changed.`,
 	];
 	// Token detail only — the summary line above already carries duration and
 	// cost (R4: no duplication). Cost appears here again ONLY when the run

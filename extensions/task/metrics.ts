@@ -87,6 +87,12 @@ export interface MergeMetrics {
 	/** Pre-merge overlap classification (R5): files changed by ≥2 workers,
 	 *  each marked comment-only (union-safe) or substantive (flagged). */
 	overlaps: Array<{ file: string; kind: "comment-only" | "substantive" }>;
+	/** Parallel runs only: worker count, the merged base commit id, and
+	 *  the number of files the merge changed vs the pre-merge base.
+	 *  Optional for backward compatibility with older manifest fixtures. */
+	worker_count?: number;
+	merged_commit_id?: string;
+	files_changed?: number;
 }
 
 export interface MetricsConfig {

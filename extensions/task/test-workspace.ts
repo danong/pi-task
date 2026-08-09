@@ -31,6 +31,7 @@ import {
 	assertCleanWorkingCopy,
 	assertMerged,
 	assertVisibleCommit,
+	assertWorkspacesConsumed,
 	conflictHunks,
 	createAiTaskBase,
 	createWorkspace,
@@ -858,6 +859,8 @@ async function testAtomicCombine(errors: string[]): Promise<void> {
 			`atomic combine must be ONE jj operation (op delta ${opsAfter - opsBefore})`);
 		check(outcome.conflicts.length === 0,
 			`atomic combine should be clean, got ${JSON.stringify(outcome.conflicts)}`);
+		check(outcome.commit_id.length > 0 && outcome.files_changed === 4,
+			`merge outcome should carry the merged commit + file count (4 files), got ${outcome.commit_id} / ${outcome.files_changed}`);
 
 		// Every worker's content is in the merged tree (main working copy).
 		for (const f of ["a1.txt", "a2.txt", "b.txt", "c.txt"]) {
@@ -1104,6 +1107,66 @@ async function testRescueAbortedWork(errors: string[]): Promise<void> {
 	console.log("✓ rescue-commit: aborted single-worker WIP preserved (dirty), skipped when clean");
 }
 
+// ─── assertWorkspacesConsumed: the post-squash invariant ─────────────
+// The false-alarm regression: an EMPTY workspace @ left on the PRE-merge
+// base (jj does not always auto-rebase) must PASS the check — diffing it
+// against the rewritten base would report every merged file as a
+// deletion (the "left changes OUTSIDE the merged base" false alarm). A
+// workspace with genuinely unconsumed changes must FAIL.
+
+async function testWorkspacesConsumed(errors: string[]): Promise<void> {
+	const check = (cond: boolean, msg: string): void => {
+		if (!cond) errors.push(msg);
+	};
+	const testDir = mkdtempSync(join(tmpdir(), "pi-task-ws-consumed-"));
+	try {
+		initRepo(testDir);
+		const baseChange = await taskBaseChangeId(testDir);
+		const baseBefore = await resolveCommitId(testDir, baseChange);
+
+		const w1 = await createWorkspace(testDir, "con-1");
+		const w2 = await createWorkspace(testDir, "con-2");
+		writeFileSync(join(w1, "x.txt"), "one\n", "utf-8");
+		jj(["commit", "-m", "con w1"], w1);
+		writeFileSync(join(w2, "y.txt"), "two\n", "utf-8");
+		jj(["commit", "-m", "con w2"], w2);
+
+		const outcome = await mergeWorkspacesAtomic(testDir, ["con-1", "con-2"], baseChange);
+		check(outcome.commit_id.length > 0 && outcome.files_changed === 2,
+			`atomic outcome fields, got ${outcome.commit_id} / ${outcome.files_changed}`);
+
+		// False-alarm regression: move ws-@ BACK onto the pre-merge base
+		// (jj sometimes leaves empty workspace stubs there instead of
+		// auto-rebasing them onto the rewritten base). The check must still
+		// PASS — an empty stub has no changes vs its own parent.
+		const w1At = await workspaceCommitId(testDir, "con-1");
+		jj(["rebase", "-s", w1At, "-o", baseBefore], testDir);
+		await assertWorkspacesConsumed(testDir, ["con-1", "con-2"]);
+
+		// Real leftover: a workspace whose snapshot holds UNCONSUMED changes
+		// (uncommitted working-copy work — the squash consumed committed
+		// content; anything left in the workspace's own commit is either
+		// unconsumed or was added after the combine) must FAIL the check
+		// with a message naming it. Committed content the combine never saw
+		// is out of this check's scope (the atomic squash consumes every
+		// included workspace atomically or fails as one operation).
+		const w3 = await createWorkspace(testDir, "con-3");
+		writeFileSync(join(w3, "z.txt"), "three\n", "utf-8"); // NOT committed
+		jj(["st"], w3); // trigger the snapshot so ws-@ actually holds z.txt
+		let threw = "";
+		try {
+			await assertWorkspacesConsumed(testDir, ["con-1", "con-2", "con-3"]);
+		} catch (err) {
+			threw = (err as Error).message;
+		}
+		check(threw.includes("con-3") && threw.includes("did not fully consume"),
+			`leftover workspace must fail with a precise message, got: ${threw}`);
+	} finally {
+		rmSync(testDir, { recursive: true, force: true });
+	}
+	console.log("✓ assertWorkspacesConsumed: empty stub on the pre-merge base passes (false-alarm fix); unconsumed work fails");
+}
+
 // ─── Section 14: merge-failure artifact (R2) ─────────────────────────
 
 /**
@@ -1240,6 +1303,7 @@ export async function runTests(): Promise<void> {
 	await testMergeFailureArtifact(errors);
 	testParseSummaryChanges(errors);
 	await testRescueAbortedWork(errors);
+	await testWorkspacesConsumed(errors);
 
 	if (errors.length > 0) {
 		throw new Error("test-workspace failed:\n  ✗ " + errors.join("\n  ✗ "));

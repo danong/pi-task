@@ -708,6 +708,17 @@ function testProgressStateAndRender(errors: string[]): void {
 	text = buildProgressText(state, 3000);
 	check(text.includes("checklist 3/5"), `checklist after check-offs, got: ${text}`);
 
+	// R1: the merge event records the atomic-combine outcome; the render
+	// shows the unambiguous success line (merged commit + file delta vs
+	// base + consumed status) — the false-alarm class reported deltas
+	// against a non-base reference instead.
+	applyProgressEvent(state, { type: "merge", conflicts: [], commit_id: "c8e4de5f", files_changed: 19 }, 5000);
+	text = buildProgressText(state, 5000);
+	check(
+		text.includes("merged 1 worker commit(s) → c8e4de5f (19 file(s) changed vs base; worker commits consumed)"),
+		`merge success line in the progress render, got: ${text}`,
+	);
+
 	// R1+R3: liveness = turns + idle; the phase/total clocks are live vs `now`.
 	applyProgressEvent(state, { type: "turn", turns: 3 }, 4000);
 	text = buildProgressText(state, 16000);
@@ -828,6 +839,28 @@ function testSummaryMetrics(errors: string[]): void {
 	check(single.includes("$0.0075"), `single manifest: cost in the summary line, got: ${single}`);
 	check(!single.includes("Took ") && !single.includes("Cost:"), "single manifest: duration/cost not duplicated (R4)");
 	check(!single.includes("task done in 1s"), "manifest latency beats result.durationMs");
+
+	// Parallel manifest: the commit line reports the merge outcome
+	// unambiguously — merged commit id + file delta vs base + consumed
+	// status (the false-alarm class reported deltas against a non-base
+	// reference instead).
+	const parallelManifest: RunManifest = {
+		...manifest,
+		merge: {
+			resolved_union: [], conflicts: [], overlaps: [],
+			worker_count: 2, merged_commit_id: "c8e4de5f", files_changed: 19,
+		},
+	};
+	const parallel = summarizeResult(fakeResult({
+		manifest: parallelManifest,
+		commits: ["c8e4de5f"],
+		files_changed: Array.from({ length: 19 }, (_, i) => `f${i}.txt`),
+	}));
+	check(
+		parallel.includes("merged 2 worker commit(s) → c8e4de5f (19 file(s) changed vs base; worker commits consumed)"),
+		`parallel summary reports the merge outcome, got: ${parallel.split("\n")[1]}`,
+	);
+	check(!parallel.includes("1 commit(s),"), "parallel summary does not use the single-worker commit phrasing");
 	check(single.includes("hello.txt"), "existing summary lines stay intact");
 
 	// Parallel fixture WITHOUT a manifest: tokens/cost aggregate the LAST

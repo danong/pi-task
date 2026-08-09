@@ -74,6 +74,10 @@ import { tmpdir } from "node:os";
 export interface MergeOutcome {
 	/** Repo-relative paths with unresolved conflicts in the merged base. */
 	conflicts: string[];
+	/** The merged base's commit id (post-squash). */
+	commit_id: string;
+	/** Number of files the merge changed vs the pre-merge base. */
+	files_changed: number;
 }
 
 /** One workspace's file changes vs the task base (R3/R5 input). */
@@ -387,6 +391,31 @@ function execJjConfigured(args: string[], cwd: string, configArgs: string[]): Pr
 }
 
 /**
+ * The post-squash invariant per workspace: the squash consumed every
+ * worker commit, so each workspace's working-copy commit is DIFF-EMPTY
+ * vs its OWN PARENT — whether jj auto-rebased it onto the rewritten
+ * base or left it on the pre-merge base. (Diffing against the rewritten
+ * base instead is WRONG: an empty stub left on the old base shows every
+ * merged file as a deletion — the false-alarm class that made a
+ * successful merge look like lost work.) A non-empty diff means the
+ * workspace holds changes the squash did not consume: leftover commits
+ * or uncommitted work. Throws with the precise leftover list.
+ */
+export async function assertWorkspacesConsumed(projectDir: string, workspaceNames: string[]): Promise<void> {
+	for (const name of workspaceNames) {
+		const wsAt = await workspaceCommitId(projectDir, name);
+		const leftover = await diffSummary(projectDir, `${wsAt}-`, wsAt);
+		if (leftover.length > 0) {
+			throw new Error(
+				`jj squash did not fully consume workspace "${name}" — its working-copy commit still has ` +
+					`changes vs its parent (${leftover.join(", ")}). Nothing was lost: the squash's merged delta ` +
+					`lives in the task base; these are the workspace's own unconsumed changes.`,
+			);
+		}
+	}
+}
+
+/**
  * R1: ATOMIC combine — every workspace's commits land in the task base
  * in ONE jj operation: a single `jj squash --from '<base>..<ws1-@> |
  * <base>..<ws2-@> | …' --into <base>`. (Revset union is `|`; `+` is not
@@ -405,7 +434,10 @@ export async function mergeWorkspacesAtomic(
 	workspaceNames: string[],
 	into: string,
 ): Promise<MergeOutcome> {
-	if (workspaceNames.length === 0) return { conflicts: [] };
+	if (workspaceNames.length === 0) {
+		const base = await resolveCommitId(projectDir, into);
+		return { conflicts: [], commit_id: base, files_changed: 0 };
+	}
 	const baseCommit = await resolveCommitId(projectDir, into);
 	const wsAtIds = await Promise.all(workspaceNames.map((n) => workspaceCommitId(projectDir, n)));
 	const from = wsAtIds.map((id) => `(${baseCommit}..${id})`).join("|");
@@ -418,19 +450,11 @@ export async function mergeWorkspacesAtomic(
 		);
 	}
 
-	// Provable integration: the single squash consumed EVERY worker commit
-	// — each workspace @ now sits on the rewritten base, diff-empty.
+	// Provable integration: the single squash consumed EVERY worker commit.
 	const newBase = await resolveCommitId(projectDir, into);
-	for (const name of workspaceNames) {
-		const leftover = await diffSummary(projectDir, newBase, await workspaceCommitId(projectDir, name));
-		if (leftover.length > 0) {
-			throw new Error(
-				`jj squash (atomic combine) left changes OUTSIDE the merged base (workspace "${name}": ` +
-					`${leftover.join(", ")})`,
-			);
-		}
-	}
-	return { conflicts: await detectConflicts(projectDir, newBase) };
+	await assertWorkspacesConsumed(projectDir, workspaceNames);
+	const filesChanged = (await diffSummary(projectDir, baseCommit, newBase)).length;
+	return { conflicts: await detectConflicts(projectDir, newBase), commit_id: newBase, files_changed: filesChanged };
 }
 
 /**
@@ -531,20 +555,15 @@ export async function mergeWorkspace(
 	}
 
 	// Provable-integration check: the squash consumed EVERY worker commit.
-	// The base was rewritten, so re-resolve its current commit id and diff
-	// it against the workspace's (auto-rebased) @ — empty means the whole
-	// range landed in the base.
-	const newBase = await resolveCommitId(projectDir, into);
-	const leftover = await diffSummary(projectDir, newBase, await workspaceCommitId(projectDir, name));
-	if (leftover.length > 0) {
-		throw new Error(
-			`jj squash workspace "${name}" left changes OUTSIDE the merged base ` +
-				`(stale squash target? a concurrent session rewrote the base?): ${leftover.join(", ")}`,
-		);
-	}
+	// A consumed workspace @ is DIFF-EMPTY vs its own parent — whether jj
+	// auto-rebased it onto the rewritten base or left it on the old one
+	// (diffing against the rewritten base would show every merged file as
+	// a deletion on a stub left behind — the false-alarm class).
+	await assertWorkspacesConsumed(projectDir, [name]);
 
 	// Conflicts land in the base commit without failing the squash; the
 	// base was rewritten, so resolve its current commit id before checking.
+	const newBase = await resolveCommitId(projectDir, into);
 	const conflicts = await detectConflicts(projectDir, newBase);
 	return { conflicts };
 }

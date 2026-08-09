@@ -1136,7 +1136,12 @@ export async function executeTask(opts: ExecuteTaskOptions): Promise<TaskResult>
 	let mergeFailed: Error | null = null;
 	// R1/R4/R5: merge metrics for the aggregate manifest (atomic combine,
 	// union resolution, overlap classification).
-	const mergeMetrics: MergeMetrics = { resolved_union: [], conflicts: [], overlaps: [] };
+	const mergeMetrics: MergeMetrics = {
+		resolved_union: [],
+		conflicts: [],
+		overlaps: [],
+		worker_count: workerCount,
+	};
 	// Workspace @ commit ids captured BEFORE the atomic combine — the
 	// dangling ids when the merge fails (R2).
 	const workspaceAtIds = new Map<string, string>();
@@ -1221,7 +1226,14 @@ export async function executeTask(opts: ExecuteTaskOptions): Promise<TaskResult>
 				workspaces.map((w) => w.name),
 				baseChangeId,
 			);
-			onUpdate?.({ type: "merge", conflicts: mergeOutcome.conflicts });
+			mergeMetrics.merged_commit_id = mergeOutcome.commit_id;
+			mergeMetrics.files_changed = mergeOutcome.files_changed;
+			onUpdate?.({
+				type: "merge",
+				conflicts: mergeOutcome.conflicts,
+				commit_id: mergeOutcome.commit_id,
+				files_changed: mergeOutcome.files_changed,
+			});
 
 			// R3: post-merge consistency gate — every workspace's @ reachable
 			// from the merged result, merged tree non-empty, union of worker
