@@ -119,7 +119,7 @@ export const DEFAULT_TIER_WALL_TIMEOUT_MS = 45 * 60_000;
  * throughout, no review; free = fastest models, no review. Economy
  * matches the max/full 45-min wall — a big build under fast models
  * needs the headroom (a 25-min wall aborted real suites mid-run); free
- * keeps the shorter 25-min wall (the cheapest tier, never auto-picked).
+ * carries a shorter 30-min wall (the cheapest tier, never auto-picked).
  *
  * `prewalkModel: null` is the canonical "no prewalk" shape. The design's
  * economy/free tiers set prewalk_model == execute_model; the loader
@@ -153,7 +153,7 @@ export const DEFAULT_BUDGET_TIERS: Record<BudgetTier, BudgetTierConfig> = {
 		executeModel: "opencode/deepseek-v4-flash-free",
 		reviewModel: "opencode/deepseek-v4-flash-free",
 		review: false,
-		wallTimeoutMs: 25 * 60_000,
+		wallTimeoutMs: 30 * 60_000,
 	},
 };
 

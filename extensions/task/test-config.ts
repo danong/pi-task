@@ -85,6 +85,8 @@ function testMissingFile(errors: string[]): void {
 		`missing file defaults should carry the built-in tier order, got ${JSON.stringify(cfg!.tierOrder)}`);
 	check(cfg!.tiers.economy.wallTimeoutMs === 45 * 60_000,
 		`economy's built-in wall should be 45 min (big builds need headroom), got ${cfg!.tiers.economy.wallTimeoutMs}`);
+	check(cfg!.tiers.free.wallTimeoutMs === 30 * 60_000,
+		`free's built-in wall should be 30 min, got ${cfg!.tiers.free.wallTimeoutMs}`);
 	console.log("✓ missing file → silent defaults (copy semantics, Phase 11 surface)");
 }
 
