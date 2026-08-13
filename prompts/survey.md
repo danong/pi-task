@@ -75,7 +75,10 @@ e.g.:
 
 Call the task tool with the survey spec and `review: "survey-reviewer"` — the
 engine's adversarial review then validates the report itself (citations
-traceable, candidates actionable, priorities coherent).
+traceable, candidates actionable, priorities coherent). Review only runs at a
+review tier, so pass `budget: "full"` (or another tier with `review = true`)
+explicitly — the auto-tier heuristic would pick economy for a small
+requirement count and silently skip the review.
 
 ## No code changes
 
