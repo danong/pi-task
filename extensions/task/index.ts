@@ -656,6 +656,7 @@ export function workflowContractText(): string {
 		"- Plan first: multi-step work starts with a plan — decompose into milestones, sequence them, and state how each milestone is verified before writing any code.",
 		"- Delegate by default: dispatch multi-step, iterative, parallelizable, or unvalidated work to the task tool (isolated workers, verification-gated, jj-committed); make trivially small, reversible changes directly.",
 		"- Orientation only: spend at most 2-3 tool calls — codebase_map plus one targeted read — before writing a spec; deep exploration belongs to the workers.",
+		"- CONTEXT.md: when the repo has a CONTEXT.md (the project's shared domain language), read it before deep work and use its vocabulary.",
 		"- Spec discipline: write WHAT, not HOW — ## Goal (one sentence), ## Requirements (numbered WHATs), ## Verification (plain bash commands, one per line, each exits 0).",
 		"Use /build to scaffold and dispatch a spec from a work request, /plan to settle the approach first, and the delegation skill for the dispatch threshold and parallel sub_specs.",
 	].join("\n");

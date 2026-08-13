@@ -6,8 +6,9 @@ Plan this work request before dispatching anything: $@
 
 Produce a work plan for a multi-day or week-long effort. It is a decision aid
 for dispatching, not a design doc — short enough to read in a minute. Write
-the plan in the conversation so the user can review and adjust it before any
-implementation starts.
+the plan in the conversation and surface the open questions that must be
+settled before any implementation starts — do not rely on the user to notice
+what needs deciding.
 
 ## Goal
 
@@ -46,6 +47,14 @@ Map each milestone to its dispatch:
 - Milestone → `task` tool dispatch; scaffold its spec with `/build`.
 - Independent milestones with disjoint file scopes → parallel `sub_specs` in
   a single dispatch.
+
+## Open questions
+
+The grilling step: the questions to resolve with the user before dispatching.
+List each open question on its own line, with the answer the plan assumes if
+the user does not weigh in — scope boundaries, sequencing trade-offs, and
+anything the plan had to assume. If there are none, say so explicitly. Dispatch
+only after the user settles them.
 
 ## Rabbit-hole guards
 

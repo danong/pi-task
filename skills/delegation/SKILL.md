@@ -42,6 +42,7 @@ Multi-step work starts with a plan before any implementation:
 
 Your job before dispatching is orientation, not investigation:
 
+- If the repo has a `CONTEXT.md` (the project's shared domain language), read it before deep work and use its vocabulary.
 - Use the injected codebase map and known file paths as spec pointers — the
   worker reads the details.
 - Spend at most 2-3 orientation calls (codebase_map + one targeted read)

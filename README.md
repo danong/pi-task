@@ -28,9 +28,9 @@ mise run test      # full hermetic test suite, zero LLM calls
 
 The repo ships `.pi/settings.json` registering itself as a project package
 (`"packages": [".."]`), so any trusted checkout auto-installs — the `task`
-tool, `/task-budget` command, `--task-budget` flag, the `delegation` skill,
-and the `/build` spec and `/plan` work-plan templates are available on the
-next session. For a
+tool, `/task-budget` command, `--task-budget` flag, the `delegation` and
+`architecture-survey` skills, and the `/build`, `/plan`, and `/survey`
+templates are available on the next session. For a
 global (non-project) install instead:
 
 ```sh

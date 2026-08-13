@@ -980,7 +980,7 @@ function testWorkflowContract(errors: string[]): void {
 	};
 
 	// R1: the contract text comes from a pure function — compact (~120-150
-	// words), covering the four obligations and referencing the delegation
+	// words), covering the workflow obligations and referencing the delegation
 	// skill, /build, and /plan.
 	const text = workflowContractText();
 	const words = text.split(/\s+/).filter((w) => /[A-Za-z0-9]/.test(w)).length;
@@ -992,6 +992,8 @@ function testWorkflowContract(errors: string[]): void {
 		"delegate-by-default: task tool for multi-step/iterative/parallelizable/unvalidated, direct only for trivial reversible");
 	check(/2-3/.test(text) && /codebase_map/.test(text) && /targeted read/.test(text) && /workers/.test(text),
 		"orientation-only investigation: at most 2-3 calls (codebase_map + one targeted read) before the spec");
+	check(/CONTEXT\.md/.test(text) && /shared domain language/.test(text) && /before deep work/.test(text) && /vocabulary/.test(text),
+		"shared domain language: read the repo's CONTEXT.md before deep work and use its vocabulary");
 	check(/WHAT, not HOW/.test(text) && /Goal/.test(text) && /Requirements/.test(text) && /Verification/.test(text) && /exits 0/.test(text),
 		"spec discipline: WHAT not HOW; Goal/Requirements/Verification; verification = plain exit-0 bash");
 	check(text.includes("/build") && text.includes("/plan") && /delegation skill/.test(text),
@@ -1003,7 +1005,7 @@ function testWorkflowContract(errors: string[]): void {
 	check(workflowContractBlock({ workflowContract: true }) === text, "enabled config → the contract text");
 	check(workflowContractBlock({ workflowContract: false }) === "", "disabled config → no block");
 
-	console.log("✓ workflowContract: pure ~120-150-word block (plan-first / delegate-by-default / orientation-only / spec discipline), config-gated");
+	console.log("✓ workflowContract: pure ~120-150-word block (plan-first / delegate-by-default / orientation-only / CONTEXT.md shared language / spec discipline), config-gated");
 }
 
 function testCompletionSummary(errors: string[]): void {

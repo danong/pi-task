@@ -15,6 +15,7 @@ import {
 	decideNoProgressAction,
 	decideToolTimeoutAction,
 	decideWallGraceAction,
+	DEFAULT_WORKER_SYSTEM_PROMPT,
 	estimateReadTokens,
 	formatDuration,
 	isVerificationCommand,
@@ -529,6 +530,17 @@ export async function runTests(): Promise<void> {
 			decideWallGraceAction(mk({ wallExpired: true, verificationInFlight: true, newToolIsVerification: true })) === "continue",
 			"wall expired + new tool is another verification command → continue",
 		);
+	}
+
+	// The worker system prompt orients test-first work when the project has
+	// tests (R1) — pinned here so the TDD nudge can't regress silently.
+	{
+		const p = DEFAULT_WORKER_SYSTEM_PROMPT;
+		check(/failing test/.test(p) && /verify it fails/.test(p) && /red-green-refactor/.test(p),
+			"worker prompt nudges red-green-refactor: write a failing test, verify it fails, implement until it passes");
+		check(/checklist\(\)/.test(p) && /jj commits/.test(p) && /yield\(\)/.test(p),
+			"worker prompt keeps the orientation core (checklist, jj commits, yield)");
+		console.log("✓ worker system prompt: TDD nudge (failing test → verify fails → red-green-refactor) + orientation core");
 	}
 
 	if (errors.length > 0) {

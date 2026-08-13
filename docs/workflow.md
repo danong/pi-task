@@ -37,6 +37,9 @@ in short:
 - **Orientation only** — at most 2–3 tool calls (the injected codebase map
   plus one targeted read) before writing a spec; deep exploration belongs to
   the workers.
+- **Shared domain language** — when the repo has a `CONTEXT.md`, read it
+  before deep work and use its vocabulary (project-side convention; read
+  when present, never required).
 - **Spec discipline** — write WHAT, not HOW: `## Goal` (one sentence),
   `## Requirements` (numbered WHATs), `## Verification` (plain bash commands,
   one per line, each exits 0).
