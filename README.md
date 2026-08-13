@@ -59,7 +59,12 @@ argument.
 `extensions/task/config.ts`) reads `<pi agent dir>/config/task.toml` (default
 `~/.pi/agent`) — a missing file falls back to built-in defaults, so a fresh
 install works without any config; the agent-dir copy is where per-machine
-overrides belong. The sections it can contain — see `config/task.toml` and
+overrides belong. **Keep it minimal — only the keys you actually override.**
+It is not auto-synced: a full mirror of the shipped file shadows every later
+shipped change (a stale economy wall silently stayed at 25 min). With only
+override keys present, missing sections fall back per-key to the built-in
+defaults, so shipped/built-in changes propagate automatically. The sections it
+can contain — see `config/task.toml` and
 `extensions/task/config.ts` for the full surface, including but not limited
 to:
 
