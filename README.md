@@ -41,19 +41,30 @@ pi install /path/to/this/repo
 and the `task` tool, `/task-budget` command, and `--task-budget` flag become
 available after `/reload`.
 
-## Dispatch workflow
+## Workflow
 
-Multi-step coding work is dispatched to isolated workers via the `task` tool.
-The `delegation` skill (loaded automatically when relevant) covers when to
-dispatch vs. edit directly and the spec discipline; `/build` scaffolds a
-spec from a work request, and `/plan` scaffolds a multi-day work plan
-(milestones, sequencing, dispatch order) before dispatching. Large or
-parallelizable work decomposes into parallel
-`sub_specs` — each a self-contained spec with its own Goal / Requirements /
-Verification, given as a markdown string or a {goal, requirements,
-verification, context?} object (both accepted; spec may be omitted when
-sub_specs is given). `/task-stats` summarizes recorded runs (latency, cost,
-verify pass rate) from the agent-dir metrics — all projects, or one with an
+The user-facing model is a split between orchestration and execution: the
+conversational agent plans and dispatches; isolated task workers execute
+under real gates (bash verification, jj commits, atomic merge). An always-on
+workflow contract (config-gated, default on) keeps the agent honest: plan
+first, delegate multi-step work by default, stay orientation-only before a
+spec, and write WHAT not HOW.
+
+Three user-invoked templates cover the flow — **`/plan`** (a multi-day work
+plan: milestones, sequencing, dispatch order, open questions to settle
+first), **`/build`** (a single task spec: Goal / Requirements / Verification),
+and **`/survey`** (an architecture review: a named area or a hotspot scan,
+producing a ranked report that is itself adversarially reviewed). The
+`delegation` skill covers when to dispatch vs. edit directly; the
+`architecture-survey` skill dispatches big-picture reviews as tasks. Large or
+parallelizable work decomposes into parallel `sub_specs` (markdown strings or
+{goal, requirements, verification, context?} objects; spec may be omitted
+when sub_specs is given).
+
+**See [`docs/workflow.md`](docs/workflow.md) for the full workflow** — the
+contract, the flow, template-by-template guidance, the run lifecycle, and the
+quality loops. `/task-stats` summarizes recorded runs (latency, cost, verify
+pass rate) from the agent-dir metrics — all projects, or one with an
 argument.
 
 ## Configuration

@@ -42,6 +42,11 @@ workflow decisions that are better expressed as deterministic code.
 
 ## Architecture
 
+> **Agent-facing workflow**: what the conversational agent is supposed to do,
+> the templates (`/plan`, `/build`, `/survey`), the workflow contract, and
+> the run lifecycle are documented in [`workflow.md`](workflow.md). This
+> section is the implementation architecture underneath it.
+
 ```
 ┌────────────────────────────────────────────────────────────┐
 │  Conversational model (main pi session)                    │
