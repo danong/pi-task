@@ -605,6 +605,14 @@ workspaces are left in place so recovery is scripted from the artifact
 rather than LLM-discovered (`jj workspace list` names survive; each
 dangling id can be squashed into the base manually).
 
+**Recovery guide (R4).** The artifact carries a scripted recovery guide
+(`recovery` field): the commands to stack the preserved workspaces onto
+the task base (rebase in dependency order, re-resolving ids after every
+command, then squash), to abandon the AI base/stubs BEFORE pushing
+(description-less commits refuse push), and the add-vs-delete conflict
+warning (resolve via `:ours`/`:theirs`, never mid-stack abandon — that
+drops the other side's changes).
+
 Orchestrator read-only jj commands (`jj log -r @-`, review diffs, repo-map
 `jj file list`) pass `--ignore-working-copy`: jj snapshots the working copy
 even for read-only commands (writing a "snapshot working copy" op), and
@@ -638,11 +646,45 @@ jj diff --from <base-commit-id> --to <ws-@> --summary  # must be empty
 jj file list -r <base-commit-id>                       # non-empty, holds every worker file
 
 # On merge failure the workspaces are PRESERVED (never forgotten) and a
-# .failure.json records names + dangling commit ids + conflicted files.
-# On success, cleanup: forget the (now-empty) workspace @s, delete the dirs
+# .failure.json records names + dangling commit ids + conflicted files +
+# the recovery guide (stacking commands, stub-abandon, add-vs-delete
+# :ours/:theirs). On worker failure WITHOUT a merge, each workspace's
+# uncommitted state is rescue-committed inside the preserved workspace
+# ("rescue: aborted task run (<cause>)", R3) and the artifact names the
+# rescue commits. On success, cleanup: forget the (now-empty) workspace
+# @s, delete the dirs
 jj workspace forget pi-task-1
 jj workspace forget pi-task-2
 ```
+
+**No description-less stubs (R1).** The parallel finally restores the main
+working copy with `jj new` (fresh empty user commit on the merged base)
+ONLY when a merge actually landed. On a no-merge failure — a worker
+failure before the merge path — the stub is NOT created: it is a
+description-less commit and jj refuses to push description-less commits
+(the observed failure mode: the stub blocked a real push and cascaded
+into a conflict nightmare). Whatever remains in the ancestry (e.g. the
+AI-authored task base, described with the spec goal) carries a
+description.
+
+**Finalization-incomplete aborts (R2, third outcome).** An aborted worker
+whose checklist relay showed ALL requirements done at abort (the worker
+committed everything and was verifying/yielding) is classified
+"finalization-incomplete" (`isFinalizationIncomplete` — pure). Parallel:
+when every failed worker is finalization-incomplete, the run proceeds to
+the atomic combine + union verification gate instead of failing flat;
+pass → success-with-caveat (merged commit id + file delta + "worker k
+aborted during finalization; verified post-merge"); fail → the failure
+path with preserved workspaces. Single-worker: verification runs on the
+committed tree post-abort; pass → success-with-caveat with the worker's
+commit ids; fail → the failure path. The gate always gates — never merge
+or claim success without it.
+
+**Bounded jj calls (R5).** Every `execJj` call is bounded by
+`DEFAULT_JJ_TIMEOUT_MS` (~120s, overridable per call); the failure path
+passes a tighter bound (`FAILURE_PATH_JJ_TIMEOUT_MS`) so resolving
+workspace commit ids and rescue-committing wedged workspaces can never
+hang the abort.
 
 If the union ladder leaves conflicts (markers still present — typically
 binary files), the orchestrator records them (escalation payload: paths +
@@ -720,7 +762,9 @@ orchestrator writes a failure artifact to
 `<metricsDir>/<project>/<run_id>.failure.json`
 (`buildFailureArtifact` / `writeFailureArtifact` in metrics.ts) so a run that
 dies without a manifest (worker timeout, aborted review, parallel failure) is
-inspectable after the fact.
+inspectable after the fact. Parallel failure artifacts additionally carry the
+R4 recovery guide and the R3 rescue-commit records (see Parallel workers
+above).
 
 ## Worker Tool Surface
 

@@ -19,7 +19,11 @@ import {
 	buildFixPrompt,
 	parseDiffStat,
 	classifyOverlapDiffs,
+	isFinalizationIncomplete,
+	classifyWorkerFailures,
+	buildRecoveryGuide,
 } from "./orchestrator.ts";
+import type { ChecklistProgress } from "./checklist-relay.ts";
 import type { Finding, ReviewResult } from "./schemas/findings.ts";
 
 const SPEC = `## Goal
@@ -342,6 +346,99 @@ function testClassifyOverlapDiffs(errors: string[]): void {
 	console.log("✓ classifyOverlapDiffs: comment/whitespace → union path, code/binary → substantive (R5)");
 }
 
+/** isFinalizationIncomplete / classifyWorkerFailures: the R2 third-outcome
+ *  classification — an aborted worker whose checklist relay showed ALL
+ *  requirements done at abort (the worker committed everything and was
+ *  verifying/yielding) drives the merge attempt instead of a flat failure. */
+function testFinalizationIncomplete(errors: string[]): void {
+	const check = (cond: boolean, msg: string): void => {
+		if (!cond) errors.push(msg);
+	};
+
+	// Null / uninitialized / partial progress → NOT finalization-incomplete.
+	check(isFinalizationIncomplete(null) === false, "null progress → not finalization-incomplete");
+	check(isFinalizationIncomplete({ done: 0, total: 3 } as ChecklistProgress) === false, "0/3 → not");
+	check(isFinalizationIncomplete({ done: 2, total: 3 } as ChecklistProgress) === false, "2/3 (mid-work) → not");
+	check(isFinalizationIncomplete({ done: 0, total: 0 } as ChecklistProgress) === false,
+		"0/0 (never initialized) → not");
+
+	// All requirements done at abort → finalization-incomplete (defensive:
+	// done >= total — the relay never over-reports, but a stale total must
+	// not flip the class back to mid-work).
+	check(isFinalizationIncomplete({ done: 3, total: 3 } as ChecklistProgress) === true, "3/3 → finalization-incomplete");
+	check(isFinalizationIncomplete({ done: 5, total: 3 } as ChecklistProgress) === true,
+		"done ≥ total → finalization-incomplete (defensive)");
+
+	// classifyWorkerFailures: EVERY failed worker must be
+	// finalization-incomplete for the run to attempt the merge.
+	check(classifyWorkerFailures([]) === "abort", "no failed workers → abort (vacuous)");
+	check(classifyWorkerFailures([null]) === "abort", "unclassified failed worker → abort");
+	check(classifyWorkerFailures([{ done: 1, total: 2 } as ChecklistProgress]) === "abort", "mid-work failed worker → abort");
+	check(
+		classifyWorkerFailures([
+			{ done: 2, total: 2 } as ChecklistProgress,
+			{ done: 1, total: 1 } as ChecklistProgress,
+		]) === "merge",
+		"all failed workers finalization-incomplete → merge",
+	);
+	check(
+		classifyWorkerFailures([
+			{ done: 2, total: 2 } as ChecklistProgress,
+			null,
+		]) === "abort",
+		"one unclassified failed worker → abort",
+	);
+	check(
+		classifyWorkerFailures([
+			{ done: 2, total: 2 } as ChecklistProgress,
+			{ done: 1, total: 2 } as ChecklistProgress,
+		]) === "abort",
+		"one mid-work failed worker → abort (mixed class)",
+	);
+
+	console.log("✓ finalization-incomplete classification: all-done-at-abort drives the merge attempt (R2)");
+}
+
+/** buildRecoveryGuide: the R4 scripted recovery guide the merge/worker-
+ *  failure artifact carries — stacking commands, the stub-abandon-before-
+ *  push warning, and the add-vs-delete :ours/:theirs warning. */
+function testRecoveryGuide(errors: string[]): void {
+	const check = (cond: boolean, msg: string): void => {
+		if (!cond) errors.push(msg);
+	};
+
+	const guide = buildRecoveryGuide({
+		cause: "Parallel workers failed: wall-clock budget expired",
+		workspaces: [
+			{ name: "pi-task-ab1-0", commit_id: "aaaa", rescue_commit_id: "bbbb" },
+			{ name: "pi-task-ab1-1", commit_id: "cccc" },
+		],
+	});
+
+	// Stacking commands: discover → rebase in dependency order → squash.
+	check(guide.includes("jj workspace list"), "guide names the workspace discovery command");
+	check(guide.includes("jj log -r all()"), "guide names the commit discovery command");
+	check(guide.includes("jj rebase -s"), "guide stacks the workspaces with jj rebase");
+	check(guide.includes("jj squash --from"), "guide squashes the stacked commits into the base");
+	check(guide.includes("Re-resolve ids AFTER every command"), "guide warns about stale ids after rebase");
+
+	// Stub-abandon-before-push warning (description-less commits refuse push).
+	check(guide.includes("BEFORE pushing"), "guide warns about pushing");
+	check(guide.includes("description-less"), "guide warns that description-less commits refuse push");
+	check(guide.includes("jj abandon"), "guide abandons the AI base/stubs");
+	check(guide.includes("empty description"), "guide tells how to verify no empty descriptions remain");
+
+	// Add-vs-delete conflict warning (:ours/:theirs, not mid-stack abandon).
+	check(guide.includes("Add-vs-delete"), "guide warns about add-vs-delete conflicts");
+	check(guide.includes(":ours") && guide.includes(":theirs"), "guide resolves via :ours/:theirs");
+	check(guide.includes("mid-stack abandon"), "guide warns against mid-stack abandon");
+
+	// The rescued uncommitted state is named where it lives.
+	check(guide.includes("bbbb") && guide.includes("pi-task-ab1-0"), "guide names the rescue commit + workspace");
+
+	console.log("✓ recovery guide: stacking + stub-abandon + add-vs-delete warnings (R4)");
+}
+
 export async function runTests(): Promise<void> {
 	const errors: string[] = [];
 	console.log("── test-orchestrator: spec parse + splitSpec + aggregateSubSpecs + runVerification + fix loop ──");
@@ -352,6 +449,8 @@ export async function runTests(): Promise<void> {
 	testFixLoop(errors);
 	testParseDiffStat(errors);
 	testClassifyOverlapDiffs(errors);
+	testFinalizationIncomplete(errors);
+	testRecoveryGuide(errors);
 
 	if (errors.length > 0) {
 		throw new Error("test-orchestrator failed:\n  ✗ " + errors.join("\n  ✗ "));

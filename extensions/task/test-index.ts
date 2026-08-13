@@ -501,7 +501,23 @@ function testResultMapping(errors: string[]): void {
 	check(skippedSummary.includes("Review skipped (single-worker only)"),
 		`summary notes the skipped review, got: ${skippedSummary}`);
 
-	console.log("✓ taskResultToToolReturn: typed mapping + conflicts/metrics/verification/review_skipped");
+	// caveat (R2): a finalization-incomplete recovery reports success WITH
+	// the caveat — surfaced in the tool return and the summary.
+	const caveated = taskResultToToolReturn(fakeResult({
+		caveat: "worker 1 aborted during finalization; verified post-merge — merged commit xyz, 3 file(s) changed",
+	}));
+	check(caveated.success === true, "finalization-incomplete recovery maps as a success");
+	check(caveated.caveat !== undefined && caveated.caveat.includes("aborted during finalization"),
+		`caveat surfaced in the tool return, got: ${caveated.caveat}`);
+	const plain = taskResultToToolReturn(fakeResult());
+	check(!("caveat" in plain), "caveat omitted when absent");
+	const caveatSummary = summarizeResult(fakeResult({
+		caveat: "worker 1 aborted during finalization; verified post-merge — merged commit xyz, 3 file(s) changed",
+	}));
+	check(caveatSummary.includes("aborted during finalization") && caveatSummary.includes("verified post-merge"),
+		`summary carries the caveat, got: ${caveatSummary}`);
+
+	console.log("✓ taskResultToToolReturn: typed mapping + conflicts/metrics/verification/review_skipped + caveat");
 }
 
 function testReviewReport(errors: string[]): void {

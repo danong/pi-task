@@ -15,18 +15,33 @@
  * 14. Merge-failure artifact (R2): a simulated merge failure writes the
  *    .failure.json recording workspace names, dangling commit ids, and
  *    conflicted files — the workspaces survive for scripted recovery.
+ * 15. Recovery guide (R4): the artifact carries the scripted recovery
+ *    guide (stacking commands, stub-abandon-before-push, add-vs-delete
+ *    :ours/:theirs) and names R3 rescue commits.
+ * 16. Bounded jj (R5): execJj's default ~120s bound, per-call override,
+ *    and the failure path's tighter bound on wedged workspaces.
+ * 17. Rescue commits (R3): a parallel workspace's uncommitted state is
+ *    captured inside the preserved workspace.
+ * 18. No-merge-failure stub (R1): the finally's `jj new` identity restore
+ *    runs only when a merge actually landed — never a description-less
+ *    stub on the failure path.
  *
  * splitSpec moved to test-orchestrator.ts; the parallel LLM integration
  * moved to test-e2e.ts section 5.
  */
 
 import { execFile, execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
 import { aiIdentityToml } from "./config.ts";
-import { rescueAbortedWorkBestEffort, writeMergeFailureArtifact } from "./orchestrator.ts";
+import {
+	rescueAbortedWorkBestEffort,
+	rescueWorkspaceStateBestEffort,
+	restoreParallelWorkingCopy,
+	writeMergeFailureArtifact,
+} from "./orchestrator.ts";
 import {
 	assertCleanWorkingCopy,
 	assertMerged,
@@ -35,7 +50,9 @@ import {
 	conflictHunks,
 	createAiTaskBase,
 	createWorkspace,
+	DEFAULT_JJ_TIMEOUT_MS,
 	detectChangeConflicts,
+	execJj,
 	mergeWorkspace,
 	mergeWorkspacesAtomic,
 	parseSummaryChanges,
@@ -1167,6 +1184,176 @@ async function testWorkspacesConsumed(errors: string[]): Promise<void> {
 	console.log("✓ assertWorkspacesConsumed: empty stub on the pre-merge base passes (false-alarm fix); unconsumed work fails");
 }
 
+// ─── R5: bounded jj calls ────────────────────────────────────────────
+
+/** R5: execJj is bounded — default ~120s, overridable per call, and a
+ *  wedged command (the failure path resolves workspace commit ids on
+ *  possibly-wedged workspaces) can never hang the abort. */
+async function testJjTimeoutBounded(errors: string[]): Promise<void> {
+	const check = (cond: boolean, msg: string): void => {
+		if (!cond) errors.push(msg);
+	};
+
+	const testDir = mkdtempSync(join(tmpdir(), "pi-task-ws-timeout-"));
+	try {
+		initRepo(testDir);
+
+		// The default bound is ~120s (R5).
+		check(DEFAULT_JJ_TIMEOUT_MS === 120_000, `default jj bound should be 120s, got ${DEFAULT_JJ_TIMEOUT_MS}`);
+
+		// A normal call: bounded, succeeds, no timeout flag.
+		const ok = await execJj(["status"], testDir);
+		check(ok.code === 0, `jj status should succeed, got code ${ok.code}: ${ok.stderr.trim()}`);
+		check(ok.timedOut !== true, "no timedOut flag on a clean call");
+
+		// A 1ms bound: the call is killed — it must return (bounded), report
+		// timedOut, and carry a stderr note naming the bound. (jj process
+		// startup alone far exceeds 1ms, so this is deterministic.)
+		const t0 = Date.now();
+		const timed = await execJj(["status"], testDir, { timeoutMs: 1 });
+		const elapsed = Date.now() - t0;
+		check(timed.timedOut === true,
+			`a 1ms bound must time out, got code ${timed.code} timedOut ${timed.timedOut}`);
+		check(elapsed < 5000, `timed-out call must return quickly (took ${elapsed}ms)`);
+		check(timed.stderr.includes("timed out"), "timeout note in stderr");
+
+		// The failure path's tighter bound is honored through
+		// workspaceCommitId's opts pass-through (a wedged workspace can never
+		// stall the abort): a 1ms bound surfaces as an error message naming
+		// the timeout instead of hanging.
+		let msg = "";
+		try {
+			await workspaceCommitId(testDir, "no-such-workspace", { timeoutMs: 1 });
+		} catch (err) {
+			msg = (err as Error).message;
+		}
+		check(msg.includes("timed out"), `wedged-workspace resolution is bounded, got: ${JSON.stringify(msg)}`);
+	} finally {
+		rmSync(testDir, { recursive: true, force: true });
+	}
+	console.log("✓ execJj timeout: bounded by default, overridable per call, failure path can't hang (R5)");
+}
+
+// ─── R3: rescue uncommitted workspace state ──────────────────────────
+
+/** R3: on parallel worker failure, each preserved workspace's uncommitted
+ *  state is captured by a rescue commit INSIDE the workspace ("rescue:
+ *  aborted task run (<cause>)") — untracked files and scratch under the
+ *  workspace's /tmp included. The returned id is what the failure artifact
+ *  records as where the uncommitted state lives. */
+async function testRescueWorkspaceState(errors: string[]): Promise<void> {
+	const check = (cond: boolean, msg: string): void => {
+		if (!cond) errors.push(msg);
+	};
+
+	const testDir = mkdtempSync(join(tmpdir(), "pi-task-ws-rescws-"));
+	try {
+		initRepo(testDir);
+		const baseChange = await taskBaseChangeId(testDir);
+
+		const w1 = await createWorkspace(testDir, "rescws-1");
+		// The worker committed real work, then left a dirty working copy
+		// (uncommitted WIP + scratch under the workspace's tmp/).
+		writeFileSync(join(w1, "work.txt"), "committed\n", "utf-8");
+		jj(["commit", "-m", "rescws committed work"], w1);
+		writeFileSync(join(w1, "wip.txt"), "half-done\n", "utf-8");
+		mkdirSync(join(w1, "tmp"), { recursive: true });
+		writeFileSync(join(w1, "tmp", "scratch.json"), "{}\n", "utf-8");
+
+		const rescueId = await rescueWorkspaceStateBestEffort(
+			w1,
+			"Parallel workers failed: wall-clock budget expired",
+		);
+		check(rescueId !== null && /^[0-9a-f]{40}$/.test(rescueId!), "rescue commit id returned");
+		const msg = jj(["log", "-r", "@-", "--no-graph", "-T", "description.first_line()"], w1).trim();
+		check(msg.startsWith("rescue: aborted task run"), `rescue commit message, got: ${msg}`);
+		check(msg.includes("wall-clock budget expired"), `cause embedded in the rescue message, got: ${msg}`);
+		check(jj(["file", "list"], w1).includes("wip.txt"), "untracked WIP captured by the rescue commit");
+		check(jj(["file", "list"], w1).includes("tmp/scratch.json"),
+			"scratch under the workspace's tmp captured by the rescue commit");
+		// The rescue commit stacks INSIDE the preserved workspace chain (the
+		// worker's committed work is its parent — squashing base..@- recovers
+		// everything).
+		const parentDesc = jj(["log", "-r", "@--", "--no-graph", "-T", "description.first_line()"], w1).trim();
+		check(parentDesc === "rescws committed work",
+			`rescue commit stacks on the worker's commits, got: ${parentDesc}`);
+		check((await workspaceCommitId(testDir, "rescws-1")) !== rescueId,
+			"the workspace @ is the fresh empty WC — the rescue commit is its parent (the artifact records the rescue id)");
+
+		// A clean workspace → no rescue commit.
+		const w2 = await createWorkspace(testDir, "rescws-2");
+		const before = jj(["log", "-r", "all()", "--no-graph", "-T", "commit_id"], testDir).trim().length;
+		const none = await rescueWorkspaceStateBestEffort(w2, "cause");
+		check(none === null, "clean workspace → no rescue commit");
+		const after = jj(["log", "-r", "all()", "--no-graph", "-T", "commit_id"], testDir).trim().length;
+		check(before === after, "no new commits on a clean workspace");
+
+		// The rescue helper never throws on a wedged workspace (bounded).
+		const bounded = await rescueWorkspaceStateBestEffort("/nonexistent-dir", "cause", { timeoutMs: 1 });
+		check(bounded === null, "rescue on an unusable workspace → null (best effort)");
+
+		await cleanupWorkspace(testDir, "rescws-1", w1);
+		await cleanupWorkspace(testDir, "rescws-2", w2);
+	} finally {
+		rmSync(testDir, { recursive: true, force: true });
+	}
+	console.log("✓ rescue-commit: parallel workspace WIP preserved inside the workspace (R3)");
+}
+
+// ─── R1: no description-less stub on a no-merge failure ──────────────
+
+/** R1: the parallel finally creates the fresh working-copy stub (`jj new`
+ *  identity restore) ONLY when a merge actually landed. On a no-merge
+ *  failure (worker failure before the merge path) the stub — a
+ *  description-less commit, which jj refuses to push — must not appear in
+ *  the user's ancestry: whatever remains (the AI-authored task base,
+ *  described with the spec goal) carries a description. */
+async function testNoStubOnNoMergeFailure(errors: string[]): Promise<void> {
+	const check = (cond: boolean, msg: string): void => {
+		if (!cond) errors.push(msg);
+	};
+
+	const testDir = mkdtempSync(join(tmpdir(), "pi-task-ws-stub-"));
+	try {
+		initRepo(testDir);
+		const identityDir = mkdtempSync(join(tmpdir(), "pi-task-identity-"));
+		const identityFile = join(identityDir, "jj-identity.toml");
+		writeFileSync(identityFile, aiIdentityToml("Pi (deepseek-v4-flash)", "noreply@danong.dev"), "utf-8");
+		await createAiTaskBase(testDir, identityFile, "Handle UTF-8 BOM");
+
+		// No-merge failure: the finally's restore must NOT create the stub.
+		await restoreParallelWorkingCopy(testDir, { identityDir, mergeLanded: false });
+
+		// Every visible commit carries a description (jj refuses to push
+		// description-less commits) and the identity dir was cleaned up.
+		const descs = jj(["log", "-r", "all()", "--no-graph", "-T", "description.first_line()"], testDir)
+			.trim()
+			.split("\n")
+			.filter((l) => l.trim().length > 0);
+		check(descs.every((d) => d.trim().length > 0),
+			`no description-less commit may remain, got: ${JSON.stringify(descs)}`);
+		check(!existsSync(identityDir), "identity dir removed by the restore");
+		const at = jj(["log", "-r", "@", "--no-graph", "-T", "description.first_line()"], testDir).trim();
+		check(at === "task: Handle UTF-8 BOM", `the described AI base remains as @, got: ${at}`);
+
+		// When a merge DID land, the restore creates the stub — and only then.
+		const identityDir2 = mkdtempSync(join(tmpdir(), "pi-task-identity-"));
+		const identityFile2 = join(identityDir2, "jj-identity.toml");
+		writeFileSync(identityFile2, aiIdentityToml("Pi (deepseek-v4-flash)", "noreply@danong.dev"), "utf-8");
+		await createAiTaskBase(testDir, identityFile2, "Handle UTF-8 BOM");
+		await restoreParallelWorkingCopy(testDir, { identityDir: identityDir2, mergeLanded: true });
+		const stub = jj(["log", "-r", "@", "--no-graph", "-T", "if(empty, 'EMPTY', 'X')"], testDir).trim();
+		check(stub === "EMPTY", "merge landed → fresh empty stub created");
+		const stubParent = jj(["log", "-r", "@-", "--no-graph", "-T", "description.first_line()"], testDir).trim();
+		check(stubParent === "task: Handle UTF-8 BOM",
+			`stub sits on the described AI/merged base, got: ${stubParent}`);
+		check(!existsSync(identityDir2), "second identity dir removed too");
+	} finally {
+		rmSync(testDir, { recursive: true, force: true });
+	}
+	console.log("✓ no-merge failure: no description-less stub; stub only when a merge landed (R1)");
+}
+
 // ─── Section 14: merge-failure artifact (R2) ─────────────────────────
 
 /**
@@ -1199,11 +1386,12 @@ async function testMergeFailureArtifact(errors: string[]): Promise<void> {
 		const at1 = await workspaceCommitId(testDir, "fail-1");
 		const at2 = await workspaceCommitId(testDir, "fail-2");
 		// Simulated failure: the atomic combine never ran — the @s are
-		// dangling (nothing landed in the base), both files conflicted.
+		// dangling (nothing landed in the base), both files conflicted, and
+		// worker 1's uncommitted state was rescued (R3).
 		writeMergeFailureArtifact({
 			cause: "simulated merge failure",
 			workspaces: [
-				{ name: "fail-1", commit_id: at1 },
+				{ name: "fail-1", commit_id: at1, rescue_commit_id: at1 },
 				{ name: "fail-2", commit_id: at2 },
 			],
 			danglingCommitIds: [at1, at2],
@@ -1222,8 +1410,9 @@ async function testMergeFailureArtifact(errors: string[]): Promise<void> {
 		const parsed = JSON.parse(readFileSync(join(dir, files[0]), "utf-8")) as {
 			kind: string;
 			cause: string;
+			recovery?: string;
 			merge?: {
-				workspaces: Array<{ name: string; commit_id: string }>;
+				workspaces: Array<{ name: string; commit_id: string; rescue_commit_id?: string }>;
 				dangling_commit_ids: string[];
 				conflicted_files: string[];
 				conflict_hunks?: Record<string, string>;
@@ -1243,6 +1432,11 @@ async function testMergeFailureArtifact(errors: string[]): Promise<void> {
 			"workspace commit ids recorded (the dangling ids)",
 		);
 		check(
+			parsed.merge!.workspaces[0].rescue_commit_id === at1 &&
+				parsed.merge!.workspaces[1].rescue_commit_id === undefined,
+			"R3 rescue commit ids recorded where the uncommitted state lives",
+		);
+		check(
 			parsed.merge!.dangling_commit_ids.length === 2 &&
 				parsed.merge!.dangling_commit_ids.includes(at1) &&
 				parsed.merge!.dangling_commit_ids.includes(at2),
@@ -1253,6 +1447,18 @@ async function testMergeFailureArtifact(errors: string[]): Promise<void> {
 			`conflicted files recorded, got ${JSON.stringify(parsed.merge!.conflicted_files)}`,
 		);
 		check(parsed.merge!.conflict_hunks?.["a.txt"] === "<<<<<<< one\n", "conflict hunks recorded");
+
+		// R4: the artifact carries the scripted recovery guide — stacking
+		// commands, the stub-abandon-before-push warning, and the
+		// add-vs-delete :ours/:theirs warning.
+		check(typeof parsed.recovery === "string" && parsed.recovery.length > 100,
+			"recovery guide present in the artifact");
+		check(parsed.recovery!.includes("jj rebase -s"), "guide stacks the workspaces");
+		check(parsed.recovery!.includes("description-less"), "guide warns about description-less commits refusing push");
+		check(parsed.recovery!.includes(":ours") && parsed.recovery!.includes(":theirs"),
+			"guide resolves add-vs-delete via :ours/:theirs");
+		check(parsed.recovery!.includes("mid-stack abandon"), "guide warns against mid-stack abandon");
+		check(parsed.recovery!.includes(at1), "guide names the rescue commit (where the uncommitted state lives)");
 
 		// No metricsDir → no artifact, no throw (the best-effort contract).
 		writeMergeFailureArtifact({
@@ -1283,7 +1489,7 @@ async function testMergeFailureArtifact(errors: string[]): Promise<void> {
 
 export async function runTests(): Promise<void> {
 	const errors: string[] = [];
-	console.log("── test-workspace: jj mechanics + conflict + final-state conflicts + commit ids + guard + merge integrity + fork-proof + atomic combine + consistency gate + union ladder + failure artifact (real jj) ──");
+	console.log("── test-workspace: jj mechanics + conflict + final-state conflicts + commit ids + guard + merge integrity + fork-proof + atomic combine + consistency gate + union ladder + failure artifact + recovery guide + jj timeout + rescue + no-stub (real jj) ──");
 	await testMechanics(errors);
 	await testConflict(errors);
 	await testFinalStateConflicts(errors);
@@ -1304,6 +1510,9 @@ export async function runTests(): Promise<void> {
 	testParseSummaryChanges(errors);
 	await testRescueAbortedWork(errors);
 	await testWorkspacesConsumed(errors);
+	await testJjTimeoutBounded(errors);
+	await testRescueWorkspaceState(errors);
+	await testNoStubOnNoMergeFailure(errors);
 
 	if (errors.length > 0) {
 		throw new Error("test-workspace failed:\n  ✗ " + errors.join("\n  ✗ "));

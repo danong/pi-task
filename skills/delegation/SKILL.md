@@ -62,8 +62,24 @@ live in the repo as siblings on the base:
 3. Verify the chain with parents and files after every step:
    `jj log --no-graph -T 'commit_id.short() ++ " parents=[" ++ parents.map(|p| p.commit_id().short()).join(",") ++ "]"'` and check the
    materialized files exist (`ls`).
-4. A pure-comment conflict (both workers edited a header comment) resolves by
+4. **BEFORE pushing, abandon the AI task base and any empty working-copy
+   stubs** — jj refuses to push description-less commits (the empty AI base
+   and stub working copies carry no description). `jj abandon <commit-id>`
+   each one, then verify `jj log -r all()` shows no commit with an empty
+   description.
+5. Add-vs-delete conflicts (a file deleted on one side, kept on the other)
+   resolve via `:ours`/`:theirs`, NOT by abandoning a commit mid-stack — a
+   mid-stack abandon silently drops whichever side the abandoned commit
+   held: `jj resolve --tool :ours -r <commit> <path>` (keep the modified
+   side) / `jj resolve --tool :theirs -r <commit> <path>` (keep the
+   deletion).
+6. A pure-comment conflict (both workers edited a header comment) resolves by
    joining both sides — `git merge-file --union` over the three sides, or edit
    the markers by hand.
-5. Run the full verification gate on the merged tree before considering the
+7. Run the full verification gate on the merged tree before considering the
    merge done.
+
+Rescue commits: when a run aborted with uncommitted workspace state, the
+engine rescue-commits it inside the preserved workspace (`rescue: aborted
+task run (...)` — the failure artifact names the commit). Stack and squash
+those with the workspace's other commits; do not abandon them.

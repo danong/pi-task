@@ -41,7 +41,7 @@ import {
 	PREWALK_EXTENSION_PATH,
 	type SwapInfo,
 } from "./prewalk.ts";
-import { attachChecklistRelay } from "./checklist-relay.ts";
+import { attachChecklistRelay, type ChecklistProgress } from "./checklist-relay.ts";
 import { resolveSandbox, type ResolvedSandbox } from "./sandbox.ts";
 import {
 	DEFAULT_TASK_CONFIG,
@@ -60,6 +60,7 @@ import {
 	detectChangeConflicts,
 	diffForWorkspacePath,
 	execJj,
+	filesChangedBetween,
 	mergeWorkspacesAtomic,
 	removeWorkspace,
 	resolveCommitId,
@@ -104,7 +105,13 @@ import {
  */
 export interface MergeFailureInfo {
 	cause: string;
-	workspaces: Array<{ name: string; commit_id: string }>;
+	workspaces: Array<{
+		name: string;
+		commit_id: string;
+		/** R3: the rescue commit capturing this workspace's uncommitted state
+		 *  (absent when clean / the rescue failed — best effort). */
+		rescue_commit_id?: string;
+	}>;
 	danglingCommitIds: string[];
 	conflictedFiles: string[];
 	conflictHunks?: Record<string, string>;
@@ -115,7 +122,8 @@ export interface MergeFailureInfo {
 }
 
 /** Write a merge-failure artifact via the existing .failure.json pattern
- *  (metrics.ts writeFailureArtifact), extended with the R2 merge record. */
+ *  (metrics.ts writeFailureArtifact), extended with the R2 merge record
+ *  and the R4 scripted recovery guide. */
 export function writeMergeFailureArtifact(opts: MergeFailureInfo): void {
 	if (!opts.metricsDir) return;
 	try {
@@ -130,10 +138,221 @@ export function writeMergeFailureArtifact(opts: MergeFailureInfo): void {
 				conflicted_files: opts.conflictedFiles,
 				conflict_hunks: opts.conflictHunks,
 			},
+			// R4: recovery happens on the USER's repo, scripted from the
+			// artifact — the guide travels with it.
+			recovery: buildRecoveryGuide(opts),
 		});
 		writeFailureArtifact(artifact, { metricsDir: opts.metricsDir, project: opts.project });
 	} catch {
 		// Best effort — the original failure propagates regardless.
+	}
+}
+
+// ─── Abort/failure path (R1-R5) ─────────────────────────────────────
+
+/** Tighter jj bound for the abort/failure path (R5): resolving workspace
+ *  commit ids and rescue-committing wedged workspaces must never stall the
+ *  abort — DEFAULT_JJ_TIMEOUT_MS already bounds every call; this keeps the
+ *  failure path snappy. */
+const FAILURE_PATH_JJ_TIMEOUT_MS = 30_000;
+
+/**
+ * R2: the third outcome — classify an aborted worker as
+ * "finalization-incomplete" when its checklist relay showed ALL
+ * requirements done at abort (done === total): the worker had committed
+ * everything and was verifying or yielding when it was killed. Its
+ * committed work is complete, so the run attempts finalization (merge +
+ * verification gate) instead of failing flat. Pure — hermetically tested.
+ */
+export function isFinalizationIncomplete(progress: ChecklistProgress | null): boolean {
+	return progress !== null && progress.total > 0 && progress.done >= progress.total;
+}
+
+/**
+ * R2: decide a parallel run's response to worker failures from the failed
+ * workers' checklist progress. Every failed worker finalization-incomplete
+ * → "merge": the committed work is complete, so the run proceeds to the
+ * atomic combine + union verification gate (pass → success-with-caveat;
+ * fail → the failure path with preserved workspaces). ANY failed worker
+ * aborted mid-work → "abort": the flat failure path (preserve workspaces,
+ * rescue uncommitted state, failure artifact). Empty input (no failed
+ * workers) → "abort" (vacuous — the caller only consults this when at
+ * least one worker failed). Pure — hermetically tested.
+ */
+export function classifyWorkerFailures(
+	progresses: Array<ChecklistProgress | null>,
+): "merge" | "abort" {
+	return progresses.length > 0 && progresses.every(isFinalizationIncomplete) ? "merge" : "abort";
+}
+
+/**
+ * R3: rescue a parallel workspace's uncommitted state on worker failure —
+ * a rescue commit INSIDE the preserved workspace ("rescue: aborted task
+ * run (<cause>)") capturing the worker's dirty working copy, untracked
+ * files included (the workspace lives under the host /tmp, so staged
+ * scratch under the workspace's /tmp is captured too). Returns the rescue
+ * commit id, or null when there was nothing to rescue or the rescue failed
+ * (best effort — never masks the original failure). Exported for the
+ * hermetic test (real jj on a temp repo).
+ */
+export async function rescueWorkspaceStateBestEffort(
+	workspaceDir: string,
+	cause: string,
+	opts?: { timeoutMs?: number },
+): Promise<string | null> {
+	try {
+		const status = await execJj(["status"], workspaceDir, opts);
+		if (status.code !== 0 || /has no changes/i.test(status.stdout)) return null;
+		const reason = (cause || "worker failure").slice(0, 140);
+		const commit = await execJj(
+			["commit", "-m", `rescue: aborted task run (${reason})`],
+			workspaceDir,
+			opts,
+		);
+		if (commit.code !== 0) return null;
+		// After jj commit the rescue commit is @- (jj commit finalizes the
+		// working copy and opens a fresh empty @ on top).
+		const id = await execJj(
+			["log", "-r", "@-", "-T", "commit_id", "--no-graph", "--ignore-working-copy"],
+			workspaceDir,
+			opts,
+		);
+		return id.code === 0 && /^[0-9a-f]{40}$/.test(id.stdout.trim()) ? id.stdout.trim() : null;
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * R4: the scripted recovery guide the merge/worker-failure artifact
+ * carries — how to stack the preserved workspaces onto the task base, how
+ * to abandon the AI base/stubs BEFORE pushing (jj refuses to push
+ * description-less commits), and the add-vs-delete conflict warning
+ * (resolve via :ours/:theirs — never mid-stack abandon, which drops the
+ * other side's changes). Workspace names + rescue commit ids interpolated
+ * when known. Pure — hermetically tested.
+ */
+export function buildRecoveryGuide(opts: {
+	cause: string;
+	workspaces: Array<{ name: string; commit_id: string; rescue_commit_id?: string }>;
+}): string {
+	const lines = [
+		`The task run failed before completing: ${opts.cause}`,
+		"",
+		"The worker workspaces were PRESERVED — their commits still live in the repo. Recover manually:",
+		"",
+		"1. Find the workspaces and their commits:",
+		"   jj workspace list",
+		"   jj log -r all()   # the worker commits carry the sub-spec/run descriptions",
+		"",
+		"2. Stack the preserved workspaces' commits onto the task base, one workspace at a",
+		"   time, in dependency order, then squash them into the base:",
+		"   jj rebase -s <workspace-commit> -o <base-commit>",
+		"   jj squash --from <base-commit>..<workspace-tip> --into <base-commit>",
+		"   Re-resolve ids AFTER every command (rebase rewrites commit ids).",
+	];
+	const rescued = opts.workspaces.filter((w) => w.rescue_commit_id);
+	if (rescued.length > 0) {
+		lines.push(
+			"",
+			`   Uncommitted state was rescued into commit(s): ${rescued
+				.map((w) => `${w.name} → ${w.rescue_commit_id}`)
+				.join(", ")} — included in the squashes above.`,
+		);
+	}
+	lines.push(
+		"",
+		"3. BEFORE pushing, abandon the AI-authored task base and any empty working-copy",
+		"   stubs — jj REFUSES to push description-less commits:",
+		"   jj abandon <commit-id>   # every commit whose description is empty + the empty AI base",
+		"   Verify: jj log -r all() shows no commit with an empty description.",
+		"",
+		"4. Add-vs-delete conflicts: a file DELETED on one side and kept on the other",
+		"   resolves via :ours/:theirs, NOT mid-stack abandon (abandoning a commit mid-stack",
+		"   silently drops whichever side the abandoned commit held):",
+		"   jj resolve --tool :ours -r <commit> <path>    # keep the modified side",
+		"   jj resolve --tool :theirs -r <commit> <path>  # keep the deletion",
+		"",
+		"5. Run the full verification gate on the merged tree before considering the merge",
+		"   done.",
+	);
+	return lines.join("\n");
+}
+
+/**
+ * R1: the parallel finally's identity restore, extracted for hermetic
+ * testing. Creates the fresh empty user working-copy commit (`jj new`)
+ * ONLY when a merge actually landed (mergeLanded). On a no-merge failure
+ * (a worker failure before the merge path) the stub must NOT be created:
+ * it is description-less and jj refuses to push description-less commits
+ * (the observed failure mode — the stub blocked a real push and cascaded
+ * into a conflict nightmare). Whatever remains in the ancestry — e.g. the
+ * AI-authored task base, described with the spec goal — must carry a
+ * description. Best effort — never masks the run's outcome. Also removes
+ * the identity config dir.
+ */
+export async function restoreParallelWorkingCopy(
+	cwd: string,
+	opts: { identityDir: string | null; mergeLanded: boolean },
+): Promise<void> {
+	if (!opts.identityDir) return;
+	if (opts.mergeLanded) {
+		try {
+			await execJj(["new"], cwd);
+		} catch {
+			/* best effort */
+		}
+	}
+	try {
+		rmSync(opts.identityDir, { recursive: true, force: true });
+	} catch {
+		/* best effort */
+	}
+}
+
+/**
+ * R2: a zeroed WorkerResult standing in for an aborted worker that never
+ * yielded — the finalization-incomplete success-with-caveat path has no
+ * yield payload (the session died mid-finalization); the manifest's usage
+ * aggregates then carry the yielded workers' real usage, and the caveat
+ * carries the recovery story.
+ */
+function abortedWorkerResult(): WorkerResult {
+	return {
+		yield: {
+			files_changed: [],
+			summary: "worker aborted during finalization (no yield payload)",
+			commit_ids: [],
+			deviations: [],
+		},
+		usage: {
+			turns: 0,
+			tokens_in: 0,
+			tokens_out: 0,
+			cache_read: 0,
+			cache_write: 0,
+			cost_usd: 0,
+			reads: 0,
+			edits: 0,
+		},
+		exitCode: 1,
+		reads: [],
+		turnUsage: [],
+	};
+}
+
+/** Best-effort files-changed list between two explicit revs (R2
+ *  finalization-incomplete path: the aborted workers never yielded, so
+ *  their files come from the merged delta instead of yield payloads). */
+async function filesChangedBetweenBestEffort(
+	cwd: string,
+	from: string,
+	to: string,
+): Promise<string[]> {
+	try {
+		return await filesChangedBetween(cwd, from, to);
+	} catch {
+		return [];
 	}
 }
 
@@ -378,6 +597,11 @@ export interface TaskResult {
 	 *  only, and a parallel run ignores the flag and verifies only. Set when
 	 *  opts.review is true on a parallel run. */
 	reviewSkipped?: boolean;
+	/** R2: success-with-caveat note — present when a finalization-incomplete
+	 *  abort recovered (the merge landed and the verification gate PASSED
+	 *  post-abort): names the aborted worker(s), the merged commit id, and
+	 *  the file delta. */
+	caveat?: string;
 	/** Structured per-run metrics manifest (always built in-memory). */
 	manifest?: RunManifest;
 	/** Where the manifest was persisted, when a metricsDir is configured. */
@@ -1144,11 +1368,26 @@ export async function executeTask(opts: ExecuteTaskOptions): Promise<TaskResult>
 	);
 
 	let results: WorkerResult[] = [];
-	// R2: merge-failure state — set when the MERGE path throws (the worker
-	// failure path above keeps its existing cleanup). The finally block then
-	// PRESERVES the worker workspaces so recovery is scripted from the
-	// merge-failure artifact instead of LLM-discovered.
+	// R2: failure state — set when the worker-failure path or the MERGE path
+	// throws. The finally block then PRESERVES the worker workspaces so
+	// recovery is scripted from the failure artifact instead of
+	// LLM-discovered.
 	let mergeFailed: Error | null = null;
+	// R1: set when the atomic combine actually landed — the finally only
+	// creates the fresh working-copy stub (`jj new` identity restore) when a
+	// merge landed; on a no-merge failure the stub (description-less — jj
+	// refuses to push description-less commits) must not appear in the
+	// user's ancestry.
+	let mergeLanded = false;
+	// R2: indexes of the workers that aborted finalization-incomplete — the
+	// run proceeds to the merge + union verification gate instead of failing
+	// flat; the result carries a caveat when the gate passes.
+	let finalizationIncompleteIndexes: number[] = [];
+	// The union verification gate (R2): declared here so the failure path
+	// can consult it and the post-finally success path can report it — it
+	// runs INSIDE the try so a finalization-incomplete gate failure can
+	// preserve the workspaces.
+	let verification!: VerificationResult;
 	// R1/R4/R5: merge metrics for the aggregate manifest (atomic combine,
 	// union resolution, overlap classification).
 	const mergeMetrics: MergeMetrics = {
@@ -1169,32 +1408,62 @@ export async function executeTask(opts: ExecuteTaskOptions): Promise<TaskResult>
 		const failures = settled.filter((r): r is PromiseRejectedResult => r.status === "rejected");
 		if (failures.length > 0) {
 			const message = `Parallel workers failed: ${failures.map((f) => (f.reason as Error).message).join("; ")}`;
-			// R2 (extended): a worker failure preserves the workspaces TOO — a
-			// wall-abort may have committed real per-requirement work, and
-			// losing it is the aborted-work class the artifact exists for. The
-			// record names the workspaces + their @ commit ids (best-effort
-			// resolution — the workers may have died mid-tool); the finally
-			// block below keeps them alive for scripted recovery.
-			mergeFailed = new Error(message);
-			writeMergeFailureArtifact({
-				cause: message,
-				workspaces: await Promise.all(
-					workspaces.map(async (w) => {
-						try {
-							return { name: w.name, commit_id: await workspaceCommitId(cwd, w.name) };
-						} catch {
-							return { name: w.name, commit_id: "" };
-						}
-					}),
-				),
-				danglingCommitIds: [],
-				conflictedFiles: [],
-				metricsDir,
-				project,
-				specMarkdown,
-				tier: budget,
-			});
-			throw new Error(message);
+			// R2 (third outcome): classify each failed worker from its
+			// checklist relay — finalization-incomplete means ALL requirements
+			// were done at abort (the worker committed everything and was
+			// verifying/yielding). When EVERY failed worker is
+			// finalization-incomplete, the committed work is complete: proceed
+			// to the merge path below and let the union verification gate
+			// decide (pass → success-with-caveat; fail → the failure path with
+			// preserved workspaces). Never merge or claim success without the
+			// gate.
+			const failedProgresses = settled
+				.map((r, i) => (r.status === "rejected" ? checklistCtrls[i].latest : null))
+				.filter((p): p is ChecklistProgress => p !== null);
+			if (classifyWorkerFailures(failedProgresses) === "merge") {
+				finalizationIncompleteIndexes = settled
+					.map((r, i) => (r.status === "rejected" ? i : -1))
+					.filter((i) => i >= 0);
+			} else {
+				// Flat worker-failure path: R3 rescues each workspace's
+				// uncommitted state into a rescue commit inside the preserved
+				// workspace ("rescue: aborted task run (<cause>)" — the
+				// artifact names where the uncommitted state lives), the
+				// failure artifact records the workspaces + their @ commit ids
+				// (best-effort resolution — the workers may have died mid-tool,
+				// bounded by FAILURE_PATH_JJ_TIMEOUT_MS so a wedged workspace
+				// never stalls the abort), and the finally block below keeps
+				// the workspaces alive for scripted recovery.
+				mergeFailed = new Error(message);
+				const wsRecords: MergeFailureInfo["workspaces"] = [];
+				for (const ws of workspaces) {
+					let at = "";
+					try {
+						at = await workspaceCommitId(cwd, ws.name, { timeoutMs: FAILURE_PATH_JJ_TIMEOUT_MS });
+					} catch {
+						/* best effort */
+					}
+					const rescueId = await rescueWorkspaceStateBestEffort(ws.dir, message, {
+						timeoutMs: FAILURE_PATH_JJ_TIMEOUT_MS,
+					});
+					wsRecords.push({
+						name: ws.name,
+						commit_id: rescueId ?? at,
+						...(rescueId ? { rescue_commit_id: rescueId } : {}),
+					});
+				}
+				writeMergeFailureArtifact({
+					cause: message,
+					workspaces: wsRecords,
+					danglingCommitIds: [],
+					conflictedFiles: [],
+					metricsDir,
+					project,
+					specMarkdown,
+					tier: budget,
+				});
+				throw new Error(message);
+			}
 		}
 		results = (settled as PromiseFulfilledResult<WorkerResult>[]).map((r) => r.value);
 
@@ -1241,6 +1510,9 @@ export async function executeTask(opts: ExecuteTaskOptions): Promise<TaskResult>
 				workspaces.map((w) => w.name),
 				baseChangeId,
 			);
+			// R1: the atomic combine LANDED — the finally may now create the
+			// fresh working-copy stub (identity restore).
+			mergeLanded = true;
 			mergeMetrics.merged_commit_id = mergeOutcome.commit_id;
 			mergeMetrics.files_changed = mergeOutcome.files_changed;
 			onUpdate?.({
@@ -1332,6 +1604,49 @@ export async function executeTask(opts: ExecuteTaskOptions): Promise<TaskResult>
 			});
 			throw err;
 		}
+
+		// 6. Verification (bash hard gate, zero tokens) — once, after the
+		// merge and after the deterministic union ladder, on the final tree.
+		// assertMerged ran above (before cleanup), so the main working copy
+		// provably sits on the merged base holding every worker's changes;
+		// escalated conflicts (markers still present after the union tool),
+		// if any, are visible here as conflict markers. The gate always
+		// validates the final tree — a finalization-incomplete recovery
+		// never merges or claims success without it.
+		verification = await runVerification(
+			spec.verification,
+			cwd,
+			verificationTimeoutMs ?? DEFAULT_VERIFICATION_TIMEOUT_MS,
+			signal,
+		);
+		if (!verification.passed && finalizationIncompleteIndexes.length > 0) {
+			// R2: the gate FAILS a finalization-incomplete recovery → the
+			// current failure path with preserved workspaces: failure artifact
+			// (the recovery guide travels with it) + throw, so the finally
+			// below keeps the workspaces alive for scripted recovery. The
+			// merged base — which holds every worker's commits — is named in
+			// the cause.
+			const cause =
+				`parallel run failed verification after merging finalization-incomplete ` +
+				`worker(s) ${finalizationIncompleteIndexes.map((i) => `#${i}`).join(", ")} ` +
+				`into ${mergeMetrics.merged_commit_id ?? "?"}: ` +
+				verification.failures.map((f) => `${f.command} (exit ${f.exitCode})`).join("; ");
+			mergeFailed = new Error(cause);
+			writeMergeFailureArtifact({
+				cause,
+				workspaces: workspaces.map((w) => ({
+					name: w.name,
+					commit_id: workspaceAtIds.get(w.name) ?? "",
+				})),
+				danglingCommitIds: [],
+				conflictedFiles: mergeMetrics.conflicts,
+				metricsDir,
+				project,
+				specMarkdown,
+				tier: budget,
+			});
+			throw mergeFailed;
+		}
 	} finally {
 		// R2: on merge failure OR worker failure the worker workspaces are
 		// NEVER forgotten — recovery is scripted from the failure artifact
@@ -1339,10 +1654,10 @@ export async function executeTask(opts: ExecuteTaskOptions): Promise<TaskResult>
 		// which aborts before any real work) cleanup runs as before.
 		if (mergeFailed) {
 			console.warn(
-				`task: parallel merge failed — worker workspaces PRESERVED for recovery: ` +
+				`task: parallel run failed — worker workspaces PRESERVED for recovery: ` +
 					`${workspaces.map((w) => w.name).join(", ")} ` +
-					"(see the merge-failure artifact in <metricsDir>/<project>/; recover by squashing " +
-					"each workspace's commits into the task base manually)",
+					"(see the failure artifact in <metricsDir>/<project>/ — its recovery guide stacks the " +
+					"workspaces and clears description-less stubs before pushing)",
 			);
 		} else {
 			for (const ws of workspaces) {
@@ -1360,33 +1675,19 @@ export async function executeTask(opts: ExecuteTaskOptions): Promise<TaskResult>
 		// The AI-authored merge target became @ during the run (todo #84);
 		// restore the main working copy to an empty commit on top of it so
 		// the run's result commit is @- — the same invariant as the
-		// single-worker path. Best effort: a failure here must not mask the
-		// run's outcome. Runs on the failure path too (leaves the partial
-		// merge, if any, as a committed commit instead of a dirty @). Skipped
-		// when the identity fallback used @- as the base (no AI commit was
-		// created — the pre-existing end state is already correct).
-		if (identityDir) {
-			try {
-				await execJj(["new"], cwd);
-			} catch { /* best effort */ }
-		}
-		if (identityDir) {
-			try { rmSync(identityDir, { recursive: true, force: true }); } catch { /* best effort */ }
-		}
+		// single-worker path. R1: the stub is created ONLY when a merge
+		// actually landed (mergeLanded) — on a no-merge failure (worker
+		// failure before the merge path) it would be a description-less
+		// commit, which jj refuses to push; whatever remains in the ancestry
+		// (the AI-authored task base, described with the spec goal) must
+		// carry a description instead. Best effort: a failure here must not
+		// mask the run's outcome.
+		await restoreParallelWorkingCopy(cwd, { identityDir, mergeLanded });
 	}
 
-	// 6. Verification (bash hard gate, zero tokens) — once, after merge and
-	// after the deterministic union ladder, on the final tree. assertMerged
-	// ran above (before cleanup), so the main working copy provably sits on
-	// the merged base holding every worker's changes; escalated conflicts
-	// (markers still present after the union tool), if any, are visible
-	// here as conflict markers. The gate always validates the final tree.
-	const verification = await runVerification(
-		spec.verification,
-		cwd,
-		verificationTimeoutMs ?? DEFAULT_VERIFICATION_TIMEOUT_MS,
-		signal,
-	);
+	// 6. Verification ran INSIDE the try above (the gate must run before the
+	// finally's workspace cleanup so a finalization-incomplete gate failure
+	// can preserve the workspaces); `verification` holds its result.
 
 	// R3/R4: the final conflict state comes from the ladder's post-union
 	// detection (the authoritative final-tree check — per-squash conflict
@@ -1406,6 +1707,12 @@ export async function executeTask(opts: ExecuteTaskOptions): Promise<TaskResult>
 	// R1: diff stats over taskBaseCommitId..final-@- (the merged base) — best
 	// effort (a metrics jj failure must not fail an otherwise-green run).
 	const diffStat = await computeDiffStatBestEffort(cwd, taskBaseCommitId);
+	// R2: on the finalization-incomplete path some/all workers never yielded —
+	// their files live in the merged base; derive the aggregate from the
+	// merged delta instead of the (partial) yield payloads.
+	const filesChanged = finalizationIncompleteIndexes.length > 0
+		? await filesChangedBetweenBestEffort(cwd, taskBaseCommitId, baseCommitId)
+		: results.flatMap((r) => r.yield.files_changed);
 	const metrics = finalizeParallelMetrics({
 		cwd,
 		project: opts.project,
@@ -1426,7 +1733,7 @@ export async function executeTask(opts: ExecuteTaskOptions): Promise<TaskResult>
 		receivedAt: opts.receivedAt,
 		dispatchedAt,
 		mainSessionTokens: opts.mainSessionTokens,
-		filesChanged: results.flatMap((r) => r.yield.files_changed),
+		filesChanged,
 		insertions: diffStat.insertions,
 		deletions: diffStat.deletions,
 		// R1/R4/R5: atomic combine + union-ladder + overlap classification
@@ -1434,16 +1741,32 @@ export async function executeTask(opts: ExecuteTaskOptions): Promise<TaskResult>
 		merge: mergeMetrics,
 	});
 
+	// R2: success-with-caveat — a finalization-incomplete recovery whose
+	// merge landed and whose union verification gate PASSED reports success
+	// with the caveat (merged commit id + file delta + the aborted-worker
+	// note). The gate-fail case already threw (failure path with preserved
+	// workspaces); escalated conflicts keep the plain failure return.
+	const caveat =
+		finalizationIncompleteIndexes.length > 0 && verification.passed && conflicts.length === 0
+			? `worker${finalizationIncompleteIndexes.length > 1 ? "s" : ""} ` +
+				`${finalizationIncompleteIndexes.map((i) => `#${i}`).join(", ")} aborted during finalization; ` +
+				`verified post-merge — merged commit ${baseCommitId}, ` +
+				`${mergeMetrics.files_changed ?? 0} file(s) changed`
+			: undefined;
+
 	return {
 		success: verification.passed && conflicts.length === 0,
 		commits: [baseCommitId],
-		files_changed: results.flatMap((r) => r.yield.files_changed),
+		files_changed: filesChanged,
 		tests: verification.passed ? "passing" : "failing",
 		spec,
-		worker: results[0],
+		// R2: an all-aborted finalization-incomplete run has no yielded
+		// worker — the zeroed stand-in keeps the result shape intact.
+		worker: results[0] ?? abortedWorkerResult(),
 		workers: results,
 		conflicts,
 		verification,
+		...(caveat ? { caveat } : {}),
 		// R7: a requested review is single-worker only — surface that it was
 		// skipped (todo #73: no console.warn; the plan line and this flag
 		// carry the signal).
@@ -1605,10 +1928,90 @@ async function executeSingle(
 			worker = await session.result;
 		} catch (err) {
 			if (swapError) throw swapError;
-			// Keep the aborted worker's WIP: rescue-commit a dirty working
-			// copy ("rescue:" prefix) so the work survives in history and the
-			// next run starts from a clean copy. Best effort — never masks
-			// the original failure.
+			// R2 (third outcome): finalization-incomplete — the checklist relay
+			// showed ALL requirements done at abort, so the worker committed
+			// everything and was verifying/yielding when it was killed. Rescue
+			// any uncommitted tail first (a dirty WC would otherwise fail the
+			// gate), then run verification on the committed tree post-abort:
+			// pass → success-with-caveat (the worker's commit ids); fail → the
+			// current failure path below. Never claim success without the
+			// verification gate.
+			if (isFinalizationIncomplete(checklistCtrl.latest)) {
+				await rescueAbortedWorkBestEffort(cwd, err);
+				const verification = await runVerification(spec.verification, cwd, verifyTimeout, signal);
+				if (verification.passed) {
+					// The worker's commits: the range baseCommit..@- (the worker
+					// never yielded, so the payload's commit_ids are unavailable).
+					// Empty working-copy commits are filtered out — the identity
+					// restore in the finally abandons them anyway.
+					let commitIds: string[] = [];
+					const ids = await execJj(
+						[
+							"log", "-r", `${baseCommit}..@-`, "--no-graph",
+							"-T", "if(empty, '', commit_id)", "--ignore-working-copy",
+						],
+						cwd,
+					);
+					if (ids.code === 0) {
+						commitIds = ids.stdout.split("\n").map((l) => l.trim()).filter((l) => /^[0-9a-f]{40}$/.test(l));
+					}
+					let filesChanged: string[] = [];
+					try {
+						filesChanged = await filesChangedBetween(cwd, baseCommit, "@-");
+					} catch {
+						/* best effort */
+					}
+					const diffStat = await computeDiffStatBestEffort(cwd, baseCommit);
+					// The zeroed stand-in: the session died before yielding, so
+					// there is no real usage to record — the caveat carries the
+					// recovery story.
+					const worker = abortedWorkerResult();
+					const metrics = finalizeMetrics({
+						cwd, project, metricsDir, preserveSessions, worker,
+						assemble: {
+							specMarkdown,
+							requirements: spec.requirements.length,
+							prewalkModel: usePrewalk ? prewalkModel! : executeModel,
+							executeModel,
+							reviewModel: reviewModel ?? executeModel,
+							reviewForked: false,
+							budget,
+							sandbox: sandbox.active,
+							worker, workerDurationMs: Date.now() - workerStartMs,
+							totalDurationMs: Date.now() - runStartMs,
+							swapTurn,
+							verification,
+							review: null,
+							fixLoop: { iterations: 0, costUsd: 0 },
+							receivedAt: opts.receivedAt,
+							dispatchedAt,
+							mainSessionTokens: opts.mainSessionTokens,
+							filesChanged,
+							insertions: diffStat.insertions,
+							deletions: diffStat.deletions,
+						},
+					});
+					return {
+						success: true,
+						commits: commitIds,
+						files_changed: filesChanged,
+						tests: "passing",
+						spec,
+						worker,
+						verification,
+						manifest: metrics.manifest,
+						manifestPath: metrics.manifestPath,
+						durationMs: Date.now() - runStartMs,
+						caveat:
+							`worker aborted during finalization; verified post-merge — ` +
+							`${commitIds.length} commit(s): ${commitIds.join(", ") || "(none)"}`,
+					};
+				}
+			}
+			// The current failure path: keep the aborted worker's WIP —
+			// rescue-commit a dirty working copy ("rescue:" prefix) so the work
+			// survives in history and the next run starts from a clean copy.
+			// Best effort — never masks the original failure.
 			await rescueAbortedWorkBestEffort(cwd, err);
 			writeFailureArtifactBestEffort({
 				err,

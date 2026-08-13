@@ -375,6 +375,10 @@ export interface TaskToolReturn {
 	/** True when a requested review was skipped (review is single-worker
 	 *  only; parallel runs verify-only). */
 	review_skipped?: boolean;
+	/** R2: success-with-caveat note — present when a finalization-incomplete
+	 *  abort recovered ("worker k aborted during finalization; verified
+	 *  post-merge"). */
+	caveat?: string;
 	verification: { passed: boolean; failures: Array<{ command: string; exitCode: number; output: string }> };
 }
 
@@ -400,6 +404,7 @@ export function taskResultToToolReturn(result: TaskResult): TaskToolReturn {
 		duration_ms: result.durationMs,
 		...(result.conflicts !== undefined ? { conflicts: result.conflicts } : {}),
 		...(result.reviewSkipped ? { review_skipped: true } : {}),
+		...(result.caveat !== undefined ? { caveat: result.caveat } : {}),
 		verification: {
 			passed: result.verification.passed,
 			failures: result.verification.failures,
@@ -516,6 +521,11 @@ export function summarizeResult(result: TaskResult): string {
 	}
 	if (result.reviewSkipped) {
 		parts.push("Review skipped (single-worker only).");
+	}
+	// R2: a finalization-incomplete recovery reports success WITH the caveat
+	// (the worker aborted during finalization; the gate verified post-merge).
+	if (result.caveat) {
+		parts.push(result.caveat);
 	}
 	parts.push(`Files: ${result.files_changed.join(", ") || "(none)"}`);
 	return parts.join("\n");
