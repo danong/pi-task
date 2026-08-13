@@ -132,7 +132,7 @@ reads — the structured return above is chrome) is a compact summary, one
 section per line:
 
 ```
-task done in 1m05s · $0.0234 · 3/3 verified (full)
+task done in 1m05s · $0.0234 · 3/3 verified (full) · pre-dispatch: 2.3k tokens
 Task succeeded: 1 commit(s), tests passing, 3 file(s) changed.
 Tokens: 12000 in / 8000 out.
 Merge conflicts: src/a.ts, src/b.ts.
@@ -152,9 +152,14 @@ Files: src/auth.ts, src/api.ts, src/lib.ts
   runLatencyMs the /task-stats p50/p90 use. Cost (totals.cost_usd),
   verify status (passed verification commands / total — "3/3 verified"
   when all passed, else refined from the failure list), and tier
-  (config.budget) come from the RunManifest. Without a manifest the
-  line degrades to the duration only. Implemented in
-  completionSummaryLine (extensions/task/index.ts).
+  (config.budget) come from the RunManifest. When the manifest records
+  the main session's pre-dispatch spend (`main_session_tokens` > 0 —
+  populated via readSessionTokensBefore at execute; worker tokens stay
+  in `phases`), the line appends a "pre-dispatch: Nk tokens" clause;
+  absent or zero → no clause (backward compatible with manifests that
+  don't record it). Without a manifest the line degrades to the
+  duration only. Implemented in completionSummaryLine
+  (extensions/task/index.ts).
 - **Tokens** — token counts when derivable: the RunManifest's prewalk +
   execute phase metrics, or, without a manifest, the workers' last
   per-turn usage snapshots aggregated across workers. Duration and cost
@@ -1186,16 +1191,25 @@ amortized. Phase 9 injects it with a hybrid mechanism:
   refreshed on tree change) — `formatMapOverview` (entry points, patterns,
   test layout; no file list) appended from a `before_agent_start` handler;
 - an on-demand `codebase_map` tool the agent calls with a query to get the
-  relevance-sliced file list (`sliceRelevant` + `formatMapPrompt`).
+  relevance-sliced file list (`sliceRelevant` + `formatMapPrompt`);
+- an always-on **workflow contract** — a compact plan-first /
+  delegate-by-default / orientation-only / spec-discipline block
+  (`workflowContractText`, ~120-150 words) appended to the main session's
+  system prompt from the same `before_agent_start` hook, pointing at the
+  delegation skill, /build, and /plan. Static text: no cache read, no LLM,
+  cannot block or throw.
 
-The corresponding `[injection] main_agent` and `[injection]
-overview_in_system_prompt` keys already exist in the config file, consumed
-by Phase 9: `main_agent` gates both consumers; `overview_in_system_prompt`
-additionally gates the always-on system-prompt overview. Both degrade
-gracefully (map unavailable → no overview, no error). The `codebase_map`
-tool is registered at factory time (no flag dependency); the `task` tool is
-registered at session_start for budget-schema locking (see Budget
-Enforcement → Implementation notes).
+The corresponding `[injection] main_agent`, `[injection]
+overview_in_system_prompt`, and `[injection] workflow_contract` keys exist
+in the config file, consumed by Phase 9: `main_agent` gates both map
+consumers; `overview_in_system_prompt` additionally gates the always-on
+system-prompt overview; `workflow_contract` gates the workflow-contract
+block (default ON — a missing/invalid key degrades silently to on, so the
+agent-dir config opts out explicitly). All degrade gracefully (map
+unavailable → no overview, no error; disabled → no block, no error). The
+`codebase_map` tool is registered at factory time (no flag dependency);
+the `task` tool is registered at session_start for budget-schema locking
+(see Budget Enforcement → Implementation notes).
 
 ### Write-back (gated)
 

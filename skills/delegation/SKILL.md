@@ -3,8 +3,8 @@ name: delegation
 description: >-
   Deciding how to approach coding work: dispatch to the task tool (isolated
   worker session) vs. doing it directly. Load before starting any multi-step
-  coding task — it covers the dispatch threshold, the investigation budget,
-  and spec discipline.
+  coding task — it covers the dispatch threshold, planning, the
+  investigation budget, and spec discipline.
 ---
 
 # Delegation
@@ -22,6 +22,21 @@ Dispatch via the `task` tool when the work:
 
 Do it directly only when the change is trivially small and reversible (one
 line, one obvious fix).
+
+## Planning
+
+Multi-step work starts with a plan before any implementation:
+
+- Decompose the work into milestones, each with its own Goal / Requirements /
+  Verification — a milestone is one dispatchable unit.
+- Sequence dependencies; independent milestones with disjoint file scopes can
+  run as parallel sub_specs.
+- Map each milestone to its dispatch: a `task` tool spec (scaffold with
+  `/build`), independent ones batched into one parallel dispatch.
+- Keep the plan in the conversation — the user reviews and adjusts it before
+  anything is dispatched. Use `/plan` to scaffold it.
+- The plan is a decision aid, not a design doc: short enough to read in a
+  minute.
 
 ## Investigation happens in workers
 

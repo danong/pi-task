@@ -51,6 +51,9 @@ import {
 	summarizeResult,
 	taskResultToToolReturn,
 	taskToolSchema,
+	workflowContractBlock,
+	workflowContractText,
+	formatTokenCount,
 	type BudgetTierConfig,
 	type ProgressState,
 	type RunPlan,
@@ -971,6 +974,38 @@ function testSummaryMetrics(errors: string[]): void {
 	console.log("✓ summarizeResult/deriveRunMetrics: one-line summary + tokens, manifest preferred, usage fallback, duration-only degradation; failureMessageWithProgress");
 }
 
+function testWorkflowContract(errors: string[]): void {
+	const check = (cond: boolean, msg: string): void => {
+		if (!cond) errors.push(msg);
+	};
+
+	// R1: the contract text comes from a pure function — compact (~120-150
+	// words), covering the four obligations and referencing the delegation
+	// skill, /build, and /plan.
+	const text = workflowContractText();
+	const words = text.split(/\s+/).filter((w) => /[A-Za-z0-9]/.test(w)).length;
+	check(words >= 120 && words <= 155, `contract stays compact (~120-150 words), got ${words} words`);
+	check(text.startsWith("## Workflow contract"), "contract block has a header");
+	check(/plan first/i.test(text) && /decompose/.test(text) && /verified before/i.test(text),
+		"plan-first: decompose, sequence, verification per milestone");
+	check(/delegate by default/i.test(text) && /task tool/i.test(text) && /trivial/i.test(text) && /reversible/.test(text),
+		"delegate-by-default: task tool for multi-step/iterative/parallelizable/unvalidated, direct only for trivial reversible");
+	check(/2-3/.test(text) && /codebase_map/.test(text) && /targeted read/.test(text) && /workers/.test(text),
+		"orientation-only investigation: at most 2-3 calls (codebase_map + one targeted read) before the spec");
+	check(/WHAT, not HOW/.test(text) && /Goal/.test(text) && /Requirements/.test(text) && /Verification/.test(text) && /exits 0/.test(text),
+		"spec discipline: WHAT not HOW; Goal/Requirements/Verification; verification = plain exit-0 bash");
+	check(text.includes("/build") && text.includes("/plan") && /delegation skill/.test(text),
+		"references the delegation skill, /build, and /plan");
+
+	// R2/R4: the block is gated by the RESOLVED config — enabled → the text,
+	// disabled → "" (the before_agent_start wiring skips empty results, so
+	// the injection never blocks or throws).
+	check(workflowContractBlock({ workflowContract: true }) === text, "enabled config → the contract text");
+	check(workflowContractBlock({ workflowContract: false }) === "", "disabled config → no block");
+
+	console.log("✓ workflowContract: pure ~120-150-word block (plan-first / delegate-by-default / orientation-only / spec discipline), config-gated");
+}
+
 function testCompletionSummary(errors: string[]): void {
 	const check = (cond: boolean, msg: string): void => {
 		if (!cond) errors.push(msg);
@@ -1077,6 +1112,42 @@ function testCompletionSummary(errors: string[]): void {
 	check(failedSummary.includes("Task failed: 1 commit(s), tests failing"),
 		"failure message alongside the summary line");
 
+	// R3: the pre-dispatch main-session token spend — the one-liner appends
+	// a "pre-dispatch: Nk tokens" clause when the manifest records
+	// main_session_tokens > 0; absent or zero → no clause (backward
+	// compatible with manifests that don't record it).
+	const pre = mk({ main_session_tokens: 12000 });
+	check(completionSummaryLine({ success: true, manifest: pre, durationMs: 0, verificationFailures: [] }) ===
+		"task done in 1m · $0.006 · 5/5 verified (economy) · pre-dispatch: 12k tokens",
+		"pre-dispatch clause appended when the manifest records the spend");
+	const pre3 = mk({ main_session_tokens: 3500 });
+	check(completionSummaryLine({ success: true, manifest: pre3, durationMs: 0, verificationFailures: [] }).includes("pre-dispatch: 3.5k tokens"),
+		"pre-dispatch renders one-decimal k");
+	const preSmall = mk({ main_session_tokens: 800 });
+	check(completionSummaryLine({ success: true, manifest: preSmall, durationMs: 0, verificationFailures: [] }).includes("pre-dispatch: 800 tokens"),
+		"pre-dispatch renders raw tokens below 1000");
+	for (const absent of [undefined, 0]) {
+		const noClause = completionSummaryLine({ success: true, manifest: mk({ main_session_tokens: absent }), durationMs: 0, verificationFailures: [] });
+		check(!noClause.includes("pre-dispatch"), `no pre-dispatch clause when main_session_tokens is ${absent}`);
+	}
+	check(completionSummaryLine({ success: true, manifest: null, durationMs: 65000, verificationFailures: [] }) === "task done in 1m05s",
+		"no manifest → no pre-dispatch clause (duration only)");
+
+	// summarizeResult (R3): the clause is part of the completion summary's
+	// first line; the worker-token line stays separate (no duplication).
+	const preSummary = summarizeResult(fakeResult({ manifest: mk({ received_at: "2026-08-06T10:00:00.000Z", completed_at: "2026-08-06T10:00:42.000Z", main_session_tokens: 12345 }) }));
+	check(preSummary.split("\n")[0].includes("pre-dispatch: 12.3k tokens"),
+		`summarizeResult first line carries the clause, got: ${preSummary.split("\n")[0]}`);
+	const noPreSummary = summarizeResult(fakeResult({ manifest: mk() }));
+	check(!noPreSummary.includes("pre-dispatch"), "summarizeResult omits the clause when the manifest lacks it");
+
+	// formatTokenCount directly: raw below 1000, one-decimal k above
+	// (trailing .0 trimmed), rounding at the one-decimal digit.
+	check(formatTokenCount(0) === "0 tokens" && formatTokenCount(999) === "999 tokens", "raw token counts below 1000");
+	check(formatTokenCount(1000) === "1k tokens" && formatTokenCount(12000) === "12k tokens" && formatTokenCount(120000) === "120k tokens",
+		"integer k trims the decimal");
+	check(formatTokenCount(12345) === "12.3k tokens" && formatTokenCount(12355) === "12.4k tokens", "one-decimal k rounding");
+
 	console.log("✓ completionSummaryLine: wall-clock latency · cost · verify status · tier; summarizeResult first line (R1/R2/R4)");
 }
 
@@ -1096,6 +1167,7 @@ export async function runTests(): Promise<void> {
 	testProgressStateAndRender(errors);
 	testSummaryMetrics(errors);
 	testCompletionSummary(errors);
+	testWorkflowContract(errors);
 
 	if (errors.length > 0) {
 		throw new Error("test-index failed:\n  ✗ " + errors.join("\n  ✗ "));

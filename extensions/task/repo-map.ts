@@ -140,6 +140,11 @@ export interface RepoMapConfig {
 	mainAgent: boolean;
 	/** Consumed in Phase 9 (always-on overview in the main session). */
 	overviewInSystemPrompt: boolean;
+	/** Always-on workflow-contract block in the main session's system prompt
+	 *  (plan-first / delegate-by-default). DEFAULT ON; independent of
+	 *  mainAgent — the contract guides the task-tool dispatch decision, not
+	 *  the map consumers. */
+	workflowContract: boolean;
 }
 
 const DEFAULT_MAP_CONFIG: RepoMapConfig = {
@@ -149,6 +154,7 @@ const DEFAULT_MAP_CONFIG: RepoMapConfig = {
 	sliceLimit: 15,
 	mainAgent: true,
 	overviewInSystemPrompt: true,
+	workflowContract: true,
 };
 
 const TOML_TO_JSON_SCRIPT =
@@ -212,6 +218,9 @@ export function loadRepoMapConfig(configPath?: string): RepoMapConfig {
 		mainAgent: bool(sections, "injection", "main_agent") ?? DEFAULT_MAP_CONFIG.mainAgent,
 		overviewInSystemPrompt:
 			bool(sections, "injection", "overview_in_system_prompt") ?? DEFAULT_MAP_CONFIG.overviewInSystemPrompt,
+		// A missing/invalid (non-boolean) key degrades silently to the default
+		// ON — the contract is always-on unless explicitly disabled.
+		workflowContract: bool(sections, "injection", "workflow_contract") ?? DEFAULT_MAP_CONFIG.workflowContract,
 	};
 }
 

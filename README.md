@@ -29,7 +29,8 @@ mise run test      # full hermetic test suite, zero LLM calls
 The repo ships `.pi/settings.json` registering itself as a project package
 (`"packages": [".."]`), so any trusted checkout auto-installs — the `task`
 tool, `/task-budget` command, `--task-budget` flag, the `delegation` skill,
-and the `/build` spec template are available on the next session. For a
+and the `/build` spec and `/plan` work-plan templates are available on the
+next session. For a
 global (non-project) install instead:
 
 ```sh
@@ -44,8 +45,10 @@ available after `/reload`.
 
 Multi-step coding work is dispatched to isolated workers via the `task` tool.
 The `delegation` skill (loaded automatically when relevant) covers when to
-dispatch vs. edit directly and the spec discipline; `/build` scaffolds a spec
-from a work request. Large or parallelizable work decomposes into parallel
+dispatch vs. edit directly and the spec discipline; `/build` scaffolds a
+spec from a work request, and `/plan` scaffolds a multi-day work plan
+(milestones, sequencing, dispatch order) before dispatching. Large or
+parallelizable work decomposes into parallel
 `sub_specs` — each a self-contained spec with its own Goal / Requirements /
 Verification, given as a markdown string or a {goal, requirements,
 verification, context?} object (both accepted; spec may be omitted when

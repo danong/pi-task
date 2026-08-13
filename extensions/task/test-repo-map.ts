@@ -254,18 +254,30 @@ function testConfigLoader(errors: string[]): void {
 	check(defaults.mode === "full", "default mode should be full");
 	check(defaults.injectWorkers === true, "default injectWorkers should be true");
 	check(defaults.sliceLimit === 15, "default sliceLimit should be 15");
+	check(defaults.workflowContract === true, "workflowContract should default ON (missing key)");
 
 	const tmp = mkdtempSync(join(tmpdir(), "pi-task-cfg-"));
 	const cfgPath = join(tmp, "repo-map.toml");
 	writeFileSync(
 		cfgPath,
-		'[mode]\ndefault = "skeleton"\nannotation_model = "test/model"\n\n[injection]\nworkers = false\nslice_limit = 7\n',
+		'[mode]\ndefault = "skeleton"\nannotation_model = "test/model"\n\n[injection]\nworkers = false\nslice_limit = 7\nworkflow_contract = false\n',
 	);
 	const cfg = loadRepoMapConfig(cfgPath);
 	check(cfg.mode === "skeleton", `mode should be skeleton, got ${cfg.mode}`);
 	check(cfg.annotationModel === "test/model", `annotationModel should parse, got ${cfg.annotationModel}`);
 	check(cfg.injectWorkers === false, "injectWorkers should be false");
 	check(cfg.sliceLimit === 7, `sliceLimit should be 7, got ${cfg.sliceLimit}`);
+	check(cfg.workflowContract === false, "the agent-dir config can disable the workflow contract");
+
+	// workflow_contract degrades to the default ON: an explicit true parses as
+	// true; a present-but-invalid (non-boolean) value falls back silently
+	// (bool() only accepts booleans — no warn, same as the other bool keys).
+	const onPath = join(tmp, "repo-map-on.toml");
+	writeFileSync(onPath, "[injection]\nworkflow_contract = true\n");
+	check(loadRepoMapConfig(onPath).workflowContract === true, "explicit workflow_contract = true parses");
+	const badPath = join(tmp, "repo-map-bad.toml");
+	writeFileSync(badPath, '[injection]\nworkflow_contract = "on"\n');
+	check(loadRepoMapConfig(badPath).workflowContract === true, "invalid workflow_contract degrades to the default ON");
 
 	// Existing-but-invalid TOML → defaults + exactly one warn (mirrors
 	// loadTaskConfig); a MISSING file → defaults + no warn.

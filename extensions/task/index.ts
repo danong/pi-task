@@ -36,6 +36,13 @@
  *    reads the cached map (never calls the LLM); the annotation that keeps
  *    the cache fresh runs asynchronously at session_start.
  *
+ * 4. Workflow-contract injection: an always-on, config-gated block
+ *    (plan-first / delegate-by-default / orientation-only investigation /
+ *    spec discipline) appended to the main session's system prompt from
+ *    the same before_agent_start hook — gated by config/repo-map.toml
+ *    [injection] workflow_contract (default on). Static text from a pure
+ *    function: never blocks, never throws.
+ *
  * Model resolution is config-driven (Phases 10-11): config/task.toml is the
  * tier source of truth (loaded by config.ts; built-in defaults when
  * missing/invalid), and since Phase 11 the tier VOCABULARY is dynamic —
@@ -457,10 +464,12 @@ export interface CompletionSummaryInput {
  * wall clock (completed_at − received_at) when the manifest carries both
  * timestamps, else the worker-measured totals.duration_ms (runLatencyMs);
  * cost, verify status, and tier come from the manifest (totals.cost_usd,
- * phases.verify passed/commands, config.budget). Verify status is the
- * passed/total verification-command count — "N/N verified" when the phase
- * passed, else refined from the failure list. Without a manifest, degrades
- * to the duration only. Pure — tested hermetically.
+ * phases.verify passed/commands, config.budget). When the manifest records
+ * the main session's pre-dispatch token spend (main_session_tokens > 0 —
+ * populated via readSessionTokensBefore at execute), the line appends a
+ * "pre-dispatch: Nk tokens" clause (R3); absent/zero → no clause (backward
+ * compatible). Without a manifest, degrades to the duration only. Pure —
+ * tested hermetically.
  */
 export function completionSummaryLine(input: CompletionSummaryInput): string {
 	const { success, manifest, durationMs, verificationFailures } = input;
@@ -471,11 +480,19 @@ export function completionSummaryLine(input: CompletionSummaryInput): string {
 	const passed = verify.passed
 		? verify.commands
 		: Math.max(0, verify.commands - verificationFailures.length);
-	return [
+	const parts = [
 		`task ${done} in ${formatDuration(duration)}`,
 		`$${formatCost(manifest.totals.cost_usd)}`,
 		`${passed}/${verify.commands} verified (${manifest.config.budget})`,
-	].join(" · ");
+	];
+	// R3: the main session's pre-dispatch token spend (worker tokens live in
+	// the manifest's phases — this is what the session burned to reach the
+	// dispatch). >0 gate: a genuine zero spend stays absent, same as an
+	// unrecorded one (direct executeTask callers omit it entirely).
+	if (typeof manifest.main_session_tokens === "number" && manifest.main_session_tokens > 0) {
+		parts.push(`pre-dispatch: ${formatTokenCount(manifest.main_session_tokens)}`);
+	}
+	return parts.join(" · ");
 }
 
 /** One-line (plus expanded) summary of a TaskResult — the LLM-visible text. */
@@ -590,6 +607,16 @@ function formatCost(usd: number): string {
 	return s || "0";
 }
 
+/** Tokens as a compact summary string: raw count below 1000, one-decimal
+ *  "k" above (trailing ".0" trimmed), e.g. "800 tokens", "12k tokens",
+ *  "12.3k tokens". Pure — tested hermetically. */
+export function formatTokenCount(n: number): string {
+	if (n < 1000) return `${n} tokens`;
+	const k = Math.round(n / 100) / 10;
+	const s = Number.isInteger(k) ? String(k) : k.toFixed(1);
+	return `${s}k tokens`;
+}
+
 /**
  * Attach the last progress view to a task failure (todo #86): the main
  * agent sees the frozen worker state (phase, turns, checklist, idle)
@@ -612,6 +639,33 @@ export function renderInPlace(context: { lastComponent?: unknown }, content: str
 	const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
 	text.setText(content);
 	return text;
+}
+
+// ─── Workflow contract (main-session system-prompt injection) ────────
+
+/**
+ * The always-on workflow-contract block for the main session's system
+ * prompt (R1): plan-first, delegate-by-default, orientation-only
+ * investigation, and spec discipline — with pointers to the delegation
+ * skill, /build, and /plan. Kept compact (~120-150 words, pinned by the
+ * hermetic test) so the prompt stays lean. Static text — pure.
+ */
+export function workflowContractText(): string {
+	return [
+		"## Workflow contract",
+		"- Plan first: multi-step work starts with a plan — decompose into milestones, sequence them, and state how each milestone is verified before writing any code.",
+		"- Delegate by default: dispatch multi-step, iterative, parallelizable, or unvalidated work to the task tool (isolated workers, verification-gated, jj-committed); make trivially small, reversible changes directly.",
+		"- Orientation only: spend at most 2-3 tool calls — codebase_map plus one targeted read — before writing a spec; deep exploration belongs to the workers.",
+		"- Spec discipline: write WHAT, not HOW — ## Goal (one sentence), ## Requirements (numbered WHATs), ## Verification (plain bash commands, one per line, each exits 0).",
+		"Use /build to scaffold and dispatch a spec from a work request, /plan to settle the approach first, and the delegation skill for the dispatch threshold and parallel sub_specs.",
+	].join("\n");
+}
+
+/** The contract block gated by the RESOLVED config: enabled → the block,
+ *  disabled → "". The before_agent_start wiring skips empty results, so
+ *  the injection never blocks or throws. Pure — tested hermetically. */
+export function workflowContractBlock(config: { workflowContract: boolean }): string {
+	return config.workflowContract ? workflowContractText() : "";
 }
 
 // ─── Progress streaming (TUI, zero LLM tokens) ───────────────────────
@@ -1014,6 +1068,21 @@ export default function (pi: ExtensionAPI) {
 			const overview = formatMapOverview(map);
 			if (!overview) return undefined;
 			return { systemPrompt: event.systemPrompt + "\n\n" + overview };
+		});
+	}
+
+	// Workflow contract (always-on, config-gated — R1): the plan-first /
+	// delegate-by-default contract for the main session, appended to the
+	// system prompt on every agent start. Static text from a pure function
+	// (workflowContractBlock) — no cache read, no LLM, nothing that can
+	// block or throw; an empty result (config disabled) skips the injection.
+	// before_agent_start handlers CHAIN (each sees the previous handler's
+	// systemPrompt), so this composes with the codebase-map overview above.
+	if (mapConfig.workflowContract) {
+		pi.on("before_agent_start", (event) => {
+			const block = workflowContractBlock(mapConfig);
+			if (!block) return undefined;
+			return { systemPrompt: event.systemPrompt + "\n\n" + block };
 		});
 	}
 
