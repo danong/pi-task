@@ -62,6 +62,7 @@ import {
 // constant (in index.ts) can't silently pass a stale test.
 import type { Finding, ReviewResult } from "./schemas/findings.ts";
 import { parseSpec } from "./schemas/spec.ts";
+import { extractFileScope } from "./progress.ts";
 
 /** Extract the property names from a TypeBox schema's JSON form. */
 function schemaProperties(schema: ReturnType<typeof taskToolSchema>): string[] {
@@ -718,6 +719,44 @@ function testProgressStateAndRender(errors: string[]): void {
 		text.includes("merged 1 worker commit(s) → c8e4de5f (19 file(s) changed vs base; worker commits consumed)"),
 		`merge success line in the progress render, got: ${text}`,
 	);
+
+	// A+B: a FRESH state so the shared `state` below stays pristine for the
+	// line-index-sensitive assertions. worker_meta carries each worker's
+	// goal + file scope (extracted mechanically at dispatch, no LLM);
+	// tool_start surfaces the live tool; tool_end clears it.
+	const metaState = createProgressState(1, fullPlan, 1000);
+	applyProgressEvent(metaState, {
+		type: "worker_meta",
+		metas: [{ goal: "Fix the Rust side of the bot", scope: ["rust/bot/src/convert.rs", "tests/convert_integration.rs"] }],
+	}, 6000);
+	text = buildProgressText(metaState, 6000);
+	check(
+		text.includes("worker-1 → Fix the Rust side of the bot [rust/bot/src/convert.rs, tests/convert_integration.rs]"),
+		`worker meta line (goal + scope), got: ${text}`,
+	);
+	applyProgressEvent(metaState, { type: "tool_start", toolName: "edit", args: "{path:rust/bot/src/convert.rs}" }, 7000);
+	text = buildProgressText(metaState, 7000);
+	check(text.includes("⎈ edit: {path:rust/bot/src/convert.rs}"), `live tool line, got: ${text}`);
+	applyProgressEvent(metaState, { type: "tool_end", toolName: "edit" }, 8000);
+	text = buildProgressText(metaState, 8000);
+	check(!text.includes("⎈"), "tool_end clears the live tool line");
+
+	// C: the tier wall shows as total-clock headroom.
+	const wallPlan = buildRunPlan({ tier: "economy", executeModel: "prov/fast", wallTimeoutMs: 25 * 60_000 });
+	const wallText = buildProgressText(createProgressState(1, wallPlan, 1000), 2000);
+	check(wallText.includes("total 1s/25m"), `wall headroom in the total clock, got: ${wallText}`);
+	check(!buildProgressText(state, 8000).includes("total 7s/"), "no wall suffix when the plan carries no wall");
+
+	// extractFileScope: path tokens from spec prose, deduped + noise-filtered.
+	check(
+		JSON.stringify(extractFileScope("touch docs/pi-task-design.md and extensions/task/worker.ts, then verify")) ===
+			JSON.stringify(["docs/pi-task-design.md", "extensions/task/worker.ts"]),
+		`extractFileScope finds path tokens, got ${JSON.stringify(extractFileScope("touch docs/pi-task-design.md and extensions/task/worker.ts, then verify"))}`,
+	);
+	check(extractFileScope("no paths here — just prose about https://example.com/x.md and 0.83.0").length === 0,
+		"extractFileScope filters URLs + version tokens");
+	check(extractFileScope("a.ts a.ts b.rs c.md d.txt e.go").length === 5,
+		"extractFileScope dedupes and caps at max");
 
 	// R1+R3: liveness = turns + idle; the phase/total clocks are live vs `now`.
 	applyProgressEvent(state, { type: "turn", turns: 3 }, 4000);

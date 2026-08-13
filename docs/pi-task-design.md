@@ -1220,6 +1220,15 @@ Rendering is a pure function of the accumulated progress state plus an
 explicit `now` (buildProgressText in progress.ts) — no LLM, no subprocess
 — hermetically tested in test-index.ts.
 
+The widget also answers "what is this worker doing" without any LLM:
+- a per-worker **meta line** (goal + file-scope hints) parsed mechanically
+  from each worker's spec at dispatch (`worker_meta` event;
+  `parseSpec().goal` + `extractFileScope` in progress.ts),
+- a **live tool line** (in-flight tool name + summarized args via the
+  `tool_start`/`tool_end` events),
+- **wall headroom** on the total clock (`total 45s/25m` from
+  `RunPlan.wallTimeoutMs`) so a wall abort is never a surprise.
+
 **In-place rendering (todo #68).** The `task` tool's `renderResult`
 partial-progress branch reuses the previous component instead of
 allocating a fresh one per update: it follows pi's documented

@@ -459,6 +459,7 @@ export const STDERR_TAIL_CHARS = 2048;
  * Truncate a tool call's arguments for diagnostics (~150 chars). Pure.
  */
 export function summarizeToolArgs(args: unknown): string {
+	if (args === undefined) return "";
 	let s: string;
 	if (typeof args === "string") s = args;
 	else {
@@ -606,7 +607,11 @@ export function reduceWorkerEvent(
 			if (ev.toolName === "read" && typeof ev.toolCallId === "string" && typeof ev.args?.path === "string") {
 				state.pendingReadPaths.set(ev.toolCallId, ev.args.path);
 			}
-			updates.push({ type: "tool_start", toolName: ev.toolName });
+			updates.push({
+				type: "tool_start",
+				toolName: ev.toolName,
+				args: summarizeToolArgs(ev.args),
+			});
 			break;
 		}
 

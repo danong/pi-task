@@ -115,12 +115,19 @@ export async function runTests(): Promise<void> {
 		check(state.usage.edits === 2, `edits should be 2 (edit + write), got ${state.usage.edits}`);
 	}
 
-	// 5. tool_execution_start emits tool_start update
+	// 5. tool_execution_start emits tool_start update (with the summarized
+	//    args the widget shows as the live tool line; absent args → "").
 	{
 		const state = createWorkerEventState();
 		const { updates } = reduce(state, { type: "tool_execution_start", toolName: "read" });
 		check(updates.length === 1 && updates[0].type === "tool_start" && updates[0].toolName === "read",
 			`expected tool_start(read), got ${JSON.stringify(updates)}`);
+		const { updates: withArgs } = reduce(state, {
+			type: "tool_execution_start",
+			toolName: "bash",
+			args: { command: "cargo test" },
+		});
+		check(withArgs[0].args === '{"command":"cargo test"}', `tool_start carries summarized args, got ${JSON.stringify(withArgs)}`);
 	}
 
 	// 6. Yield captured from tool_execution_end result.details

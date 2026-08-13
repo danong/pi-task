@@ -39,6 +39,9 @@ export interface RunPlan {
 	tier: string;
 	/** Phases in run order: prewalk → work → review (omitting skipped ones). */
 	phases: PlanPhase[];
+	/** The tier's wall-clock budget (ms) — shown as the total-clock
+	 *  headroom ("total 45s/25m") so a wall abort is never a surprise. */
+	wallTimeoutMs?: number;
 }
 
 export interface BuildRunPlanOptions {
@@ -52,6 +55,8 @@ export interface BuildRunPlanOptions {
 	reviewModel?: string;
 	/** Whether the forked review will run (tier flag AND single-worker path). */
 	review?: boolean;
+	/** The tier's wall-clock budget (ms) — rendered as total-clock headroom. */
+	wallTimeoutMs?: number;
 }
 
 /**
@@ -69,7 +74,7 @@ export function buildRunPlan(opts: BuildRunPlanOptions): RunPlan {
 	if (opts.review) {
 		phases.push({ name: "review", model: opts.reviewModel ?? opts.executeModel });
 	}
-	return { tier: opts.tier, phases };
+	return { tier: opts.tier, phases, wallTimeoutMs: opts.wallTimeoutMs };
 }
 
 /** The phase a fresh worker starts in (the plan's first phase). */
@@ -92,6 +97,13 @@ export interface WorkerProgress {
 	 *  of the per-worker phase-elapsed clock (R1). Updated on every phase
 	 *  transition (incl. each review-fix iteration's review_start). */
 	phaseStartMs: number;
+	/** Dispatch-time context (worker_meta event): the worker's goal line +
+	 *  file-scope hints from its spec — the "what is this worker doing"
+	 *  answer, extracted mechanically (no LLM). */
+	meta?: { goal: string; scope: string[] };
+	/** Most recent in-flight tool (tool_start/tool_end): name + summarized
+	 *  args — the live "what is it touching right now" answer. */
+	lastTool?: { name: string; args: string } | null;
 }
 
 export interface ProgressState {
@@ -129,6 +141,32 @@ function recountDone(state: ProgressState): void {
 }
 
 /**
+ * File-scope hints: path-like tokens (with a dot-extension) found in a
+ * spec's markdown — the dispatcher's own prose names the files workers
+ * should touch. Deterministic, zero LLM. Deduped, noise-filtered
+ * (URLs, numeric/version tokens), capped. Pure — tested hermetically.
+ */
+export function extractFileScope(markdown: string, max = 5): string[] {
+	const seen = new Set<string>();
+	const out: string[] = [];
+	for (const m of markdown.matchAll(/[\w./-]+\.[A-Za-z0-9]{1,5}/g)) {
+		const tok = m[0];
+		if (tok.startsWith("http") || tok.startsWith("www") || tok.startsWith("/")) continue;
+		// A match that starts mid-URL ("https://example.com/x.md" matches at
+		// "example…") — the char(s) right before it include "//".
+		if (m.index !== undefined && markdown.slice(Math.max(0, m.index - 3), m.index).includes("//")) continue;
+		const ext = tok.split(".").pop() ?? "";
+		if (ext.length > 0 && /^\d+$/.test(ext)) continue; // versions like 0.83.0
+		if (!seen.has(tok)) {
+			seen.add(tok);
+			out.push(tok);
+			if (out.length >= max) break;
+		}
+	}
+	return out;
+}
+
+/**
  * Fold one streamed progress event into the state. `index` defaults to 0
  * (single-worker runs and fix/review sessions carry no index). Unknown
  * event types (workspace_created, merge, review verdicts) never throw and
@@ -155,6 +193,18 @@ export function applyProgressEvent(state: ProgressState, rawEvent: unknown, nowM
 	};
 
 	switch (ev.type) {
+		case "worker_meta": {
+			// Dispatch-time worker context (goal + file scope per worker) —
+			// emitted once before the workers start; the widget answers
+			// "what is this worker doing" without any LLM.
+			if (Array.isArray(ev.metas)) {
+				(ev.metas as Array<{ goal?: string; scope?: string[] }>).forEach((meta, i) => {
+					const w = state.workers.get(i);
+					if (w) w.meta = { goal: meta.goal ?? "", scope: meta.scope ?? [] };
+				});
+			}
+			return;
+		}
 		case "merge": {
 			// R1 success line: the atomic combine landed — record the merged
 			// commit id + file delta for the progress render.
@@ -175,14 +225,18 @@ export function applyProgressEvent(state: ProgressState, rawEvent: unknown, nowM
 			break;
 		}
 		case "tool_start": {
-			worker();
+			const w = worker();
+			// Live "what is it touching" — the tool name + summarized args
+			// (surface only the summary; full args stay worker-side).
+			w.lastTool = { name: String(ev.toolName ?? "tool"), args: typeof ev.args === "string" ? ev.args : "" };
 			break;
 		}
 		case "tool_end": {
+			const w = worker();
+			w.lastTool = null;
 			// prewalk → work on the same signal as the model swap: the first
 			// SUCCESSFUL edit/write (an errored edit does not swap, so it must
 			// not transition the display either).
-			const w = worker();
 			if ((ev.toolName === "edit" || ev.toolName === "write") && ev.isError !== true && w.phase === "prewalk") {
 				w.phase = "work";
 				w.phaseStartMs = nowMs;
@@ -267,7 +321,7 @@ export function renderPhaseChain(plan: RunPlan, phase: WorkerPhase, done: boolea
 export function buildProgressText(state: ProgressState, nowMs: number = Date.now()): string {
 	const lines: string[] = [renderPlanLine(state.plan), `${state.done}/${state.total} workers done`];
 	for (let i = 0; i < state.total; i++) {
-		lines.push(renderWorkerLine(state, i, nowMs));
+		lines.push(...renderWorkerLine(state, i, nowMs));
 	}
 	// R1: the atomic-combine success line — merged N worker commits → id
 	// (X files vs base; worker commits consumed by the squash). This is
@@ -282,7 +336,7 @@ export function buildProgressText(state: ProgressState, nowMs: number = Date.now
 	return lines.join("\n");
 }
 
-function renderWorkerLine(state: ProgressState, index: number, nowMs: number): string {
+function renderWorkerLine(state: ProgressState, index: number, nowMs: number): string[] {
 	const label = `worker-${index + 1}`;
 	const w = state.workers.get(index) ?? {
 		turns: 0,
@@ -291,19 +345,41 @@ function renderWorkerLine(state: ProgressState, index: number, nowMs: number): s
 		checklist: null,
 		phaseStartMs: state.startMs,
 	};
-	// R1: per-worker current-phase elapsed + the run's total elapsed.
+	// R1: per-worker current-phase elapsed + the run's total elapsed (with
+	// the tier wall as headroom — "total 45s/25m" — so a wall abort is
+	// never a surprise).
 	const chain = renderPhaseChain(state.plan, w.phase, w.done);
 	const phaseElapsed = formatDuration(nowMs - w.phaseStartMs);
 	const totalElapsed = formatDuration(nowMs - state.startMs);
-	const clocks = `${phaseElapsed} | total ${totalElapsed}`;
+	const wall = state.plan.wallTimeoutMs ? `/${formatDuration(state.plan.wallTimeoutMs)}` : "";
+	const clocks = `${phaseElapsed} | total ${totalElapsed}${wall}`;
 	const checklistText = w.checklist ? `checklist ${w.checklist.done}/${w.checklist.total}` : "no checklist yet";
 	const turnsText = `${w.turns} turn${w.turns === 1 ? "" : "s"}`;
 
+	const lines: string[] = [];
 	if (w.done && w.phase !== "review") {
-		return `  ✓ ${label}: ${chain} ${clocks} | ${checklistText} | ${turnsText}`;
+		lines.push(`  ✓ ${label}: ${chain} ${clocks} | ${checklistText} | ${turnsText}`);
+	} else {
+		const idleSeconds =
+			w.lastEventMs === undefined ? null : Math.max(0, Math.floor((nowMs - w.lastEventMs) / 1000));
+		const liveness = idleSeconds === null ? turnsText : `${turnsText}, ${idleSeconds}s idle`;
+		lines.push(`  ⏳ ${label}: ${chain} ${clocks} | ${checklistText} | ${liveness}`);
 	}
-	const idleSeconds =
-		w.lastEventMs === undefined ? null : Math.max(0, Math.floor((nowMs - w.lastEventMs) / 1000));
-	const liveness = idleSeconds === null ? turnsText : `${turnsText}, ${idleSeconds}s idle`;
-	return `  ⏳ ${label}: ${chain} ${clocks} | ${checklistText} | ${liveness}`;
+
+	// A: dispatch-time context — the worker's goal + file scope, extracted
+	// mechanically from its spec (no LLM): "what is this worker doing".
+	const meta = w.meta;
+	if (meta && (meta.goal || meta.scope.length > 0)) {
+		const scope =
+			meta.scope.length > 0
+				? ` [${meta.scope.slice(0, 3).join(", ")}${meta.scope.length > 3 ? ", …" : ""}]`
+				: "";
+		lines.push(`  ${label} → ${meta.goal || "(no goal)"}${scope}`);
+	}
+	// B: live "what is it touching right now" — the in-flight tool.
+	if (w.lastTool && !(w.done && w.phase !== "review")) {
+		const args = w.lastTool.args.length > 60 ? w.lastTool.args.slice(0, 57) + "…" : w.lastTool.args;
+		lines.push(`  ⎈ ${w.lastTool.name}${args ? `: ${args}` : ""}`);
+	}
+	return lines;
 }

@@ -69,6 +69,7 @@ import {
 	workspaceFileChanges,
 } from "./workspace.ts";
 import { parseSpec, SpecError, type Spec } from "./schemas/spec.ts";
+import { extractFileScope } from "./progress.ts";
 import { forkedReview } from "./review.ts";
 import { DEFAULT_PERSONA, getPersona } from "./personas.ts";
 import type { Finding, ReviewResult } from "./schemas/findings.ts";
@@ -1062,6 +1063,20 @@ export async function executeTask(opts: ExecuteTaskOptions): Promise<TaskResult>
 	// (each worker sees ONLY its own sub-spec — no shared goal to leak scope),
 	// otherwise the mechanical round-robin split under the Scope contract.
 	const workerTasks = subSpecs ?? splitSpec(spec, workerCount);
+	// A: dispatch-time worker context — each worker's goal + file-scope
+	// hints, extracted mechanically from its spec markdown (parseSpec +
+	// extractFileScope; zero LLM). The widget renders it so the user sees
+	// WHAT each worker is doing, not just that it is working.
+	onUpdate?.({
+		type: "worker_meta",
+		metas: workerTasks.map((t) => {
+			try {
+				return { goal: parseSpec(t).goal, scope: extractFileScope(t) };
+			} catch {
+				return { goal: "", scope: [] };
+			}
+		}),
+	});
 	let doneCount = 0;
 	// R6: the parallel phase's WALL time — workers run concurrently, so this
 	// is the manifest's phases.execute.duration_ms (not the sum of workers).

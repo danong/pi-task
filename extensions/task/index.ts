@@ -764,6 +764,7 @@ export default function (pi: ExtensionAPI) {
 					executeModel: tierConfig.executeModel,
 					reviewModel: tierConfig.reviewModel,
 					review: reviewWillRun,
+					wallTimeoutMs: tierConfig.wallTimeoutMs,
 				});
 
 				// Stream progress to the TUI (no LLM tokens for the chrome).
