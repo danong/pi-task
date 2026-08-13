@@ -288,6 +288,10 @@ export interface TaskToolParams {
 	sub_specs?: (string | SubSpecObject)[];
 	parallel?: number;
 	budget?: string;
+	/** Reviewer persona/axis override: unset → the two-axis review
+	 *  (standards + spec-fidelity); a single name (e.g. "survey-reviewer"
+	 *  for /survey dispatches, "adversarial") overrides it. */
+	review?: string;
 }
 
 /**
@@ -346,6 +350,14 @@ export function taskToolSchema(
 				description:
 					"Mechanical-split fallback: split spec across this many parallel workers (each in an isolated jj " +
 					"workspace, merged afterwards). Ignored when sub_specs is set.",
+			}),
+		),
+		review: Type.Optional(
+			Type.String({
+				description:
+					"Reviewer persona/axis override — unset → the two-axis review (standards + spec-fidelity, parallel " +
+					"forks); a single name overrides it, e.g. \"survey-reviewer\" for /survey dispatches (validates the " +
+					"report artifact) or \"adversarial\" (the original single-axis reviewer).",
 			}),
 		),
 	};
@@ -887,6 +899,7 @@ export default function (pi: ExtensionAPI) {
 						metricsDir: METRICS_DIR,
 						receivedAt,
 						mainSessionTokens,
+						persona: p.review,
 					});
 					const ret = taskResultToToolReturn(result);
 					return { content: [{ type: "text", text: summarizeResult(result) }], details: ret };

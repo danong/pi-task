@@ -30,7 +30,7 @@ import {
 	STDERR_TAIL_CHARS,
 	type WorkerUsage,
 } from "./worker.ts";
-import type { ReviewResult } from "./schemas/findings.ts";
+import type { RequirementStatus, ReviewResult } from "./schemas/findings.ts";
 import { DEFAULT_PERSONA, type Persona } from "./personas.ts";
 
 /** Absolute path to the reviewer-side extension (report_findings + pruning). */
@@ -149,6 +149,45 @@ export function settleReview(
 	}
 	const detail = stderr.trim() ? `\nstderr: ${stderr.slice(0, 500)}` : "";
 	return { ok: false, error: new Error(`Reviewer exited (code ${exitCode}) without reporting findings.${detail}`) };
+}
+
+/** Verdict order for merging: ship < fix < escalate. */
+const VERDICT_ORDER: Record<ReviewResult["verdict"], number> = { ship: 0, fix: 1, escalate: 2 };
+/** Requirement status order for merging: met < uncertain < unmet. */
+const STATUS_ORDER: Record<RequirementStatus["status"], number> = { met: 0, uncertain: 1, unmet: 2 };
+
+/**
+ * Merge the outcomes of PARALLEL review axes (two-axis review: standards +
+ * spec-fidelity) into one ReviewResult: findings concatenated (each axis
+ * carries its own priorities/categories), verdict = the worst, requirement
+ * statuses merged per id (worst status wins: unmet > uncertain > met), and
+ * the summed review cost. Pure — hermetically tested.
+ */
+export function mergeReviewOutcomes(
+	outcomes: Array<{ result: ReviewResult; usage: { cost_usd: number } }>,
+): { result: ReviewResult; costUsd: number } {
+	const findings = outcomes.flatMap((o) => o.result.findings);
+	const requirementsById = new Map<string, RequirementStatus>();
+	for (const o of outcomes) {
+		for (const req of o.result.requirements) {
+			const existing = requirementsById.get(req.id);
+			if (!existing || STATUS_ORDER[req.status] > STATUS_ORDER[existing.status]) {
+				requirementsById.set(req.id, req);
+			}
+		}
+	}
+	const verdict = outcomes.reduce<ReviewResult["verdict"]>(
+		(worst, o) => (VERDICT_ORDER[o.result.verdict] > VERDICT_ORDER[worst] ? o.result.verdict : worst),
+		"ship",
+	);
+	return {
+		result: {
+			verdict,
+			findings,
+			requirements: [...requirementsById.values()].sort((a, b) => (a.id < b.id ? -1 : 1)),
+		},
+		costUsd: outcomes.reduce((sum, o) => sum + (o.usage.cost_usd ?? 0), 0),
+	};
 }
 
 /**

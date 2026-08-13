@@ -71,8 +71,8 @@ import {
 } from "./workspace.ts";
 import { parseSpec, SpecError, type Spec } from "./schemas/spec.ts";
 import { extractFileScope } from "./progress.ts";
-import { forkedReview } from "./review.ts";
-import { DEFAULT_PERSONA, getPersona } from "./personas.ts";
+import { forkedReview, mergeReviewOutcomes } from "./review.ts";
+import { DEFAULT_PERSONA, DEFAULT_REVIEW_PERSONAS, getPersona, type Persona } from "./personas.ts";
 import type { Finding, ReviewResult } from "./schemas/findings.ts";
 import {
 	aggregateExecutePhase,
@@ -510,7 +510,10 @@ export interface ExecuteTaskOptions {
 	review?: boolean;
 	/** Reviewer model (when review enabled). Default: the execute model. */
 	reviewModel?: string;
-	/** Reviewer persona name (when review enabled). Default: adversarial. */
+	/** Reviewer persona name (when review enabled). Unset → the DEFAULT
+	 *  two-axis review (standards + spec-fidelity, run as parallel forks);
+	 *  a single name (e.g. "survey-reviewer" for /survey dispatches, or
+	 *  "adversarial") overrides the set. */
 	persona?: string;
 	/** Max fix workers the loop may dispatch (when review enabled). Default: 2. */
 	maxFixIterations?: number;
@@ -874,6 +877,8 @@ async function computeDiffStatBestEffort(
 interface ReviewMetricsInput {
 	result: ReviewResult;
 	costUsd: number;
+	/** The review axes that ran (e.g. ["standards", "spec-fidelity"]). */
+	personas: string[];
 }
 
 /** Assemble the RunManifest from collected run data (pure wiring over the
@@ -926,6 +931,7 @@ function assembleManifest(opts: {
 				findings: opts.review.result.findings.length,
 				by_priority: countByPriority(opts.review.result.findings),
 				cost_usd: opts.review.costUsd,
+				personas: opts.review.personas,
 		  }
 		: null;
 	return buildRunManifest({
@@ -2079,7 +2085,15 @@ async function executeSingle(
 			throw new Error("review enabled but the worker did not persist a session (no sessionFile)");
 		}
 		const maxFixes = Math.max(0, maxFixIterations ?? 2);
-		const reviewPersona = persona ? getPersona(persona) ?? DEFAULT_PERSONA : DEFAULT_PERSONA;
+		// The review axes: an explicit persona (single — e.g. /survey
+		// dispatches pass "survey-reviewer" to validate the report artifact)
+		// or the DEFAULT two-axis set (standards + spec-fidelity), each run
+		// as its own parallel fork so neither pollutes the other. Findings
+		// merge, verdict = worst, requirements = worst per id.
+		const reviewAxes = persona
+			? [getPersona(persona) ?? DEFAULT_PERSONA]
+			: DEFAULT_REVIEW_PERSONAS.map((n) => getPersona(n)).filter((p): p is Persona => p !== undefined);
+		const effectiveAxes = reviewAxes.length > 0 ? reviewAxes : [DEFAULT_PERSONA];
 		const rModel = reviewModel ?? executeModel;
 
 		let diff = await computeDiff(cwd, baseCommit);
@@ -2098,21 +2112,25 @@ async function executeSingle(
 			// 8b. Forked adversarial review (inherits the worker's pruned context).
 			// The progress view keys its work → review transition off this event.
 			onUpdate?.({ type: "review_start" });
-			let outcome;
+			let outcomes: Array<{ result: ReviewResult; usage: { cost_usd: number } }>;
 			try {
-				outcome = await forkedReview({
-					cwd,
-					sessionFile,
-					sessionDir: sessionDir!,
-					model: rModel,
-					specMarkdown,
-					diff,
-					summary: worker.yield.summary,
-					deviations: worker.yield.deviations,
-					persona: reviewPersona,
-					signal,
-					onUpdate,
-				});
+				outcomes = await Promise.all(
+					effectiveAxes.map((p) =>
+						forkedReview({
+							cwd,
+							sessionFile,
+							sessionDir: sessionDir!,
+							model: rModel,
+							specMarkdown,
+							diff,
+							summary: worker.yield.summary,
+							deviations: worker.yield.deviations,
+							persona: p,
+							signal,
+							onUpdate,
+						}),
+				),
+				);
 			} catch (err) {
 				// A failed review must not vanish without a trace (the run has no
 				// manifest on this path) — record the failure artifact, then the
@@ -2127,8 +2145,9 @@ async function executeSingle(
 				});
 				throw err;
 			}
-			reviewResult = outcome.result;
-			reviewCostUsd += outcome.usage.cost_usd;
+			const merged = mergeReviewOutcomes(outcomes);
+			reviewResult = merged.result;
+			reviewCostUsd += merged.costUsd;
 			// 8c. Ship / fix / escalate
 			decision = decideFixLoop({ testsPass: verification.passed, review: reviewResult, fixesUsed, maxFixes });
 			onUpdate?.({ type: "review", verdict: reviewResult.verdict, findings: reviewResult.findings.length, decision });
@@ -2190,7 +2209,7 @@ async function executeSingle(
 				totalDurationMs: Date.now() - runStartMs,
 				swapTurn,
 				verification,
-				review: reviewResult ? { result: reviewResult, costUsd: reviewCostUsd } : null,
+				review: reviewResult ? { result: reviewResult, costUsd: reviewCostUsd, personas: effectiveAxes.map((p) => p.name) } : null,
 				fixLoop: { iterations: fixesUsed + 1, costUsd: fixesCostUsd },
 				receivedAt: opts.receivedAt,
 				dispatchedAt,

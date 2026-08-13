@@ -6,7 +6,16 @@
  */
 
 import { pathToFileURL } from "node:url";
-import { adversarialPersona, DEFAULT_PERSONA, PERSONAS, getPersona } from "./personas.ts";
+import {
+	adversarialPersona,
+	DEFAULT_PERSONA,
+	DEFAULT_REVIEW_PERSONAS,
+	getPersona,
+	PERSONAS,
+	standardsPersona,
+	specFidelityPersona,
+	surveyReviewerPersona,
+} from "./personas.ts";
 
 export async function runTests(): Promise<void> {
 	const errors: string[] = [];
@@ -31,6 +40,23 @@ export async function runTests(): Promise<void> {
 	check(PERSONAS.some((x) => x.name === "adversarial"), "adversarial persona is registered");
 	check(getPersona("adversarial") === adversarialPersona, "getPersona finds adversarial");
 	check(getPersona("does-not-exist") === undefined, "getPersona returns undefined for unknown");
+
+	// 3b. The two-axis + survey personas (the DEFAULT review axes + the
+	//     survey-report validator), all resolving through the registry.
+	check(standardsPersona.name === "standards" && specFidelityPersona.name === "spec-fidelity",
+		"two-axis personas named");
+	check(surveyReviewerPersona.name === "survey-reviewer" && surveyReviewerPersona.output.kind === "findings",
+		"survey-reviewer persona named + findings contract");
+	check(DEFAULT_REVIEW_PERSONAS.length === 2 && DEFAULT_REVIEW_PERSONAS.every((n) => getPersona(n) !== undefined),
+		`every default axis resolves in the registry, got ${JSON.stringify(DEFAULT_REVIEW_PERSONAS)}`);
+	check(JSON.stringify(DEFAULT_REVIEW_PERSONAS) === JSON.stringify(["standards", "spec-fidelity"]),
+		`default axes are standards + spec-fidelity, got ${JSON.stringify(DEFAULT_REVIEW_PERSONAS)}`);
+	check(
+		standardsPersona.systemPrompt.includes("standards") &&
+			specFidelityPersona.systemPrompt.includes("SPEC") &&
+			surveyReviewerPersona.systemPrompt.includes("report"),
+		"each new persona has a focused non-empty prompt",
+	);
 
 	// 4. Every registered persona has a unique name + a valid output contract
 	{

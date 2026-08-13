@@ -65,6 +65,8 @@ export interface ReviewPhaseMetrics {
 	findings: number;
 	by_priority: Record<string, number>;
 	cost_usd: number;
+	/** The review axes that ran (e.g. ["standards", "spec-fidelity"]). */
+	personas?: string[];
 }
 
 export interface FixLoopPhaseMetrics {

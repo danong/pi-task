@@ -71,6 +71,12 @@ e.g.:
     grep -q '^## Candidates' docs/architecture-review.md
     grep -q '^## Top recommendation' docs/architecture-review.md
 
+## Dispatch
+
+Call the task tool with the survey spec and `review: "survey-reviewer"` — the
+engine's adversarial review then validates the report itself (citations
+traceable, candidates actionable, priorities coherent).
+
 ## No code changes
 
 The survey changes no source code — the report file is the only file the

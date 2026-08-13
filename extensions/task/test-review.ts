@@ -14,6 +14,7 @@ import { pathToFileURL } from "node:url";
 import {
 	buildReviewPrompt,
 	settleReview,
+	mergeReviewOutcomes,
 	decideFirstEventAction,
 	firstEventTimeoutErrorMessage,
 	reviewNoProgressErrorMessage,
@@ -22,7 +23,7 @@ import {
 	REVIEW_WALL_TIMEOUT_MS,
 } from "./review.ts";
 import { decideNoProgressAction, WORKER_NO_PROGRESS_TIMEOUT_MS } from "./worker.ts";
-import type { ReviewResult } from "./schemas/findings.ts";
+import type { Finding, ReviewResult } from "./schemas/findings.ts";
 
 const REVIEW: ReviewResult = {
 	verdict: "ship",
@@ -56,7 +57,46 @@ export async function runTests(): Promise<void> {
 		check(prompt.includes("- skipped R2") && prompt.includes("- used lib Y"), "deviations listed");
 	}
 
-	// ─── settleReview ───
+	// ─── mergeReviewOutcomes (parallel two-axis review) ───
+	{
+		const mk = (over: Partial<ReviewResult> = {}): ReviewResult => ({
+			verdict: "ship",
+			findings: [],
+			requirements: [],
+			...over,
+		});
+		const finding = (id: string, priority: "P0" | "P1" | "P2"): Finding => ({
+			id, priority, confidence: 0.8, category: "design", file: "a.ts",
+			description: id, verification: "grep",
+		});
+		// Single axis → passthrough, cost carried.
+		const single = mergeReviewOutcomes([{ result: mk({ verdict: "fix" }), usage: { cost_usd: 0.01 } }]);
+		check(single.result.verdict === "fix" && single.costUsd === 0.01, "single axis passes through verdict + cost");
+		// Two axes: findings concatenated, verdict = worst, requirements worst per id.
+		const merged = mergeReviewOutcomes([
+			{ result: mk({ verdict: "ship", findings: [finding("F1", "P2")], requirements: [{ id: "R1", status: "met" }] }), usage: { cost_usd: 0.01 } },
+			{ result: mk({ verdict: "fix", findings: [finding("F2", "P1")], requirements: [{ id: "R1", status: "uncertain" }, { id: "R2", status: "unmet" }] }), usage: { cost_usd: 0.02 } },
+		]);
+		check(merged.result.verdict === "fix", "verdict = worst across axes");
+		check(merged.result.findings.length === 2 && merged.result.findings.some((f) => f.id === "F2"),
+			"findings concatenated across axes");
+		check(merged.result.requirements.find((r) => r.id === "R1")?.status === "uncertain",
+			"R1 worst status (uncertain > met) wins");
+		check(merged.result.requirements.find((r) => r.id === "R2")?.status === "unmet", "R2 unmet survives");
+		check(Math.abs(merged.costUsd - 0.03) < 1e-9, "review cost summed across axes");
+		// Escalate wins over everything.
+		const worst = mergeReviewOutcomes([
+			{ result: mk({ verdict: "fix" }), usage: { cost_usd: 0 } },
+			{ result: mk({ verdict: "escalate" }), usage: { cost_usd: 0 } },
+		]);
+		check(worst.result.verdict === "escalate", "escalate is the worst verdict");
+		// Empty → vacuous ship.
+		const empty = mergeReviewOutcomes([]);
+		check(empty.result.verdict === "ship" && empty.result.findings.length === 0 && empty.costUsd === 0,
+			"empty outcomes → ship, no findings, zero cost");
+		console.log("✓ mergeReviewOutcomes: verdict worst, findings concat, requirements worst-per-id, cost summed");
+	}
+
 	{
 		const ok = settleReview(REVIEW, 0, "");
 		check(ok.ok === true, "captured report → ok");

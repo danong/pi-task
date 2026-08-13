@@ -140,10 +140,11 @@ function testBudgetSchemaLocking(errors: string[]): void {
 	check(unlocked.includes("spec"), "unlocked schema should have spec");
 	check(unlocked.includes("sub_specs"), "unlocked schema should have sub_specs");
 	check(unlocked.includes("parallel"), "unlocked schema should have parallel");
+	check(unlocked.includes("review"), "unlocked schema should have the review axis override");
 	check(unlocked.includes("budget"), "unlocked schema should expose budget");
 
-	check(locked.includes("spec") && locked.includes("sub_specs") && locked.includes("parallel"),
-		"locked schema keeps the work parameters");
+	check(locked.includes("spec") && locked.includes("sub_specs") && locked.includes("parallel") && locked.includes("review"),
+		"locked schema keeps the work parameters + review override");
 	check(!locked.includes("budget"), "locked schema must NOT expose budget (model cannot see or override it)");
 
 	// Budget enum values are exactly the four built-in modes (default tier set).
