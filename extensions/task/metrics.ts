@@ -491,6 +491,11 @@ export interface FailureArtifact {
 	 *  merge failure), the dangling worker commit ids, and the conflicted
 	 *  files, so recovery is scripted rather than LLM-discovered. */
 	merge?: MergeFailureRecord;
+	/** Scripted recovery guide (R4): how to stack the preserved workspaces,
+	 *  abandon the AI base/stubs BEFORE pushing (description-less commits
+	 *  refuse push), and resolve add-vs-delete conflicts (:ours/:theirs, not
+	 *  mid-stack abandon). Present on merge/worker-failure artifacts. */
+	recovery?: string;
 }
 
 /**
@@ -502,7 +507,15 @@ export interface FailureArtifact {
  * payload.
  */
 export interface MergeFailureRecord {
-	workspaces: Array<{ name: string; commit_id: string }>;
+	workspaces: Array<{
+		name: string;
+		commit_id: string;
+		/** R3: the rescue commit that captured this workspace's uncommitted
+		 *  state on a worker failure — absent when the workspace was clean or
+		 *  the rescue failed (best effort). The artifact names where the
+		 *  uncommitted state lives. */
+		rescue_commit_id?: string;
+	}>;
 	dangling_commit_ids: string[];
 	conflicted_files: string[];
 	conflict_hunks?: Record<string, string>;
@@ -521,6 +534,9 @@ export function buildFailureArtifact(input: {
 	/** R2: merge-failure record (workspaces, dangling commit ids, conflicted
 	 *  files + hunks). Present on parallel merge failures/escalations. */
 	merge?: MergeFailureRecord;
+	/** R4: scripted recovery guide — travels with the merge/worker-failure
+	 *  artifact so recovery happens from the artifact, not LLM-discovered. */
+	recovery?: string;
 }): FailureArtifact {
 	return {
 		run_id: generateRunId(input.now ?? new Date()),
@@ -534,6 +550,7 @@ export function buildFailureArtifact(input: {
 		last_tool: input.lastTool,
 		stderr_tail: input.stderrTail,
 		merge: input.merge,
+		recovery: input.recovery,
 	};
 }
 

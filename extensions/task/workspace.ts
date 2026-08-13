@@ -61,7 +61,9 @@
  * mergeWorkspacesAtomic (R1 atomic combine), resolveConflictsWithUnion
  * (R4 union ladder), workspaceFileChanges/diffForWorkspacePath (R5
  * overlap classification inputs), conflictHunks (R4 escalation payload)
- * and assertMerged (R3 post-merge consistency gate).
+ * and assertMerged (R3 post-merge consistency gate). Every jj call is
+ * bounded by DEFAULT_JJ_TIMEOUT_MS (R5), overridable per call — a wedged
+ * workspace can never hang the abort path.
  */
 
 import { execFile } from "node:child_process";
@@ -93,23 +95,41 @@ interface JjResult {
 	code: number;
 	stdout: string;
 	stderr: string;
+	/** True when the call was killed by its timeout bound (R5). */
+	timedOut?: boolean;
 }
 
 // ─── jj plumbing ─────────────────────────────────────────────────────
 
 const MAX_JJ_OUTPUT_BYTES = 10 * 1024 * 1024;
 
+/** Default bound for EVERY jj call (R5, ~120s): a wedged jj process (op-log
+ *  corruption, a stuck store lock) must never hang the orchestrator — least
+ *  of all the abort/failure path, whose workspace-commit-id resolution and
+ *  rescue commits run on wedged workspaces. Overridable per call; the
+ *  failure path passes a tighter bound. */
+export const DEFAULT_JJ_TIMEOUT_MS = 120_000;
+
 /** Run jj; never throws (exit code + output captured for error messages).
  *  JJ_EDITOR=true in the child env: jj invokes the editor for squash even
  *  with --from/--into when descriptions differ — an interactive editor
- *  reading an idle pipe hangs the orchestrator. */
-export function execJj(args: string[], cwd: string): Promise<JjResult> {
+ *  reading an idle pipe hangs the orchestrator.
+ *  R5: bounded by opts.timeoutMs (default DEFAULT_JJ_TIMEOUT_MS) — a
+ *  timed-out call resolves with code 1 + timedOut:true + a stderr note
+ *  naming the bound, so every caller's error path stays bounded too. */
+export function execJj(
+	args: string[],
+	cwd: string,
+	opts?: { timeoutMs?: number },
+): Promise<JjResult> {
+	const timeoutMs = opts?.timeoutMs ?? DEFAULT_JJ_TIMEOUT_MS;
 	return new Promise((resolve) => {
 		execFile(
 			"jj",
 			args,
 			{
 				cwd,
+				timeout: timeoutMs,
 				maxBuffer: MAX_JJ_OUTPUT_BYTES,
 				env: { ...process.env, JJ_EDITOR: "true" },
 			},
@@ -118,9 +138,22 @@ export function execJj(args: string[], cwd: string): Promise<JjResult> {
 					resolve({ code: 0, stdout: stdout.toString(), stderr: stderr.toString() });
 					return;
 				}
+				const err = error as NodeJS.ErrnoException & { killed?: boolean; signal?: string };
+				// Timeout: execFile kills the child with SIGTERM (killed=true);
+				// ETIMEDOUT is the older/other-platform shape.
+				if (err.killed === true || err.code === "ETIMEDOUT") {
+					resolve({
+						code: 1,
+						stdout: stdout.toString(),
+						stderr:
+							stderr.toString() +
+							`\n(jj timed out after ${Math.round(timeoutMs / 1000)}s — command: jj ${args.join(" ")})`,
+						timedOut: true,
+					});
+					return;
+				}
 				// Non-zero exit: error.code is the numeric exit code.
 				// Spawn failures (ENOENT etc.): error.code is a string.
-				const err = error as NodeJS.ErrnoException;
 				const code = typeof err.code === "number" ? err.code : 1;
 				resolve({ code, stdout: stdout.toString(), stderr: stderr.toString() });
 			},
@@ -140,9 +173,15 @@ function parseWorkspaceList(stdout: string): Map<string, { changeId: string; com
 
 /** Resolve a workspace's working-copy COMMIT id from `jj workspace list`
  *  (workspace names are NOT revsets). Exported for the orchestrator: the
- *  merge-failure artifact records each workspace's commit id (R2). */
-export async function workspaceCommitId(projectDir: string, name: string): Promise<string> {
-	const result = await execJj(["workspace", "list"], projectDir);
+ *  merge-failure artifact records each workspace's commit id (R2). The
+ *  failure path passes a tighter timeoutMs — resolving ids on a wedged
+ *  workspace must never stall the abort (R5). */
+export async function workspaceCommitId(
+	projectDir: string,
+	name: string,
+	opts?: { timeoutMs?: number },
+): Promise<string> {
+	const result = await execJj(["workspace", "list"], projectDir, opts);
 	if (result.code !== 0) {
 		throw new Error(`jj workspace list failed (${result.code}): ${result.stderr.trim()}`);
 	}
@@ -326,6 +365,31 @@ export async function workspaceFileChanges(
 		);
 	}
 	return parseSummaryChanges(result.stdout.split("\n").filter((line) => line.trim().length > 0));
+}
+
+/**
+ * Repo-relative paths changed between two EXPLICIT revisions (`jj diff
+ * --summary`, parsed) — used by the single-worker finalization-incomplete
+ * path to report the aborted worker's files (R2: the worker never yielded,
+ * so the yield payload's files_changed is unavailable).
+ */
+export async function filesChangedBetween(
+	projectDir: string,
+	from: string,
+	to: string,
+): Promise<string[]> {
+	// --ignore-working-copy: read-only diff — no snapshot op (todo #70's
+	// op-log-fork discipline); @- resolves from the recorded working-copy
+	// commit, which is exact for this purpose.
+	const result = await execJj(["diff", "--from", from, "--to", to, "--summary", "--ignore-working-copy"], projectDir);
+	if (result.code !== 0) {
+		throw new Error(
+			`jj diff --from ${from} --to ${to} failed (${result.code}): ${result.stderr.trim()}`,
+		);
+	}
+	return parseSummaryChanges(result.stdout.split("\n").filter((line) => line.trim().length > 0)).map(
+		(c) => c.file,
+	);
 }
 
 /**
