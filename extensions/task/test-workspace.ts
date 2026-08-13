@@ -477,7 +477,7 @@ async function testReResolvedSquashTargets(errors: string[]): Promise<void> {
 
 		// Provable integration: every workspace + the main working copy sit
 		// on the current base, and the final base holds EVERY change.
-		await assertMerged(testDir, ["rer-1", "rer-2", "rer-f"], baseChange);
+		await assertMerged(testDir, ["rer-1", "rer-2", "rer-f"], baseChange, { expectedFiles: ["a.txt", "b.txt", "foreign.txt"] });
 
 		for (const f of ["a.txt", "b.txt", "foreign.txt"]) {
 			check(existsSync(join(testDir, f)), `${f} should be in the merged tree`);
@@ -542,18 +542,17 @@ async function testMergeIntegrityGate(errors: string[]): Promise<void> {
 		// verification pass trivially on a tree without the integrated work.
 		await mergeWorkspace(testDir, "gate-1", baseChange);
 		try {
-			await assertMerged(testDir, ["gate-1", "gate-2"], baseChange);
+			await assertMerged(testDir, ["gate-1", "gate-2"], baseChange, { expectedFiles: ["a.txt", "b.txt"] });
 			errors.push("assertMerged should fail when a workspace was never merged");
 		} catch (err) {
 			const msg = (err as Error).message;
-			check(msg.includes("gate-2"), `gate error should name the unmerged workspace, got: ${msg}`);
 			check(msg.includes("did NOT integrate"), `gate error should say the merge is not integrated, got: ${msg}`);
 			check(msg.includes("b.txt"), `gate error should name the stranded file, got: ${msg}`);
 		}
 
 		// Merge w2 properly — the gate now passes.
 		await mergeWorkspace(testDir, "gate-2", baseChange);
-		await assertMerged(testDir, ["gate-1", "gate-2"], baseChange);
+		await assertMerged(testDir, ["gate-1", "gate-2"], baseChange, { expectedFiles: ["a.txt", "b.txt"] });
 		check(existsSync(join(testDir, "a.txt")) && existsSync(join(testDir, "b.txt")),
 			"both workers' files should be in the merged tree");
 
@@ -601,7 +600,7 @@ async function testStaleTargetSurfaced(errors: string[]): Promise<void> {
 		// tree without the integrated work (and the base change no longer
 		// resolves to a visible commit holding it).
 		try {
-			await assertMerged(testDir, ["stale-1", "stale-2"], baseChange);
+			await assertMerged(testDir, ["stale-1", "stale-2"], baseChange, { expectedFiles: ["a.txt", "b.txt"] });
 			errors.push("assertMerged should fail after a stale-target squash (work in hidden revision)");
 		} catch (err) {
 			const msg = (err as Error).message;
@@ -958,8 +957,7 @@ async function testConsistencyGateDangling(errors: string[]): Promise<void> {
 			errors.push("assertMerged should fail when a workspace commit dangles outside the merged result");
 		} catch (err) {
 			const msg = (err as Error).message;
-			check(msg.includes("NOT a descendant"), `gate should name the dangling workspace, got: ${msg}`);
-			check(msg.includes("dang-2"), `gate error should name the workspace, got: ${msg}`);
+			check(msg.includes("merged tree is missing"), `gate should report the missing union file, got: ${msg}`);
 			check(msg.includes("b.txt"), `gate error should name the stranded file, got: ${msg}`);
 		}
 
@@ -1182,6 +1180,52 @@ async function testWorkspacesConsumed(errors: string[]): Promise<void> {
 		rmSync(testDir, { recursive: true, force: true });
 	}
 	console.log("✓ assertWorkspacesConsumed: empty stub on the pre-merge base passes (false-alarm fix); unconsumed work fails");
+}
+
+// ─── assertMerged: the unrebased-stub regression (R3 gate) ───────────
+// The exact false-alarm from the field: jj leaves the (empty) workspace
+// stubs on the PRE-merge base instead of auto-rebasing them onto the
+// rewritten base. The old gate checked reachability + diff against the
+// merged base and reported a successful merge as "NOT a descendant" /
+// "changes outside the merged base". The gate must PASS for that shape —
+// the union checks (merged tree + working tree) are the invariants.
+
+async function testAssertMergedUnrebasedStub(errors: string[]): Promise<void> {
+	const check = (cond: boolean, msg: string): void => {
+		if (!cond) errors.push(msg);
+	};
+	const testDir = mkdtempSync(join(tmpdir(), "pi-task-ws-stubgate-"));
+	try {
+		initRepo(testDir);
+		const baseChange = await taskBaseChangeId(testDir);
+		// The repo ROOT — a visible ancestor of everything (never rewritten):
+		// rebasing onto it can't resurrect a rewritten change / diverge it.
+		const rootCommitId = jj(["log", "-r", "root()", "--no-graph", "-T", "commit_id"], testDir).trim();
+
+		const w1 = await createWorkspace(testDir, "sg-1");
+		const w2 = await createWorkspace(testDir, "sg-2");
+		writeFileSync(join(w1, "a.txt"), "one\n", "utf-8");
+		jj(["commit", "-m", "sg w1"], w1);
+		writeFileSync(join(w2, "b.txt"), "two\n", "utf-8");
+		jj(["commit", "-m", "sg w2"], w2);
+
+		const outcome = await mergeWorkspacesAtomic(testDir, ["sg-1", "sg-2"], baseChange);
+		check(outcome.files_changed === 2, `atomic outcome, got ${outcome.files_changed}`);
+
+		// Normal shape (stubs rebased): the gate passes.
+		await assertMerged(testDir, ["sg-1", "sg-2"], baseChange, { expectedFiles: ["a.txt", "b.txt"] });
+
+		// Unrebased-stub shape: move ws-@ BACK onto the pre-merge base — the
+		// empty stub is no longer a descendant of the merged base and its tree
+		// lacks the merged files. The gate must STILL pass (the stub is
+		// throwaway; the merged tree + working tree hold the union).
+		const w1At = await workspaceCommitId(testDir, "sg-1");
+		jj(["rebase", "-s", w1At, "-o", rootCommitId], testDir);
+		await assertMerged(testDir, ["sg-1", "sg-2"], baseChange, { expectedFiles: ["a.txt", "b.txt"] });
+	} finally {
+		rmSync(testDir, { recursive: true, force: true });
+	}
+	console.log("✓ assertMerged: unrebased empty stubs pass (false-alarm regression); union checks gate");
 }
 
 // ─── R5: bounded jj calls ────────────────────────────────────────────
@@ -1510,6 +1554,7 @@ export async function runTests(): Promise<void> {
 	testParseSummaryChanges(errors);
 	await testRescueAbortedWork(errors);
 	await testWorkspacesConsumed(errors);
+	await testAssertMergedUnrebasedStub(errors);
 	await testJjTimeoutBounded(errors);
 	await testRescueWorkspaceState(errors);
 	await testNoStubOnNoMergeFailure(errors);
