@@ -84,6 +84,7 @@ import {
 	DEFAULT_BUDGET_TIERS,
 	findTier,
 	loadTaskConfig,
+	resolveTaskShape,
 	type BudgetMode,
 	type BudgetTier,
 	type BudgetTierConfig,
@@ -292,6 +293,10 @@ export interface TaskToolParams {
 	 *  (standards + spec-fidelity); a single name (e.g. "survey-reviewer"
 	 *  for /survey dispatches, "adversarial") overrides it. */
 	review?: string;
+	/** Run-pipeline shape (code | analysis | any [shapes.*] section);
+	 *  default: the tier's shape. analysis promotes the strong prewalk
+	 *  model into the writer/review slots with no swap. */
+	shape?: string;
 }
 
 /**
@@ -358,6 +363,14 @@ export function taskToolSchema(
 					"Reviewer persona/axis override — unset → the two-axis review (standards + spec-fidelity, parallel " +
 					"forks); a single name overrides it, e.g. \"survey-reviewer\" for /survey dispatches (validates the " +
 					"report artifact) or \"adversarial\" (the original single-axis reviewer).",
+			}),
+		),
+		shape: Type.Optional(
+			Type.String({
+				description:
+					"Run-pipeline shape: code (default — prewalk plans, swap to the fast execute model on the first " +
+					"edit, two-axis review) | analysis (strong model writes and reviews, no swap — surveys, design " +
+					"reviews) | any [shapes.*] section in task.toml.",
 			}),
 		),
 	};
@@ -831,15 +844,25 @@ export default function (pi: ExtensionAPI) {
 				// mirror it so the view matches the number of workers dispatched.
 				const workerCount =
 					hasSubSpecs || reqCount === null ? parallel : Math.min(parallel, reqCount);
+				// The run-pipeline SHAPE (p.shape override or the tier's default):
+				// analysis promotes the strong prewalk model into the writer/review
+				// slots with no swap — the plan line shows what actually runs.
+				const shape = resolveTaskShape(p.shape ?? tierConfig.shape, taskConfig.shapes);
+				const workModel =
+					shape.workModel === "prewalk" ? (tierConfig.prewalkModel ?? tierConfig.executeModel) : tierConfig.executeModel;
 				// Review runs only on the single-worker non-sub_specs path (the
 				// orchestrator warns and skips it otherwise) — the plan line
-				// reflects that.
-				const reviewWillRun = tierConfig.review && !hasSubSpecs && parallel <= 1;
+				// reflects that. Shape axes AND the tier's review flag; an explicit
+				// persona (review param) forces it on.
+				const reviewWillRun =
+					(p.review !== undefined || (tierConfig.review && shape.review.length > 0)) &&
+					!hasSubSpecs &&
+					parallel <= 1;
 				const plan = buildRunPlan({
 					tier,
-					prewalkModel: tierConfig.prewalkModel ?? undefined,
-					executeModel: tierConfig.executeModel,
-					reviewModel: tierConfig.reviewModel,
+					prewalkModel: shape.prewalk ? (tierConfig.prewalkModel ?? undefined) : undefined,
+					executeModel: workModel,
+					reviewModel: shape.reviewModel === "prewalk" ? (tierConfig.prewalkModel ?? tierConfig.reviewModel) : tierConfig.reviewModel,
 					review: reviewWillRun,
 					wallTimeoutMs: tierConfig.wallTimeoutMs,
 				});
@@ -900,6 +923,7 @@ export default function (pi: ExtensionAPI) {
 						receivedAt,
 						mainSessionTokens,
 						persona: p.review,
+					shape,
 					});
 					const ret = taskResultToToolReturn(result);
 					return { content: [{ type: "text", text: summarizeResult(result) }], details: ret };

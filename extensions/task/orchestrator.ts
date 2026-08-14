@@ -45,9 +45,11 @@ import { attachChecklistRelay, type ChecklistProgress } from "./checklist-relay.
 import { resolveSandbox, type ResolvedSandbox } from "./sandbox.ts";
 import {
 	DEFAULT_TASK_CONFIG,
+	DEFAULT_TASK_SHAPES,
 	aiIdentityToml,
 	formatAiAuthorName,
 	type SandboxConfig,
+	type TaskShape,
 } from "./config.ts";
 import { buildMap, formatMapPrompt, loadRepoMapConfig, sliceRelevant } from "./repo-map.ts";
 import {
@@ -515,6 +517,10 @@ export interface ExecuteTaskOptions {
 	 *  a single name (e.g. "survey-reviewer" for /survey dispatches, or
 	 *  "adversarial") overrides the set. */
 	persona?: string;
+	/** The run-pipeline SHAPE (resolved by the task tool from its `shape`
+	 *  param / the tier's default): the phase structure, swap policy, model
+	 *  slots, and review axes. Default: the built-in code shape. */
+	shape?: TaskShape;
 	/** Max fix workers the loop may dispatch (when review enabled). Default: 2. */
 	maxFixIterations?: number;
 	/** Budget tier label for the manifest (Phase 10). Orchestrator does
@@ -889,6 +895,7 @@ function assembleManifest(opts: {
 	prewalkModel: string;
 	executeModel: string;
 	reviewModel: string;
+	shape: string;
 	reviewForked: boolean;
 	budget?: string;
 	worker: WorkerResult;
@@ -943,6 +950,7 @@ function assembleManifest(opts: {
 			executeModel: opts.executeModel,
 			reviewModel: opts.reviewModel,
 			reviewForked: opts.reviewForked,
+			shape: opts.shape?.name ?? "code",
 			budget: opts.budget,
 			sandbox: opts.sandbox,
 		},
@@ -1136,9 +1144,29 @@ export async function executeTask(opts: ExecuteTaskOptions): Promise<TaskResult>
 	const specMarkdown = subSpecs ? subSpecs.join("\n\n") : opts.spec!;
 	const spec = subSpecs ? aggregateSubSpecs(subSpecs) : parseSpec(specMarkdown);
 
-	// 2. Resolve prewalk (code): strong model explores, swap to execute model on first edit
-	const executeModel = opts.executeModel ?? model;
-	const usePrewalk = opts.prewalkModel !== undefined && isPrewalkActive(opts.prewalkModel, executeModel);
+	// 2. Resolve the run-pipeline SHAPE + the effective models. The shape
+	//    (code | analysis | any [shapes.*] section) declares the phase
+	//    structure, swap policy, model slots, and review axes — separated
+	//    from the budget tier (which picks the models). `analysis` promotes
+	//    the strong prewalk model into the writer/review slots (no swap):
+	//    surveys/design reviews get the deep thinker writing, not planning.
+	const shape = opts.shape ?? DEFAULT_TASK_SHAPES.code;
+	const executeModel =
+		shape.workModel === "prewalk"
+			? (opts.prewalkModel ?? opts.executeModel ?? model)
+			: (opts.executeModel ?? model);
+	const usePrewalk =
+		shape.prewalk &&
+		opts.prewalkModel !== undefined &&
+		isPrewalkActive(opts.prewalkModel, executeModel);
+	const reviewModel =
+		shape.reviewModel === "prewalk"
+			? (opts.prewalkModel ?? opts.reviewModel ?? executeModel)
+			: (opts.reviewModel ?? executeModel);
+	// Review runs when the shape declares axes AND the tier's review flag,
+	// or when an explicit persona override forces a single-axis review
+	// (e.g. /survey passes review: "survey-reviewer").
+	const reviewEnabled = opts.persona !== undefined || (opts.review === true && shape.review.length > 0);
 
 	// 2a. AI commit identity (todo #84): resolve once per run — worker
 	// commits (single + fix workers) and the parallel merge target are
@@ -1212,9 +1240,10 @@ export async function executeTask(opts: ExecuteTaskOptions): Promise<TaskResult>
 			toolTimeoutMs: opts.toolTimeoutMs,
 			spec,
 			specMarkdown,
-			review: opts.review,
-			reviewModel: opts.reviewModel,
+			review: reviewEnabled,
+			reviewModel,
 			persona: opts.persona,
+			shape,
 			maxFixIterations: opts.maxFixIterations,
 			budget: opts.budget,
 			metricsDir: opts.metricsDir,
@@ -1810,6 +1839,7 @@ async function executeSingle(
 		review?: boolean;
 		reviewModel?: string;
 		persona?: string;
+		shape?: TaskShape;
 		maxFixIterations?: number;
 		metricsDir?: string;
 		project?: string;
@@ -1828,7 +1858,7 @@ async function executeSingle(
 	const {
 		taskPrompt, usePrewalk, prewalkModel, executeModel, systemPrompt, signal, onSwap, onUpdate,
 		verificationTimeoutMs, workerTimeoutMs, toolTimeoutMs, spec, specMarkdown, review, reviewModel,
-		persona, maxFixIterations, metricsDir, project, preserveSessions, budget, sandbox,
+		persona, shape, maxFixIterations, metricsDir, project, preserveSessions, budget, sandbox,
 		aiAuthorName, aiAuthorEmail,
 	} = opts;
 
@@ -1981,6 +2011,7 @@ async function executeSingle(
 							executeModel,
 							reviewModel: reviewModel ?? executeModel,
 							reviewForked: false,
+				shape: shape?.name ?? "code",
 							budget,
 							sandbox: sandbox.active,
 							worker, workerDurationMs: Date.now() - workerStartMs,
@@ -2049,6 +2080,7 @@ async function executeSingle(
 					executeModel,
 					reviewModel: reviewModel ?? executeModel,
 					reviewForked: false,
+				shape: shape?.name ?? "code",
 					budget,
 					sandbox: sandbox.active,
 					worker, workerDurationMs,
@@ -2090,9 +2122,14 @@ async function executeSingle(
 		// or the DEFAULT two-axis set (standards + spec-fidelity), each run
 		// as its own parallel fork so neither pollutes the other. Findings
 		// merge, verdict = worst, requirements = worst per id.
+		// The review axes come from the SHAPE (its review list — the analysis
+		// shape is empty and relies on an explicit persona like
+		// survey-reviewer), ANDed with the tier's review flag upstream
+		// (reviewEnabled); an explicit persona overrides to a single axis.
+		const shapeAxes = (shape ?? DEFAULT_TASK_SHAPES.code).review;
 		const reviewAxes = persona
 			? [getPersona(persona) ?? DEFAULT_PERSONA]
-			: DEFAULT_REVIEW_PERSONAS.map((n) => getPersona(n)).filter((p): p is Persona => p !== undefined);
+			: shapeAxes.map((n) => getPersona(n)).filter((p): p is Persona => p !== undefined);
 		const effectiveAxes = reviewAxes.length > 0 ? reviewAxes : [DEFAULT_PERSONA];
 		const rModel = reviewModel ?? executeModel;
 
@@ -2203,6 +2240,7 @@ async function executeSingle(
 				executeModel,
 				reviewModel: rModel,
 				reviewForked: true,
+				shape: shape?.name ?? "code",
 				budget,
 				sandbox: sandbox.active,
 				worker, workerDurationMs,

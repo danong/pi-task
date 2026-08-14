@@ -89,6 +89,26 @@ pi-task is installed.
   format, verification) rather than scanning the whole codebase in the main
   session.
 
+## Run-pipeline shapes
+
+The pipeline itself is shape-driven and separated from the budget tiers
+(which pick the models). A shape declares the phase structure, swap policy,
+model slots, and review axes — so tasks fit the type of work, and the same
+spec can be benchmarked across shapes (prewalk on/off, swap on/off). Shapes
+are `[shapes.*]` sections in `config/task.toml`; the task tool's `shape`
+param overrides the tier's default, and the manifest records which shape ran.
+
+- **`code`** (default) — prewalk plans on the strong model, swap to the fast
+  execute model on the first edit, two-axis review. Built for implementation.
+- **`analysis`** — no prewalk, no swap: the STRONG model writes (the tier's
+  prewalk model is promoted into the work slot) and reviews. For surveys and
+  design reviews, where the report IS the thinking. `/survey` dispatches
+  `shape: "analysis"` + `review: "survey-reviewer"`.
+
+`bench-regression` accepts `--shape <name>` (default `code`; baselines key
+`<tier>@<shape>` with a tier fallback) — run the same canned specs across
+shapes to measure whether the prewalk pays for itself.
+
 ## Inside a run
 
 The task tool's lifecycle, roughly in order:

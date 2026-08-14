@@ -14,6 +14,8 @@
  *
  * Flags:
  *   --tier <name>     Restrict the run to one tier (repeatable).
+ *   --shape <name>    Run-pipeline shape to benchmark (default: code;
+ *                     analysis benchmarks the strong-writer shape).
  *   --dry-run         Print the run plan (tiers, specs, expected cost/time)
  *                     and exit 0 — nothing is spawned, no LLM is called
  *                     (the only subprocess is the config TOML read).
@@ -51,9 +53,11 @@ import { pathToFileURL } from "node:url";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import {
 	loadTaskConfig,
+	resolveTaskShape,
 	type BudgetTier,
 	type BudgetTierConfig,
 	type SandboxConfig,
+	type TaskShape,
 } from "./config.ts";
 import { formatDuration, summarizeRuns, type RunSummary } from "./metrics.ts";
 
@@ -185,6 +189,8 @@ export interface BenchTierPlan {
 
 /** The full dry-run plan: tiers × specs with expected cost/time. */
 export interface BenchPlan {
+	/** The run-pipeline shape this plan benchmarks (default "code"). */
+	shape: string;
 	tiers: BenchTierPlan[];
 	totalRuns: number;
 	totalExpectedDurationMs: number;
@@ -192,8 +198,11 @@ export interface BenchPlan {
 }
 
 /** The baseline for a spec on a tier; unknown tiers → the default entry. */
-export function baselineFor(spec: BenchSpec, tier: string): SpecBaseline {
-	return spec.baseline[tier] ?? spec.baseline.default;
+export function baselineFor(spec: BenchSpec, tier: string, shape?: string): SpecBaseline {
+	// Shape-specific baselines ("<tier>@<shape>") take precedence; the
+	// per-tier entry (and the required default) remain valid for the code
+	// shape. Record per-shape baselines after a few analysis-shape runs.
+	return spec.baseline[`${tier}@${shape ?? "code"}`] ?? spec.baseline[tier] ?? spec.baseline.default;
 }
 
 /**
@@ -207,7 +216,9 @@ export function buildBenchPlan(opts: {
 	tierOrder: string[];
 	specs?: BenchSpec[];
 	tierFilter?: string[];
+	shape?: string;
 }): BenchPlan {
+	const shape = opts.shape ?? "code";
 	const specs = opts.specs ?? BENCH_SPECS;
 	const tierNames =
 		opts.tierFilter && opts.tierFilter.length > 0
@@ -218,7 +229,7 @@ export function buildBenchPlan(opts: {
 	let totalExpectedCostUsd = 0;
 	const tiers: BenchTierPlan[] = tierNames.map((tier) => {
 		const runs = specs.map((spec) => {
-			const b = baselineFor(spec, tier);
+			const b = baselineFor(spec, tier, shape);
 			return {
 				tier,
 				specId: spec.id,
@@ -234,7 +245,7 @@ export function buildBenchPlan(opts: {
 		totalExpectedCostUsd += expectedCostUsd;
 		return { tier, runs, expectedDurationMs, expectedCostUsd };
 	});
-	return { tiers, totalRuns, totalExpectedDurationMs, totalExpectedCostUsd };
+	return { tiers, totalRuns, totalExpectedDurationMs, totalExpectedCostUsd, shape };
 }
 
 // ─── Baseline comparison (pure) ──────────────────────────────────────
@@ -400,6 +411,11 @@ export interface BenchRunOutcome {
 export interface BenchOptions {
 	tiers: Record<BudgetTier, BudgetTierConfig>;
 	tierOrder: string[];
+	shapes: Record<string, TaskShape>;
+	/** Run-pipeline shape to benchmark (default "code"; "analysis" for the
+	 *  strong-writer shape). Baselines key "<tier>@<shape>" with a tier
+	 *  fallback. */
+	shape?: string;
 	tierFilter?: string[];
 	specs?: BenchSpec[];
 	metricsDir: string;
@@ -423,6 +439,7 @@ export async function runBench(opts: BenchOptions): Promise<BenchRunOutcome> {
 		tierOrder: opts.tierOrder,
 		specs: opts.specs,
 		tierFilter: opts.tierFilter,
+		shape: opts.shape,
 	});
 
 	if (opts.dryRun) {
@@ -442,10 +459,12 @@ export async function runBench(opts: BenchOptions): Promise<BenchRunOutcome> {
 			if (!spec) continue;
 			console.log(`\n── bench: ${run.tier} × ${run.specId} (${spec.description}) ──`);
 			try {
+				const shape = resolveTaskShape(opts.shape ?? tierConfig.shape, opts.shapes);
 				await runOne({
 					tier: run.tier,
 					tierConfig,
 					spec,
+					shape,
 					metricsDir: opts.metricsDir,
 					project: projectForSpec(projectPrefix, run.specId),
 					sandbox: opts.sandbox,
@@ -482,6 +501,7 @@ async function runOne(opts: {
 	tier: string;
 	tierConfig: BudgetTierConfig;
 	spec: BenchSpec;
+	shape: TaskShape;
 	metricsDir: string;
 	project: string;
 	sandbox?: SandboxConfig;
@@ -505,6 +525,7 @@ async function runOne(opts: {
 			reviewModel: opts.tierConfig.reviewModel,
 			workerTimeoutMs: opts.tierConfig.wallTimeoutMs,
 			budget: opts.tier,
+			shape: opts.shape,
 			metricsDir: opts.metricsDir,
 			project: opts.project,
 			sandbox: opts.sandbox,
@@ -538,7 +559,11 @@ export function parseBenchArgs(argv: string[]): BenchCliArgs {
 	const out: BenchCliArgs = { tierFilter: [], dryRun: false, help: false };
 	for (let i = 0; i < argv.length; i++) {
 		const arg = argv[i];
-		if (arg === "--tier") {
+		if (arg === "--shape") {
+			const value = argv[++i];
+			if (value === undefined) throw new Error("--shape requires a value");
+			out.shape = value;
+		} else if (arg === "--tier") {
 			const value = argv[++i];
 			if (value === undefined) throw new Error("--tier requires a value");
 			out.tierFilter.push(value);
@@ -564,6 +589,8 @@ latency/cost against shipped baselines. See the header of this file.
 
 flags:
   --tier <name>     restrict to one tier (repeatable)
+  --shape <name>    run-pipeline shape to benchmark (default: code;
+                    analysis benchmarks the strong-writer shape)
   --dry-run         print the run plan and exit 0 (no spawns, no LLM)
   --metrics-dir <p> metrics dir (default: <agent-dir>/results)
   --help            print this help
@@ -588,6 +615,8 @@ async function main(): Promise<number> {
 	const outcome = await runBench({
 		tiers: config.tiers,
 		tierOrder: config.tierOrder,
+		shapes: config.shapes,
+		shape: args.shape,
 		tierFilter: args.tierFilter,
 		metricsDir,
 		dryRun: args.dryRun,

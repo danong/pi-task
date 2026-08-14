@@ -141,10 +141,11 @@ function testBudgetSchemaLocking(errors: string[]): void {
 	check(unlocked.includes("sub_specs"), "unlocked schema should have sub_specs");
 	check(unlocked.includes("parallel"), "unlocked schema should have parallel");
 	check(unlocked.includes("review"), "unlocked schema should have the review axis override");
+	check(unlocked.includes("shape"), "unlocked schema should have the shape param");
 	check(unlocked.includes("budget"), "unlocked schema should expose budget");
 
-	check(locked.includes("spec") && locked.includes("sub_specs") && locked.includes("parallel") && locked.includes("review"),
-		"locked schema keeps the work parameters + review override");
+	check(locked.includes("spec") && locked.includes("sub_specs") && locked.includes("parallel") && locked.includes("review") && locked.includes("shape"),
+		"locked schema keeps the work parameters + review/shape overrides");
 	check(!locked.includes("budget"), "locked schema must NOT expose budget (model cannot see or override it)");
 
 	// Budget enum values are exactly the four built-in modes (default tier set).
@@ -760,6 +761,24 @@ function testProgressStateAndRender(errors: string[]): void {
 	applyProgressEvent(metaState, { type: "tool_end", toolName: "edit" }, 8000);
 	text = buildProgressText(metaState, 8000);
 	check(!text.includes("⎈"), "tool_end clears the live tool line");
+
+	// Analysis shape plan: the strong prewalk model is the WRITER (no
+	// prewalk phase, no swap, no review phase) — what /survey dispatches.
+	{
+		const analysisPlan = buildRunPlan({
+			tier: "full",
+			prewalkModel: undefined,
+			executeModel: "qwen-token-plan/qwen3.8-max-preview",
+			reviewModel: "qwen-token-plan/qwen3.8-max-preview",
+			review: false,
+		});
+		const t = buildProgressText(createProgressState(1, analysisPlan, 1000), 1000);
+		check(t.startsWith("plan(full): work(qwen-token-plan/qwen3.8-max-preview)"),
+			`analysis plan: strong writer, no prewalk/review, got: ${t.split("\n")[0]}`);
+		// The model name qwen3.8-max-preview contains "review" as a substring —
+		// check the PHASE chain, not the bare word.
+		check(!t.includes("→ prewalk") && !t.includes("→ review"), "analysis plan omits prewalk + review phases");
+	}
 
 	// C: the tier wall shows as total-clock headroom.
 	const wallPlan = buildRunPlan({ tier: "economy", executeModel: "prov/fast", wallTimeoutMs: 25 * 60_000 });

@@ -95,6 +95,10 @@ export interface BudgetTierConfig {
 	reviewModel: string;
 	/** Enable the forked adversarial review + bounded fix loop. */
 	review: boolean;
+	/** The run-pipeline SHAPE (a [shapes.*] section): the phase structure,
+	 *  swap policy, model slots, and review axes. Default: "code" (the
+	 *  prewalk→swap→work→review pipeline; see DEFAULT_TASK_SHAPES). */
+	shape: string;
 	/**
 	 * Per-tier worker wall-clock budget (ms, Phase 11). Default when the
 	 * tier omits wall_timeout_ms: {@link DEFAULT_TIER_WALL_TIMEOUT_MS}
@@ -103,6 +107,62 @@ export interface BudgetTierConfig {
 	 * WorkerOptions.timeoutMs).
 	 */
 	wallTimeoutMs: number;
+}
+
+// ─── Run pipeline SHAPES (the task's shape) ─────────────────────────
+
+/**
+ * A run pipeline shape: the phase structure, swap policy, model slots,
+ * and review axes — separated from the budget tier so tasks fit the type
+ * of work (a survey is an ANALYSIS task: strong model in the writer slot,
+ * no prewalk swap) and the same spec can be benchmarked across shapes
+ * (prewalk on/off, swap on/off) with everything recorded in the manifest.
+ */
+export interface TaskShape {
+	/** Run the prewalk phase on the tier's prewalk model (auto-skipped when
+	 *  the model is null/equal — the existing auto-skip rule). */
+	prewalk: boolean;
+	/** Swap to the work model on the first successful edit (prewalk only). */
+	swap: boolean;
+	/** Model slot for the WORK phase: "execute" (the tier's execute model)
+	 *  or "prewalk" (promote the strong prewalk model — analysis tasks). */
+	workModel: "execute" | "prewalk";
+	/** Model slot for the REVIEW phase: "review" (the tier's review model)
+	 *  or "prewalk" (promote the strong prewalk model — strong review). */
+	reviewModel: "review" | "prewalk";
+	/** Review axes (persona names); [] = no review. ANDed with the tier's
+	 *  review flag (economy/free keep review off). */
+	review: string[];
+}
+
+export const DEFAULT_TASK_SHAPES: Record<string, TaskShape> = {
+	/** The default pipeline: strong prewalk plans, swap to the fast execute
+	 *  model on the first edit, two-axis review on the tier's review model. */
+	code: {
+		prewalk: true,
+		swap: true,
+		workModel: "execute",
+		reviewModel: "review",
+		review: ["standards", "spec-fidelity"],
+	},
+	/** Analysis tasks (surveys, design reviews): the STRONG model writes
+	 *  (the prewalk model is promoted to the work slot — no swap), and the
+	 *  strong model reviews too. Review axes are supplied per dispatch
+	 *  (e.g. /survey passes review: "survey-reviewer"). */
+	analysis: {
+		prewalk: false,
+		swap: false,
+		workModel: "prewalk",
+		reviewModel: "prewalk",
+		review: [],
+	},
+};
+
+/** Resolve a shape by name: the loaded set, else the built-ins, else the
+ *  code shape. Never throws — a bad name degrades to the default. */
+export function resolveTaskShape(shapeName: string | undefined, shapes: Record<string, TaskShape>): TaskShape {
+	const name = shapeName ?? "code";
+	return shapes[name] ?? DEFAULT_TASK_SHAPES[name] ?? DEFAULT_TASK_SHAPES.code;
 }
 
 /**
@@ -132,6 +192,7 @@ export const DEFAULT_BUDGET_TIERS: Record<BudgetTier, BudgetTierConfig> = {
 		executeModel: "qwen-token-plan/qwen3.8-max-preview",
 		reviewModel: "qwen-token-plan/qwen3.8-max-preview",
 		review: true,
+		shape: "code",
 		wallTimeoutMs: 45 * 60_000,
 	},
 	full: {
@@ -139,6 +200,7 @@ export const DEFAULT_BUDGET_TIERS: Record<BudgetTier, BudgetTierConfig> = {
 		executeModel: "opencode-go/deepseek-v4-flash",
 		reviewModel: "opencode-go/deepseek-v4-flash",
 		review: true,
+		shape: "code",
 		wallTimeoutMs: 45 * 60_000,
 	},
 	economy: {
@@ -146,6 +208,7 @@ export const DEFAULT_BUDGET_TIERS: Record<BudgetTier, BudgetTierConfig> = {
 		executeModel: "opencode-go/deepseek-v4-flash",
 		reviewModel: "opencode-go/deepseek-v4-flash",
 		review: false,
+		shape: "code",
 		wallTimeoutMs: 45 * 60_000,
 	},
 	free: {
@@ -153,6 +216,7 @@ export const DEFAULT_BUDGET_TIERS: Record<BudgetTier, BudgetTierConfig> = {
 		executeModel: "opencode/deepseek-v4-flash-free",
 		reviewModel: "opencode/deepseek-v4-flash-free",
 		review: false,
+		shape: "code",
 		wallTimeoutMs: 30 * 60_000,
 	},
 };
@@ -261,6 +325,9 @@ export interface TaskConfig {
 	 * integer-like tier names, so the loader records the order explicitly.
 	 */
 	tierOrder: string[];
+	/** Run-pipeline shapes ([shapes.*]): the phase structure, swap policy,
+	 *  model slots, and review axes — separated from the model tiers. */
+	shapes: Record<string, TaskShape>;
 	sandbox: SandboxConfig;
 }
 
@@ -275,6 +342,7 @@ export const DEFAULT_TASK_CONFIG: TaskConfig = {
 	},
 	tiers: DEFAULT_BUDGET_TIERS,
 	tierOrder: [...BUDGET_TIERS],
+	shapes: DEFAULT_TASK_SHAPES,
 	sandbox: DEFAULT_SANDBOX_CONFIG,
 };
 
@@ -396,12 +464,57 @@ function loadTier(sections: TomlSections, tier: BudgetTier): BudgetTierConfig | 
 	} else if (wallRaw !== undefined) {
 		wallTimeoutMs = wallRaw;
 	}
+	// shape: the run-pipeline shape name (a [shapes.*] section); absent →
+	// the fallback tier's; empty → warn + fallback.
+	const shapeRaw = str(section, "shape");
+	let shape = fallback.shape ?? "code";
+	if (shapeRaw !== undefined) {
+		const value = shapeRaw.trim();
+		if (value.length === 0) {
+			warn(`${label} shape is empty — using ${shape}`);
+		} else {
+			shape = value;
+		}
+	}
 	return {
 		prewalkModel,
 		executeModel,
 		reviewModel: model("review_model", fallback.reviewModel),
 		review: bool(section, "review") ?? fallback.review,
+		shape,
 		wallTimeoutMs,
+	};
+}
+
+/**
+ * Load one [shapes.<name>] run-pipeline shape with per-field
+ * warn-and-fallback to the built-in shape of the same name, else the
+ * code shape. A missing table degrades silently to undefined (no shape).
+ */
+function loadShape(sections: TomlSections, name: string): TaskShape | undefined {
+	const section = subTable(sections, "shapes", name);
+	if (section === undefined) return undefined;
+	const fallback = DEFAULT_TASK_SHAPES[name] ?? DEFAULT_TASK_SHAPES.code;
+	const label = `[shapes.${name}]`;
+	const b = (key: string, fallbackValue: boolean): boolean => {
+		const raw = bool(section, key);
+		if (raw === undefined) return fallbackValue;
+		return raw;
+	};
+	const slot = (key: string, fallbackValue: "execute" | "prewalk"): "execute" | "prewalk" => {
+		const raw = str(section, key);
+		if (raw === "execute" || raw === "prewalk") return raw;
+		if (raw !== undefined) warn(`${label} ${key} must be "execute" | "prewalk" — using ${fallbackValue}`);
+		return fallbackValue;
+	};
+	return {
+		prewalk: b("prewalk", fallback.prewalk),
+		swap: b("swap", fallback.swap),
+		workModel: slot("work_model", fallback.workModel),
+		reviewModel: slot("review_model", fallback.reviewModel),
+		review: strArray(section, "review", label).length > 0 || section?.["review"] !== undefined
+			? strArray(section, "review", label)
+			: fallback.review,
 	};
 }
 
@@ -494,6 +607,21 @@ export function loadTaskConfig(configPath?: string): TaskConfig {
 		}
 	}
 
+	// [shapes.*] run-pipeline shapes: every section is a usable shape (the
+	// tier's shape + the task tool's shape param reference these). Missing
+	// [shapes.*] → the built-in set.
+	const shapes: Record<string, TaskShape> = {};
+	const shapesParent = sections["shapes"];
+	if (shapesParent !== undefined && typeof shapesParent === "object" && shapesParent !== null) {
+		for (const key of Object.keys(shapesParent)) {
+			const loaded = loadShape(sections, key);
+			if (loaded !== undefined) shapes[key] = loaded;
+		}
+	}
+	if (Object.keys(shapes).length === 0) {
+		Object.assign(shapes, structuredClone(DEFAULT_TASK_SHAPES));
+	}
+
 	// [defaults] budget: "auto" or any loaded tier; invalid → warn + the
 	// default tier (DEFAULT_BUDGET_TIER when present, else the first loaded
 	// tier) so resolution always yields a usable tier.
@@ -572,6 +700,7 @@ export function loadTaskConfig(configPath?: string): TaskConfig {
 		},
 		tiers,
 		tierOrder,
+		shapes,
 		sandbox,
 	};
 }

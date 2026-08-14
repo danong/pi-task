@@ -73,12 +73,12 @@ e.g.:
 
 ## Dispatch
 
-Call the task tool with the survey spec and `review: "survey-reviewer"` — the
-engine's adversarial review then validates the report itself (citations
-traceable, candidates actionable, priorities coherent). Review only runs at a
-review tier, so pass `budget: "full"` (or another tier with `review = true`)
-explicitly — the auto-tier heuristic would pick economy for a small
-requirement count and silently skip the review.
+Call the task tool with the survey spec, `shape: "analysis"`, `review:
+"survey-reviewer"`, and `budget: "full"` (or another tier with `review =
+true`) — the analysis shape runs the STRONG model in the writer/review slots
+(no prewalk swap: the report IS the thinking), the survey-reviewer validates
+the report itself, and an explicit review tier beats the auto-tier heuristic
+(economy would silently skip the review).
 
 ## No code changes
 

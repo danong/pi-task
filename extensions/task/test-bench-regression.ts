@@ -132,11 +132,22 @@ export async function runTests(): Promise<void> {
 		check(baselineFor(spec, "full") === spec.baseline.full, "known tier returns its own baseline");
 		check(baselineFor(spec, "not-a-tier") === spec.baseline.default, "unknown tier falls back to default");
 		check(baselineFor(spec, "default") === spec.baseline.default, "default tier returns the default entry");
+		// Shape-aware baselines: "<tier>@<shape>" wins, then the tier, then default.
+		check(baselineFor(spec, "full", "analysis") === spec.baseline.full,
+			"no shape-specific baseline → tier entry");
+		const shaped = { ...spec, baseline: { ...spec.baseline, "full@analysis": spec.baseline.full } };
+		check(baselineFor(shaped, "full", "analysis") === spec.baseline.full,
+			"shape-specific baseline takes precedence");
+		check(baselineFor(shaped, "full") === spec.baseline.full,
+			"shape omitted → tier entry (backward compatible)");
 	}
 
 	// ─── buildBenchPlan: all tiers, totals, per-run expectations ───
 	{
 		const plan = buildBenchPlan({ tiers: DEFAULT_BUDGET_TIERS, tierOrder: [...BUDGET_TIERS] });
+		check(plan.shape === "code", `plan defaults to the code shape, got ${plan.shape}`);
+		const analysisPlan = buildBenchPlan({ tiers: DEFAULT_BUDGET_TIERS, tierOrder: [...BUDGET_TIERS], shape: "analysis" });
+		check(analysisPlan.shape === "analysis", `plan records the requested shape, got ${analysisPlan.shape}`);
 		check(JSON.stringify(plan.tiers.map((t) => t.tier)) === JSON.stringify([...BUDGET_TIERS]),
 			"plan keeps tier order");
 		check(plan.totalRuns === BUDGET_TIERS.length * BENCH_SPECS.length,

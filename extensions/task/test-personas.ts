@@ -6,8 +6,7 @@
  */
 
 import { pathToFileURL } from "node:url";
-import {
-	adversarialPersona,
+import { adversarialPersona,
 	DEFAULT_PERSONA,
 	DEFAULT_REVIEW_PERSONAS,
 	getPersona,
@@ -16,6 +15,7 @@ import {
 	specFidelityPersona,
 	surveyReviewerPersona,
 } from "./personas.ts";
+import { DEFAULT_TASK_SHAPES } from "./config.ts";
 
 export async function runTests(): Promise<void> {
 	const errors: string[] = [];
@@ -47,6 +47,8 @@ export async function runTests(): Promise<void> {
 		"two-axis personas named");
 	check(surveyReviewerPersona.name === "survey-reviewer" && surveyReviewerPersona.output.kind === "findings",
 		"survey-reviewer persona named + findings contract");
+	check(JSON.stringify(DEFAULT_TASK_SHAPES.code.review) === JSON.stringify(DEFAULT_REVIEW_PERSONAS),
+		"the code shape's review axes match the default axes");
 	check(DEFAULT_REVIEW_PERSONAS.length === 2 && DEFAULT_REVIEW_PERSONAS.every((n) => getPersona(n) !== undefined),
 		`every default axis resolves in the registry, got ${JSON.stringify(DEFAULT_REVIEW_PERSONAS)}`);
 	check(JSON.stringify(DEFAULT_REVIEW_PERSONAS) === JSON.stringify(["standards", "spec-fidelity"]),

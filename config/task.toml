@@ -57,6 +57,7 @@ review_model = "qwen-token-plan/qwen3.8-max-preview"
 review = true
 # Per-tier worker wall-clock budget (ms) — the whole worker run, incl.
 # prewalk. 2700000 = 45 min.
+shape = "code"
 wall_timeout_ms = 2700000
 
 [budget.full]
@@ -65,6 +66,7 @@ prewalk_model = "qwen-token-plan/qwen3.8-max-preview"
 execute_model = "opencode-go/deepseek-v4-flash"
 review_model = "opencode-go/deepseek-v4-flash"
 review = true
+shape = "code"
 wall_timeout_ms = 2700000
 
 [budget.economy]
@@ -76,6 +78,7 @@ prewalk_model = "opencode-go/deepseek-v4-flash"
 execute_model = "opencode-go/deepseek-v4-flash"
 review_model = "opencode-go/deepseek-v4-flash"
 review = false
+shape = "code"
 wall_timeout_ms = 2700000
 
 [budget.free]
@@ -86,6 +89,7 @@ prewalk_model = "opencode/deepseek-v4-flash-free"
 execute_model = "opencode/deepseek-v4-flash-free"
 review_model = "opencode/deepseek-v4-flash-free"
 review = false
+shape = "code"
 wall_timeout_ms = 1800000
 
 [sandbox]
@@ -111,3 +115,31 @@ network = "allow"
 # Additional bind paths beyond the default allowlist.
 extra_ro_binds = []
 extra_rw_binds = []
+
+
+# ─── Run pipeline shapes ([shapes.*]) ────────────────────────────────
+# The task's SHAPE: phase structure, swap policy, model slots, and review
+# axes — separated from the budget tiers (which pick the models). The task
+# tool's `shape` param overrides the tier's default; shapes are recorded in
+# the manifest so the same spec can be benchmarked across shapes (prewalk
+# on/off, swap on/off).
+
+[shapes.code]
+# The default pipeline: strong prewalk plans, swap to the fast execute
+# model on the first edit, two-axis review on the tier's review model.
+prewalk = true
+swap = true
+work_model = "execute"
+review_model = "review"
+review = ["standards", "spec-fidelity"]
+
+[shapes.analysis]
+# Analysis tasks (surveys, design reviews): the STRONG model writes (the
+# tier's prewalk model is promoted to the work slot — no swap), and the
+# strong model reviews too. Review axes are supplied per dispatch (e.g.
+# /survey passes review = "survey-reviewer").
+prewalk = false
+swap = false
+work_model = "prewalk"
+review_model = "prewalk"
+review = []

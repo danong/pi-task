@@ -22,7 +22,9 @@ import {
 	DEFAULT_TIER_WALL_TIMEOUT_MS,
 	DEFAULT_TOOL_TIMEOUT_MS,
 	DEFAULT_VERIFICATION_TIMEOUT_MS,
+	DEFAULT_TASK_SHAPES,
 	aiIdentityToml,
+	resolveTaskShape,
 	formatAiAuthorName,
 	loadTaskConfig,
 	type TaskConfig,
@@ -502,6 +504,56 @@ export async function runTests(): Promise<void> {
 	testMalformedToml(errors);
 	testAiIdentity(errors);
 	testShippedConfigMatchesDefaults(errors);
+	testShapes(errors);
+
+
+// ─── [shapes.*] run-pipeline shapes ──────────────────────────────────
+
+function testShapes(errors: string[]): void {
+	const check = (cond: boolean, msg: string): void => {
+		if (!cond) errors.push(msg);
+	};
+	// Built-in shapes: code (the current pipeline) + analysis (strong
+	// writer/reviewer, no swap), both with a working review contract.
+	check(JSON.stringify(Object.keys(DEFAULT_TASK_SHAPES)) === JSON.stringify(["code", "analysis"]),
+		`built-in shapes, got ${JSON.stringify(Object.keys(DEFAULT_TASK_SHAPES))}`);
+	check(DEFAULT_TASK_SHAPES.code.prewalk && DEFAULT_TASK_SHAPES.code.swap && DEFAULT_TASK_SHAPES.code.workModel === "execute",
+		"code shape: prewalk + swap + execute writer");
+	check(!DEFAULT_TASK_SHAPES.analysis.prewalk && !DEFAULT_TASK_SHAPES.analysis.swap
+		&& DEFAULT_TASK_SHAPES.analysis.workModel === "prewalk" && DEFAULT_TASK_SHAPES.analysis.reviewModel === "prewalk",
+		"analysis shape: no prewalk/swap, strong writer + reviewer");
+
+	// resolveTaskShape: loaded set, built-ins, unknown → code; never throws.
+	const loaded = { ...DEFAULT_TASK_SHAPES, custom: { ...DEFAULT_TASK_SHAPES.code, swap: false } };
+	check(resolveTaskShape("custom", loaded).swap === false, "resolveTaskShape finds a loaded shape");
+	check(resolveTaskShape("analysis", {}) === DEFAULT_TASK_SHAPES.analysis, "resolveTaskShape falls back to built-ins");
+	check(resolveTaskShape("bogus", loaded) === DEFAULT_TASK_SHAPES.code, "unknown shape → code");
+	check(resolveTaskShape(undefined, loaded) === DEFAULT_TASK_SHAPES.code, "undefined shape → code");
+
+	// Config file: [shapes.*] overrides + tier shape refs parse (per-key fallback).
+	withTempToml(
+		`
+[shapes.custom]
+prewalk = false
+swap = true
+work_model = "execute"
+review_model = "prewalk"
+review = ["survey-reviewer"]
+`,
+		(path) => {
+			const cfg = loadTaskConfig(path);
+			const custom = cfg.shapes.custom;
+			check(custom !== undefined && custom.prewalk === false && custom.swap === true
+				&& custom.reviewModel === "prewalk" && JSON.stringify(custom.review) === JSON.stringify(["survey-reviewer"]),
+				`custom shape parses, got ${JSON.stringify(custom)}`);
+			// Absent keys fall back to the code shape.
+			check(cfg.shapes.custom.workModel === "execute", "custom shape falls back per-key to code");
+			// A tier without an explicit shape still defaults to code.
+			check(cfg.tiers.full.shape === "code", `tier shape defaults to code, got ${cfg.tiers.full.shape}`);
+		},
+	);
+	console.log("✓ shapes: built-ins, resolveTaskShape, [shapes.*] parse + per-key fallback, tier default");
+}
 
 	if (errors.length > 0) {
 		throw new Error("test-config failed:\n  ✗ " + errors.join("\n  ✗ "));

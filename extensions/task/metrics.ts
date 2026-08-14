@@ -105,6 +105,8 @@ export interface MetricsConfig {
 	swap_trigger: string;
 	checklist: boolean;
 	review_forked: boolean;
+	/** The run-pipeline SHAPE that ran (e.g. "code" | "analysis"). */
+	shape: string;
 	/** Effective worker sandbox state (R3): enabled AND the host probe passed. */
 	sandbox: boolean;
 }
