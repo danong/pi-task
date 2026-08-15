@@ -683,7 +683,7 @@ export function workflowContractText(): string {
 		"- Orientation only: spend at most 2-3 tool calls — codebase_map plus one targeted read — before writing a spec; deep exploration belongs to the workers.",
 		"- CONTEXT.md: when the repo has a CONTEXT.md (the project's shared domain language), read it before deep work and use its vocabulary.",
 		"- Spec discipline: write WHAT, not HOW — ## Goal (one sentence), ## Requirements (numbered WHATs), ## Verification (plain bash commands, one per line, each exits 0).",
-		"Use /build to scaffold and dispatch a spec from a work request, /plan to settle the approach first, and the delegation skill for the dispatch threshold and parallel sub_specs.",
+		"Use /build (spec), /plan (work plan), /scaffold (fresh-repo stubs + jj/mise setup), and the delegation skill for the dispatch threshold and parallel sub_specs.",
 	].join("\n");
 }
 

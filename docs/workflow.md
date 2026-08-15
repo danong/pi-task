@@ -74,6 +74,7 @@ adversarially reviewed (see below).
 | `/plan` | Scaffolds a multi-day/week work plan: goal, constraints, milestones (each with its own Goal / Requirements / Verification and a disjoint file scope), dependency sequencing, dispatch order, delegation mapping, and the open questions to settle with the user before dispatching. | Before any effort bigger than one dispatch — settle the approach and get approval first. |
 | `/build` | Scaffolds a single task spec from a work request: Goal / Requirements / Verification (plain bash, exit 0). | Once the plan is settled — turn one milestone or request into a dispatch. |
 | `/survey` | Scaffolds an architecture-review dispatch: a named area, or a hotspot scan (VCS churn), with the report format and vocabulary. | One-off big-picture reviews — where the code is shallow, tangled, or untested. |
+| `/scaffold` | Creates the standard project stubs (AGENTS.md, CONTEXT.md, docs/adr/, README.md, .gitignore, mise.toml, .pi/settings.json), then asks whether to also set up jj/git init + mise trust. | A brand-new repo — the agent shouldn't have to reverse-engineer the usual conventions. |
 
 All three are package prompt templates (`prompts/`), so they ship wherever
 pi-task is installed.
