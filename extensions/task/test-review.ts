@@ -57,7 +57,7 @@ export async function runTests(): Promise<void> {
 		check(prompt.includes("- skipped R2") && prompt.includes("- used lib Y"), "deviations listed");
 	}
 
-	// ─── mergeReviewOutcomes (parallel two-axis review) ───
+	// ─── mergeReviewOutcomes (parallel review axes) ───
 	{
 		const mk = (over: Partial<ReviewResult> = {}): ReviewResult => ({
 			verdict: "ship",

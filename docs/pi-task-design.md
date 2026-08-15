@@ -1036,7 +1036,7 @@ Cadence varies by persona:
 - **Automatic / frequent** — run inside workstreams without being asked,
   e.g. a PR/commit reviewer that gates every change.
 - **On-demand / rare** — invoked explicitly when wanted, e.g. a performance
-  or architecture review that writes its findings to a report file.
+  review that writes its findings to a report file.
 
 Personas differ only in prompt and output shape; the context mechanism is
 shared. Specialized personas are dispatched as workers and typically produce

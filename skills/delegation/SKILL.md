@@ -3,8 +3,8 @@ name: delegation
 description: >-
   Deciding how to approach coding work: dispatch to the task tool (isolated
   worker session) vs. doing it directly. Load before starting any multi-step
-  coding task — it covers the dispatch threshold, planning, the
-  investigation budget, and spec discipline.
+  coding task — it covers the dispatch threshold, planning, the goals +
+  architecture check, the investigation budget, and spec discipline.
 ---
 
 # Delegation
@@ -37,6 +37,26 @@ Multi-step work starts with a plan before any implementation:
   anything is dispatched. Use `/plan` to scaffold it.
 - The plan is a decision aid, not a design doc: short enough to read in a
   minute.
+
+## Goals + architecture (before dispatch)
+
+Two checks gate every dispatch — one against the user's intent, one against
+the repo's recorded decisions:
+
+- **Reference the current `/goals` before dispatching.** Goals are session
+  entries: user-owned, set and updated via `/goals`, and they die with the
+  session (no persistent store, nothing stale survives into a later
+  session). A dispatch should visibly serve a stated goal.
+- **A change serving no stated goal is raised with the user, not
+  dispatched** — ask whether it should become a goal or be dropped; do not
+  silently widen scope.
+- **Architecture fidelity** — check the change against the repo's recorded
+  decisions where they exist: `CONTEXT.md`, the ADRs (`docs/adr/`), and the
+  latest `/survey` output. The review's architecture axis re-checks changes
+  against exactly these, so a dispatch that fights a recorded decision gets
+  flagged in review — catch it at spec time instead. If the change must
+  override a decision, settle that with the user first and update the
+  ADR / `CONTEXT.md` deliberately, never by drift.
 
 ## Investigation happens in workers
 

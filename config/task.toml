@@ -126,12 +126,13 @@ extra_rw_binds = []
 
 [shapes.code]
 # The default pipeline: strong prewalk plans, swap to the fast execute
-# model on the first edit, two-axis review on the tier's review model.
+# model on the first edit, the default review axes (standards +
+# spec-fidelity + architecture) on the tier's review model.
 prewalk = true
 swap = true
 work_model = "execute"
 review_model = "review"
-review = ["standards", "spec-fidelity"]
+review = ["standards", "spec-fidelity", "architecture"]
 
 [shapes.analysis]
 # Analysis tasks (surveys, design reviews): the STRONG model writes (the

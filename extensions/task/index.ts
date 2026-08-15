@@ -28,7 +28,15 @@
  *    on every /task-budget change. See docs/pi-task-design.md → Budget
  *    Enforcement → Implementation notes (Phase 9).
  *
- * 3. Main-session codebase-map injection (hybrid): an always-on global
+ * 3. Session goals — the `/goals` session command (user-owned vision for
+ *    the session's dispatches). Stored as pi-task-goals session entries
+ *    that die with the session — never a persistent store; the LAST entry
+ *    wins (readGoals mirrors readBudgetOverride's last-wins). Only the
+ *    command writes them; the task tool's execute only READS them and
+ *    shows them truncated on the widget's plan line (R2), and the
+ *    workflow contract requires dispatches to reference them (R3).
+ *
+ * 4. Main-session codebase-map injection (hybrid): an always-on global
  *    overview appended to the system prompt (before_agent_start) plus an
  *    on-demand `codebase_map` tool returning relevance-sliced file lists —
  *    both gated by config/repo-map.toml [injection] main_agent /
@@ -36,12 +44,12 @@
  *    reads the cached map (never calls the LLM); the annotation that keeps
  *    the cache fresh runs asynchronously at session_start.
  *
- * 4. Workflow-contract injection: an always-on, config-gated block
- *    (plan-first / delegate-by-default / orientation-only investigation /
- *    spec discipline) appended to the main session's system prompt from
- *    the same before_agent_start hook — gated by config/repo-map.toml
- *    [injection] workflow_contract (default on). Static text from a pure
- *    function: never blocks, never throws.
+ * 5. Workflow-contract injection: an always-on, config-gated block
+ *    (goals-first / plan-first / delegate-by-default / orientation-only
+ *    investigation / spec discipline) appended to the main session's
+ *    system prompt from the same before_agent_start hook — gated by
+ *    config/repo-map.toml [injection] workflow_contract (default on).
+ *    Static text from a pure function: never blocks, never throws.
  *
  * Model resolution is config-driven (Phases 10-11): config/task.toml is the
  * tier source of truth (loaded by config.ts; built-in defaults when
@@ -289,9 +297,9 @@ export interface TaskToolParams {
 	sub_specs?: (string | SubSpecObject)[];
 	parallel?: number;
 	budget?: string;
-	/** Reviewer persona/axis override: unset → the two-axis review
-	 *  (standards + spec-fidelity); a single name (e.g. "survey-reviewer"
-	 *  for /survey dispatches, "adversarial") overrides it. */
+	/** Reviewer persona/axis override: unset → the default review axes
+	 *  (standards + spec-fidelity + architecture); a single name (e.g.
+	 *  "survey-reviewer" for /survey dispatches, "adversarial") overrides it. */
 	review?: string;
 	/** Run-pipeline shape (code | analysis | any [shapes.*] section);
 	 *  default: the tier's shape. analysis promotes the strong prewalk
@@ -360,16 +368,16 @@ export function taskToolSchema(
 		review: Type.Optional(
 			Type.String({
 				description:
-					"Reviewer persona/axis override — unset → the two-axis review (standards + spec-fidelity, parallel " +
-					"forks); a single name overrides it, e.g. \"survey-reviewer\" for /survey dispatches (validates the " +
-					"report artifact) or \"adversarial\" (the original single-axis reviewer).",
+					"Reviewer persona/axis override — unset → the default review axes (standards + spec-fidelity + " +
+					"architecture, parallel forks); a single name overrides it, e.g. \"survey-reviewer\" for /survey " +
+					"dispatches (validates the report artifact) or \"adversarial\" (the original single-axis reviewer).",
 			}),
 		),
 		shape: Type.Optional(
 			Type.String({
 				description:
 					"Run-pipeline shape: code (default — prewalk plans, swap to the fast execute model on the first " +
-					"edit, two-axis review) | analysis (strong model writes and reviews, no swap — surveys, design " +
+					"edit, default review axes) | analysis (strong model writes and reviews, no swap — surveys, design " +
 					"reviews) | any [shapes.*] section in task.toml.",
 			}),
 		),
@@ -670,20 +678,23 @@ export function renderInPlace(context: { lastComponent?: unknown }, content: str
 
 /**
  * The always-on workflow-contract block for the main session's system
- * prompt (R1): plan-first, delegate-by-default, orientation-only
- * investigation, and spec discipline — with pointers to the delegation
- * skill, /build, and /plan. Kept compact (~120-150 words, pinned by the
- * hermetic test) so the prompt stays lean. Static text — pure.
+ * prompt (R1/R3): goals-first (every dispatch references the current
+ * /goals — a change serving no stated goal is raised with the user),
+ * plan-first, delegate-by-default, orientation-only investigation, and
+ * spec discipline — with pointers to the delegation skill, /build, and
+ * /plan. Kept compact (~120-150 words, pinned by the hermetic test) so
+ * the prompt stays lean. Static text — pure.
  */
 export function workflowContractText(): string {
 	return [
 		"## Workflow contract",
+		"- Goals: every dispatch references the current /goals — a change serving no stated goal is raised with the user, not dispatched.",
 		"- Plan first: multi-step work starts with a plan — decompose into milestones, sequence them, and state how each milestone is verified before writing any code.",
 		"- Delegate by default: dispatch multi-step, iterative, parallelizable, or unvalidated work to the task tool (isolated workers, verification-gated, jj-committed); make trivially small, reversible changes directly.",
 		"- Orientation only: spend at most 2-3 tool calls — codebase_map plus one targeted read — before writing a spec; deep exploration belongs to the workers.",
 		"- CONTEXT.md: when the repo has a CONTEXT.md (the project's shared domain language), read it before deep work and use its vocabulary.",
 		"- Spec discipline: write WHAT, not HOW — ## Goal (one sentence), ## Requirements (numbered WHATs), ## Verification (plain bash commands, one per line, each exits 0).",
-		"Use /build (spec), /plan (work plan), /scaffold (fresh-repo stubs + jj/mise setup), and the delegation skill for the dispatch threshold and parallel sub_specs.",
+		"Use /build (spec), /plan (work plan), /scaffold, and the delegation skill for the dispatch threshold and parallel sub_specs.",
 	].join("\n");
 }
 
@@ -705,7 +716,9 @@ export {
 	createProgressState,
 	formatDuration,
 	initialPhaseOf,
+	renderGoalsClause,
 	renderPlanLine,
+	truncateGoals,
 	type BuildRunPlanOptions,
 	type PlanPhase,
 	type ProgressState,
@@ -722,6 +735,9 @@ const METRICS_DIR = join(getAgentDir(), "results");
 
 /** Session entry key persisting a mid-session /task-budget override. */
 const BUDGET_ENTRY_TYPE = "pi-task-budget";
+
+/** Session entry key persisting the user's /goals statement (R1). */
+const GOALS_ENTRY_TYPE = "pi-task-goals";
 
 /**
  * Latest stored budget override from session entries, if any. The LAST
@@ -744,7 +760,31 @@ export function readBudgetOverride(
 }
 
 /**
- * Main-session token spend BEFORE the task call (R1): the cumulative
+ * Latest stored goals statement from session entries, if any. The LAST
+ * matching entry wins (mirrors readBudgetOverride) — a stale earlier
+ * statement must not clobber a newer one when /reload replays the session
+ * entries. Goals are user-owned: /goals is the only writer; this read path
+ * never mutates and the task tool's execute resolves it the same way it
+ * resolves the budget override. Statements are trimmed; a whitespace-only
+ * (or absent) latest entry resolves to no goals. Session-scoped by
+ * construction — the entries die with the session, no persistent store.
+ * Pure — tested hermetically.
+ */
+export function readGoals(ctx: {
+	sessionManager: { getEntries(): unknown[] };
+}): string | undefined {
+	let latest: string | undefined;
+	for (const entry of ctx.sessionManager.getEntries()) {
+		const e = entry as { type?: string; customType?: string; data?: { goals?: unknown } };
+		if (e.type === "custom" && e.customType === GOALS_ENTRY_TYPE && typeof e.data?.goals === "string") {
+			const goals = e.data.goals.trim();
+			latest = goals.length > 0 ? goals : undefined;
+		}
+	}
+	return latest;
+}
+
+/**
  * tokens of every assistant message in the session entries — the main
  * agent's own consumption (worker tokens land in the manifest's phases;
  * this is what the session burned to get to the dispatch). Reads the
@@ -858,6 +898,11 @@ export default function (pi: ExtensionAPI) {
 					(p.review !== undefined || (tierConfig.review && shape.review.length > 0)) &&
 					!hasSubSpecs &&
 					parallel <= 1;
+				// R2: the session's current /goals (readGoals, same ctx.sessionManager
+				// pattern as readBudgetOverride) flow into the run plan — the widget's
+				// plan line shows them truncated so the dispatch linkage is visible;
+				// absent goals → no goals clause (backward compatible).
+				const goals = readGoals(ctx);
 				const plan = buildRunPlan({
 					tier,
 					prewalkModel: shape.prewalk ? (tierConfig.prewalkModel ?? undefined) : undefined,
@@ -865,6 +910,7 @@ export default function (pi: ExtensionAPI) {
 					reviewModel: shape.reviewModel === "prewalk" ? (tierConfig.prewalkModel ?? tierConfig.reviewModel) : tierConfig.reviewModel,
 					review: reviewWillRun,
 					wallTimeoutMs: tierConfig.wallTimeoutMs,
+					goals,
 				});
 
 				// Stream progress to the TUI (no LLM tokens for the chrome).
@@ -1033,6 +1079,32 @@ export default function (pi: ExtensionAPI) {
 			pi.appendEntry(BUDGET_ENTRY_TYPE, { budgetMode: mode });
 			applyBudget(ctx);
 			ctx.ui.notify(`task budget: ${mode}${isLockedBudget(mode, taskConfig.tiers) ? " (locked)" : ""}`, "info");
+		},
+	});
+
+	// R1: session-scoped /goals — the user's vision for this session's
+	// dispatches, stored as pi-task-goals session entries (they die with
+	// the session; never a persistent store). USER-OWNED: this command is
+	// the only writer — the task tool's execute only READS the entries
+	// (readGoals, same ctx.sessionManager pattern as readBudgetOverride),
+	// and no tool writes them, so the agent can never silently mutate
+	// them. The task tool resolves the current goals at execute and shows
+	// them truncated on the widget's plan line (R2); the workflow
+	// contract tells the agent to reference them (R3).
+	pi.registerCommand("goals", {
+		description: "Show or set the session goals (/goals <statement>) — the vision every dispatch references",
+		handler: async (args, ctx) => {
+			const arg = (args ?? "").trim();
+			if (arg === "") {
+				const goals = readGoals(ctx);
+				ctx.ui.notify(
+					goals ? `goals: ${goals}` : "no goals set — /goals <statement> sets them",
+					"info",
+				);
+				return;
+			}
+			pi.appendEntry(GOALS_ENTRY_TYPE, { goals: arg });
+			ctx.ui.notify(`goals: ${arg}`, "info");
 		},
 	});
 

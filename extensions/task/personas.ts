@@ -4,12 +4,14 @@
  * A persona is a focused review prompt plus an output contract, reusing the
  * same fork-and-prune context inheritance (review.ts). The adversarial code
  * reviewer is the default in the review-fix loop; specialized personas
- * (performance, architecture) are dispatched as workers and typically produce
+ * (e.g. performance) are dispatched as workers and typically produce
  * a written report artifact rather than gate a fix loop.
  *
  * The persona supplies the reviewer's ROLE (system prompt). The spec, final
  * diff, worker summary, and deviations are injected as separate user messages
  * by the review runner; the inherited (pruned) reads/bash come from the fork.
+ * The architecture axis (architecturePersona) is part of the DEFAULT review
+ * axes — see DEFAULT_REVIEW_PERSONAS.
  */
 
 /** How a persona reports its result. */
@@ -85,6 +87,42 @@ axis otherwise. Base every finding on verifiable evidence; do not
 manufacture issues. If the change is sound, return verdict "ship" with few
 or no findings.`;
 
+const ARCHITECTURE_SYSTEM_PROMPT = `You are an architecture-fidelity reviewer. You did NOT write this code.
+
+You review a change against the project's RECORDED architecture — NOT
+against its goals or vision (those are conversational and shift; a separate
+axis covers the spec). You inherit the implementer's codebase reads
+(factual context) but NOT their reasoning.
+
+Before judging, READ the recorded architecture yourself — you have tools:
+- CONTEXT.md — the project's shared vocabulary and conventions.
+- docs/adr/ — recorded architecture decisions (read the ADRs the change
+touches or plausibly contradicts).
+- docs/architecture-review.md — the latest architecture review: the
+documented seams, modules, and deepening direction.
+
+Evaluate:
+- Vocabulary: the change uses the recorded domain language instead of
+forking it with new names for existing concepts.
+- Seams and conventions: the change follows the documented seams and
+conventions instead of routing around them.
+- Recorded decisions: the change does not contradict an ADR or the latest
+architecture review — e.g. a hardcoded selector where an ADR mandates
+config-driven detection, or a new parallel path where a documented seam
+exists.
+
+If CONTEXT.md, docs/adr/, or docs/architecture-review.md is absent, that
+part of the axis has nothing recorded to check — do not invent decisions.
+
+When your review is complete, call report_findings() exactly once with
+verdict (ship/fix/escalate), prioritized P0-P3 findings (each with a
+concrete verification step), and — only when the architecture review
+touches a requirement — its status; leave requirement statuses to the
+spec-fidelity axis otherwise. Base every finding on a specific recorded
+decision or convention and the evidence in the change; do not manufacture
+issues. If the change honors the recorded architecture, return verdict
+"ship" with few or no findings.`;
+
 const SPEC_FIDELITY_SYSTEM_PROMPT = `You are a spec-fidelity reviewer. You did NOT write this code.
 
 You review a change against the originating SPEC — NOT against general
@@ -148,6 +186,16 @@ export const specFidelityPersona: Persona = {
 	output: { kind: "findings" },
 };
 
+/** Architecture-fidelity review: the change vs the project's RECORDED
+ *  architecture — CONTEXT.md vocabulary/conventions, docs/adr/ decisions,
+ *  and the latest docs/architecture-review.md — never goals/vision. */
+export const architecturePersona: Persona = {
+	name: "architecture",
+	description: "Reviews a change against the recorded architecture — CONTEXT.md vocabulary/conventions, docs/adr/ decisions, the latest docs/architecture-review.md.",
+	systemPrompt: ARCHITECTURE_SYSTEM_PROMPT,
+	output: { kind: "findings" },
+};
+
 /** Validates an architecture-review report artifact (survey dispatches). */
 export const surveyReviewerPersona: Persona = {
 	name: "survey-reviewer",
@@ -156,19 +204,20 @@ export const surveyReviewerPersona: Persona = {
 	output: { kind: "findings" },
 };
 
-/** Registered personas (extensible: add performance/architecture/report personas here). */
+/** Registered personas (extensible: add performance/report personas here). */
 export const PERSONAS: Persona[] = [
 	adversarialPersona,
 	standardsPersona,
 	specFidelityPersona,
+	architecturePersona,
 	surveyReviewerPersona,
 ];
 
-/** The DEFAULT review axes: the two-axis parallel review (standards +
- *  spec-fidelity), each run as its own fork so neither pollutes the
- *  other. The adversarial persona stays registered for explicit
- *  single-persona use; /survey dispatches select "survey-reviewer". */
-export const DEFAULT_REVIEW_PERSONAS: string[] = ["standards", "spec-fidelity"];
+/** The DEFAULT review axes: the parallel review (standards +
+ *  spec-fidelity + architecture), each run as its own fork so neither
+ *  pollutes the other. The adversarial persona stays registered for
+ *  explicit single-persona use; /survey dispatches select "survey-reviewer". */
+export const DEFAULT_REVIEW_PERSONAS: string[] = ["standards", "spec-fidelity", "architecture"];
 
 /** The persona used when none is specified. */
 export const DEFAULT_PERSONA: Persona = adversarialPersona;

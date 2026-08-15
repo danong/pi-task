@@ -41,8 +41,11 @@ import {
 	normalizeBudgetMode,
 	normalizeSubSpecs,
 	readBudgetOverride,
+	readGoals,
 	readSessionTokensBefore,
+	renderGoalsClause,
 	renderInPlace,
+	renderPlanLine,
 	renderReviewReport,
 	renderSubSpecObject,
 	resolveBudgetMode,
@@ -66,6 +69,7 @@ import {
 import type { Finding, ReviewResult } from "./schemas/findings.ts";
 import { parseSpec } from "./schemas/spec.ts";
 import { extractFileScope } from "./progress.ts";
+import { truncateGoals } from "./progress.ts";
 
 /** Extract the property names from a TypeBox schema's JSON form. */
 function schemaProperties(schema: ReturnType<typeof taskToolSchema>): string[] {
@@ -455,6 +459,45 @@ function testBudgetOverridePersistence(errors: string[]): void {
 	console.log("✓ readSessionTokensBefore: assistant-message token sums (R1 main-session spend)");
 }
 
+function testGoalsPersistence(errors: string[]): void {
+	const check = (cond: boolean, msg: string): void => {
+		if (!cond) errors.push(msg);
+	};
+
+	// R1: user-owned goals live as pi-task-goals session entries — the LAST
+	// matching entry wins (mirrors readBudgetOverride). They die with the
+	// session: no persistent store, and only the /goals command writes them
+	// (readGoals is the only goals read path; it never mutates).
+	const fakeCtx = (entries: unknown[]): { sessionManager: { getEntries(): unknown[] } } => ({
+		sessionManager: { getEntries: () => entries },
+	});
+	const goalsEntry = (goals: string, customType = "pi-task-goals"): unknown => ({
+		type: "custom",
+		customType,
+		data: { goals },
+	});
+
+	check(readGoals(fakeCtx([])) === undefined, "no entries → no goals");
+	check(readGoals(fakeCtx([goalsEntry("block algorithmic feeds")])) === "block algorithmic feeds",
+		"single goals statement read back");
+	check(readGoals(fakeCtx([goalsEntry("ship the feed"), goalsEntry("block algorithmic feeds")])) === "block algorithmic feeds",
+		"latest goals entry wins");
+	check(readGoals(fakeCtx([goalsEntry("a"), goalsEntry("b"), goalsEntry("c")])) === "c",
+		"last of three wins");
+	check(readGoals(fakeCtx([goalsEntry("a"), goalsEntry("   ")])) === undefined,
+		"whitespace-only latest statement → no goals");
+	check(readGoals(fakeCtx([goalsEntry("  keep the api small  ")])) === "keep the api small",
+		"goals are trimmed on read");
+	check(readGoals(fakeCtx([goalsEntry("x", "pi-task-budget"), goalsEntry("y")])) === "y",
+		"non-goals entries ignored");
+	check(readGoals(fakeCtx([{ type: "custom", customType: "pi-task-goals", data: { budgetMode: "economy" } }])) === undefined,
+		"goals entry without a goals string → no goals");
+	check(readGoals(fakeCtx([{ type: "message", message: { role: "user" } }, goalsEntry("y")])) === "y",
+		"message entries ignored");
+
+	console.log("✓ readGoals: last matching pi-task-goals session entry wins; trimmed; user-owned (command is the only writer)");
+}
+
 function testResultMapping(errors: string[]): void {
 	const check = (cond: boolean, msg: string): void => {
 		if (!cond) errors.push(msg);
@@ -677,6 +720,29 @@ function testRunPlan(errors: string[]): void {
 	const fallback = buildRunPlan({ tier: "x", executeModel: "prov/fast", review: true });
 	check(fallback.phases[1]?.model === "prov/fast", "review model falls back to the execute model");
 
+	// R2: the session goals flow into the plan and render truncated on the
+	// plan line — "goals: <statement>…" — so the dispatch linkage is visible
+	// in the widget. Absent/blank goals → no goals clause (backward
+	// compatible with the pre-goals plan line).
+	const withGoals = buildRunPlan({ tier: "full", executeModel: "prov/fast", goals: "block algorithmic feeds" });
+	check(withGoals.goals === "block algorithmic feeds", "plan carries the resolved goals");
+	check(
+		renderPlanLine(withGoals) === "plan(full): work(prov/fast) · goals: block algorithmic feeds",
+		`plan line with goals clause, got: ${renderPlanLine(withGoals)}`,
+	);
+	const longGoals = "keep the feed chronological and free of engagement-baiting ranking models everywhere";
+	const truncated = renderPlanLine(buildRunPlan({ tier: "full", executeModel: "prov/fast", goals: longGoals }));
+	check(
+		truncated.endsWith("goals: keep the feed chronological and free of engagement-baitin…"),
+		`long goals truncated on the plan line, got: ${truncated}`,
+	);
+	check(renderGoalsClause(undefined) === "" && renderGoalsClause("") === "" && renderGoalsClause("   ") === "",
+		"absent/blank goals render no clause");
+	check(renderGoalsClause("keep it small") === "goals: keep it small", "goals clause prefix");
+	check(truncateGoals("a".repeat(60)) === "a".repeat(60) && truncateGoals("a".repeat(61)) === "a".repeat(57) + "…",
+		"truncation boundary: 60 chars kept, 61+ cut with ellipsis");
+	check(!renderPlanLine(full).includes("goals:"), "absent goals → no goals clause (backward compatible)");
+
 	console.log("✓ buildRunPlan: phase sequence + per-phase models; tier-gated omissions");
 }
 
@@ -706,6 +772,25 @@ function testProgressStateAndRender(errors: string[]): void {
 	check(text.includes("0/1 workers done"), `done header, got: ${text}`);
 	check(text.includes("⏳ worker-1: prewalk 0s | total 0s | no checklist yet | 0 turns, 0s idle"),
 		`initial worker line (phase + durations), got: ${text.split("\n")[2]}`);
+
+	// R2: the widget's plan line shows the resolved session goals truncated
+	// ("goals: …") so the dispatch linkage is visible during the run; absent
+	// goals → the plain plan line (backward compatible).
+	const goalsPlan = buildRunPlan({
+		tier: "full",
+		prewalkModel: "prov/strong",
+		executeModel: "prov/fast",
+		reviewModel: "prov/strong",
+		review: true,
+		goals: "block algorithmic feeds before launch",
+	});
+	const goalsText = buildProgressText(createProgressState(1, goalsPlan, 1000), 1000);
+	check(
+		goalsText.split("\n")[0].includes("plan(full): prewalk(prov/strong) → work(prov/fast) → review(prov/strong) · goals: block algorithmic feeds before launch"),
+		`goals clause on the widget plan line, got: ${goalsText.split("\n")[0]}`,
+	);
+	const plainText = buildProgressText(createProgressState(1, fullPlan, 1000), 1000);
+	check(!plainText.includes("goals:"), "widget plan line without goals stays plain");
 
 	// Tier without prewalk (economy): plan line omits prewalk; workers start in work.
 	const economyPlan = buildRunPlan({ tier: "economy", executeModel: "prov/fast", reviewModel: "prov/fast", review: true });
@@ -1016,7 +1101,9 @@ function testWorkflowContract(errors: string[]): void {
 		"shared domain language: read the repo's CONTEXT.md before deep work and use its vocabulary");
 	check(/WHAT, not HOW/.test(text) && /Goal/.test(text) && /Requirements/.test(text) && /Verification/.test(text) && /exits 0/.test(text),
 		"spec discipline: WHAT not HOW; Goal/Requirements/Verification; verification = plain exit-0 bash");
-	check(text.includes("/build") && text.includes("/plan") && /delegation skill/.test(text),
+	check(/\/goals/.test(text) && /no stated goal/.test(text) && /raised with the user/.test(text) && /not dispatched/.test(text),
+		"goals: dispatches reference the current /goals; a change serving no stated goal is raised with the user, not dispatched");
+	check(/\/build/.test(text) && /\/plan/.test(text) && /delegation skill/.test(text),
 		"references the delegation skill, /build, and /plan");
 
 	// R2/R4: the block is gated by the RESOLVED config — enabled → the text,
@@ -1025,7 +1112,7 @@ function testWorkflowContract(errors: string[]): void {
 	check(workflowContractBlock({ workflowContract: true }) === text, "enabled config → the contract text");
 	check(workflowContractBlock({ workflowContract: false }) === "", "disabled config → no block");
 
-	console.log("✓ workflowContract: pure ~120-150-word block (plan-first / delegate-by-default / orientation-only / CONTEXT.md shared language / spec discipline), config-gated");
+	console.log("✓ workflowContract: pure ~120-150-word block (goals / plan-first / delegate-by-default / orientation-only / CONTEXT.md shared language / spec discipline), config-gated");
 }
 
 function testCompletionSummary(errors: string[]): void {
@@ -1180,6 +1267,7 @@ export async function runTests(): Promise<void> {
 	testBudgetResolution(errors);
 	testAutoHeuristicAndCounting(errors);
 	testBudgetOverridePersistence(errors);
+	testGoalsPersistence(errors);
 	testSubSpecsPrecedence(errors);
 	testSubSpecNormalization(errors);
 	testResultMapping(errors);

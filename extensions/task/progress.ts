@@ -42,6 +42,9 @@ export interface RunPlan {
 	/** The tier's wall-clock budget (ms) — shown as the total-clock
 	 *  headroom ("total 45s/25m") so a wall abort is never a surprise. */
 	wallTimeoutMs?: number;
+	/** The session's current /goals statement (resolved at execute via
+	 *  readGoals; absent → no goals clause anywhere). */
+	goals?: string;
 }
 
 export interface BuildRunPlanOptions {
@@ -57,6 +60,8 @@ export interface BuildRunPlanOptions {
 	review?: boolean;
 	/** The tier's wall-clock budget (ms) — rendered as total-clock headroom. */
 	wallTimeoutMs?: number;
+	/** The session's current /goals statement (readGoals at execute). */
+	goals?: string;
 }
 
 /**
@@ -74,7 +79,7 @@ export function buildRunPlan(opts: BuildRunPlanOptions): RunPlan {
 	if (opts.review) {
 		phases.push({ name: "review", model: opts.reviewModel ?? opts.executeModel });
 	}
-	return { tier: opts.tier, phases, wallTimeoutMs: opts.wallTimeoutMs };
+	return { tier: opts.tier, phases, wallTimeoutMs: opts.wallTimeoutMs, goals: opts.goals };
 }
 
 /** The phase a fresh worker starts in (the plan's first phase). */
@@ -291,7 +296,33 @@ export function formatDuration(ms: number): string {
 
 /** The plan line: `plan(<tier>): prewalk(<model>) → work(<model>) → ...` */
 export function renderPlanLine(plan: RunPlan): string {
-	return `plan(${plan.tier}): ${plan.phases.map((p) => `${p.name}(${p.model})`).join(" → ")}`;
+	const base = `plan(${plan.tier}): ${plan.phases.map((p) => `${p.name}(${p.model})`).join(" → ")}`;
+	const goals = renderGoalsClause(plan.goals);
+	return goals ? `${base} · ${goals}` : base;
+}
+
+/** Max goals characters kept on the plan line before the ellipsis. */
+export const PLAN_LINE_GOALS_MAX = 60;
+
+/**
+ * Truncate a goals statement for the plan line: keep at most
+ * PLAN_LINE_GOALS_MAX characters (the existing tool-arg cut convention:
+ * max−3 chars + "…" when cut). Pure — tested hermetically.
+ */
+export function truncateGoals(goals: string, max: number = PLAN_LINE_GOALS_MAX): string {
+	const g = goals.trim();
+	return g.length > max ? `${g.slice(0, max - 3)}…` : g;
+}
+
+/**
+ * The plan-line goals clause: "goals: <truncated>" for a present, non-blank
+ * statement; "" otherwise — so absent goals keep the plan line backward
+ * compatible (no goals clause). Pure — tested hermetically.
+ */
+export function renderGoalsClause(goals: string | undefined | null): string {
+	if (!goals) return "";
+	const g = goals.trim();
+	return g.length > 0 ? `goals: ${truncateGoals(g)}` : "";
 }
 
 /**

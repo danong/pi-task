@@ -513,9 +513,9 @@ export interface ExecuteTaskOptions {
 	/** Reviewer model (when review enabled). Default: the execute model. */
 	reviewModel?: string;
 	/** Reviewer persona name (when review enabled). Unset → the DEFAULT
-	 *  two-axis review (standards + spec-fidelity, run as parallel forks);
-	 *  a single name (e.g. "survey-reviewer" for /survey dispatches, or
-	 *  "adversarial") overrides the set. */
+	 *  review axes (standards + spec-fidelity + architecture, run as
+	 *  parallel forks); a single name (e.g. "survey-reviewer" for /survey
+	 *  dispatches, or "adversarial") overrides the set. */
 	persona?: string;
 	/** The run-pipeline SHAPE (resolved by the task tool from its `shape`
 	 *  param / the tier's default): the phase structure, swap policy, model
@@ -2119,9 +2119,9 @@ async function executeSingle(
 		const maxFixes = Math.max(0, maxFixIterations ?? 2);
 		// The review axes: an explicit persona (single — e.g. /survey
 		// dispatches pass "survey-reviewer" to validate the report artifact)
-		// or the DEFAULT two-axis set (standards + spec-fidelity), each run
-		// as its own parallel fork so neither pollutes the other. Findings
-		// merge, verdict = worst, requirements = worst per id.
+		// or the DEFAULT axes (standards + spec-fidelity + architecture),
+		// each run as its own parallel fork so neither pollutes the other.
+		// Findings merge, verdict = worst, requirements = worst per id.
 		// The review axes come from the SHAPE (its review list — the analysis
 		// shape is empty and relies on an explicit persona like
 		// survey-reviewer), ANDed with the tier's review flag upstream

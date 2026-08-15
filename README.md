@@ -28,7 +28,8 @@ mise run test      # full hermetic test suite, zero LLM calls
 
 The repo ships `.pi/settings.json` registering itself as a project package
 (`"packages": [".."]`), so any trusted checkout auto-installs — the `task`
-tool, `/task-budget` command, `--task-budget` flag, the `delegation` and
+tool, `/task-budget` and `/goals` commands, `--task-budget` flag, the
+`delegation` and
 `architecture-survey` skills, and the `/build`, `/plan`, and `/survey`
 templates are available on the next session. For a
 global (non-project) install instead:
@@ -38,8 +39,8 @@ pi install /path/to/this/repo
 ```
 
 `pi install` adds the package to the pi agent dir's `settings.json` (`packages`)
-and the `task` tool, `/task-budget` command, and `--task-budget` flag become
-available after `/reload`.
+and the `task` tool, `/task-budget` and `/goals` commands, and `--task-budget`
+flag become available after `/reload`.
 
 ## Workflow
 
@@ -48,7 +49,9 @@ conversational agent plans and dispatches; isolated task workers execute
 under real gates (bash verification, jj commits, atomic merge). An always-on
 workflow contract (config-gated, default on) keeps the agent honest: plan
 first, delegate multi-step work by default, stay orientation-only before a
-spec, and write WHAT not HOW.
+spec, and write WHAT not HOW — and every dispatch references the session's
+`/goals` (a change serving no stated goal is raised with the user, not
+dispatched).
 
 Three user-invoked templates cover the flow — **`/plan`** (a multi-day work
 plan: milestones, sequencing, dispatch order, open questions to settle

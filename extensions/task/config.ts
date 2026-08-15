@@ -137,13 +137,14 @@ export interface TaskShape {
 
 export const DEFAULT_TASK_SHAPES: Record<string, TaskShape> = {
 	/** The default pipeline: strong prewalk plans, swap to the fast execute
-	 *  model on the first edit, two-axis review on the tier's review model. */
+	 *  model on the first edit, the default review axes (standards +
+	 *  spec-fidelity + architecture) on the tier's review model. */
 	code: {
 		prewalk: true,
 		swap: true,
 		workModel: "execute",
 		reviewModel: "review",
-		review: ["standards", "spec-fidelity"],
+		review: ["standards", "spec-fidelity", "architecture"],
 	},
 	/** Analysis tasks (surveys, design reviews): the STRONG model writes
 	 *  (the prewalk model is promoted to the work slot — no swap), and the

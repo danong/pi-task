@@ -22,12 +22,23 @@ The split is enforced partly by the always-on **workflow contract** (below),
 partly by code: workers are sandboxed, verification is a real bash gate, and
 the merge is atomic with deterministic conflict resolution.
 
+## Session goals (`/goals`)
+
+The session's vision lives in `/goals`: `/goals <statement>` sets (or
+updates) it, `/goals` alone shows it. Goals are user-owned session entries —
+they die with the session, and only the command writes them: the agent never
+mutates them, it only reads them at dispatch time (they appear truncated on
+the widget's plan line, e.g. `goals: block algorithmic feeds…`).
+
 ## The workflow contract (always-on)
 
 At every session start, pi-task injects a compact workflow contract into the
 main session's system prompt (config-gated via `[injection]
 workflow_contract` in the agent-dir `repo-map.toml`; default on). It says,
 in short:
+
+- **Goals first** — every dispatch references the current `/goals`; a
+  change serving no stated goal is raised with the user, not dispatched.
 
 - **Plan first** — multi-step work starts with a plan: decompose into
   milestones, sequence them, state how each is verified, before writing code.
@@ -52,6 +63,8 @@ For any non-trivial request:
    sequencing, dispatch order) or just decompose in-conversation for a
    one-shot. Resolve open questions with the user before dispatching
    (the grilling step — `/plan` surfaces them).
+2. **Goals** — if the session has a vision (`/goals <statement>`), state
+   it up front and reference it in the spec; the contract requires it.
 2. **Build** — for each milestone or one-off task, scaffold a spec with
    `/build`, or write it directly following the spec format.
 3. **Dispatch** — call the `task` tool with the spec. Independent milestones
@@ -100,7 +113,8 @@ are `[shapes.*]` sections in `config/task.toml`; the task tool's `shape`
 param overrides the tier's default, and the manifest records which shape ran.
 
 - **`code`** (default) — prewalk plans on the strong model, swap to the fast
-  execute model on the first edit, two-axis review. Built for implementation.
+  execute model on the first edit, three-axis review (standards + spec
+  fidelity + architecture fidelity). Built for implementation.
 - **`analysis`** — no prewalk, no swap: the STRONG model writes (the tier's
   prewalk model is promoted into the work slot) and reviews. For surveys and
   design reviews, where the report IS the thinking. `/survey` dispatches
@@ -114,8 +128,8 @@ shapes to measure whether the prewalk pays for itself.
 
 The task tool's lifecycle, roughly in order:
 
-1. **Plan line** — the resolved budget tier, phases, and models (shown in the
-   widget before any worker starts).
+1. **Plan line** — the resolved budget tier, phases, models, and the
+   session's current goals (shown in the widget before any worker starts).
 2. **Prewalk** (strong-model tiers only) — a planning pass on the spec; the
    session swaps to the fast execute model on the first edit.
 3. **Work** — each worker explores, implements, and commits per requirement,
@@ -132,6 +146,9 @@ The task tool's lifecycle, roughly in order:
    worker's commit, checked along two axes:
    - **Standards** — repo conventions and smell baseline.
    - **Spec fidelity** — does the change implement the originating spec?
+   - **Architecture fidelity** — does the change honor the recorded
+     architecture (CONTEXT.md vocabulary/conventions, docs/adr/ decisions,
+     the latest docs/architecture-review.md)?
    Each axis runs as its own fork so neither pollutes the other; findings
    merge, blockers (P0/P1) drive a bounded fix loop.
    For `/survey` dispatches, a survey-reviewer persona validates the report
@@ -149,7 +166,9 @@ late aborts ("work committed, finalization incomplete") attempt finalization
 ## Quality loops
 
 - **Verification gate** — real bash, exit codes; never merge unverified.
-- **Adversarial review** — forked, persona-driven, two-axis.
+- **Adversarial review** — forked, persona-driven, the shape's review axes
+  (default three: standards, spec fidelity, architecture fidelity — the last
+  checks each change against the repo's recorded decisions).
 - **Survey review** — the report artifact gets adversarially validated.
 - **Metrics** — every run writes a manifest to `<agent-dir>/results/` (phase
   breakdown, tokens, cost, wall-clock latency, merge record, verification

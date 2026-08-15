@@ -157,11 +157,11 @@ const VERDICT_ORDER: Record<ReviewResult["verdict"], number> = { ship: 0, fix: 1
 const STATUS_ORDER: Record<RequirementStatus["status"], number> = { met: 0, uncertain: 1, unmet: 2 };
 
 /**
- * Merge the outcomes of PARALLEL review axes (two-axis review: standards +
- * spec-fidelity) into one ReviewResult: findings concatenated (each axis
- * carries its own priorities/categories), verdict = the worst, requirement
- * statuses merged per id (worst status wins: unmet > uncertain > met), and
- * the summed review cost. Pure — hermetically tested.
+ * Merge the outcomes of PARALLEL review axes (the default axes: standards +
+ * spec-fidelity + architecture) into one ReviewResult: findings concatenated
+ * (each axis carries its own priorities/categories), verdict = the worst,
+ * requirement statuses merged per id (worst status wins: unmet > uncertain >
+ * met), and the summed review cost. Pure — hermetically tested.
  */
 export function mergeReviewOutcomes(
 	outcomes: Array<{ result: ReviewResult; usage: { cost_usd: number } }>,
