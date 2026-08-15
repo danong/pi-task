@@ -102,6 +102,9 @@ pi-task is installed.
   review: dispatch it as a survey task (scope decision, vocabulary, report
   format, verification) rather than scanning the whole codebase in the main
   session.
+- **`jj`** — pi-task owns the jj skill (the general cheatsheet plus a
+  pi-task cookbook: engine merge mechanics, the recovery playbook, and the
+  squash/stub/push footguns). Load for any version-control work.
 
 ## Run-pipeline shapes
 

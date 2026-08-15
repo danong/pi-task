@@ -268,6 +268,9 @@ export function buildRecoveryGuide(opts: {
 		"   stubs — jj REFUSES to push description-less commits:",
 		"   jj abandon <commit-id>   # every commit whose description is empty + the empty AI base",
 		"   Verify: jj log -r all() shows no commit with an empty description.",
+		"   A resolution commit ON TOP of a conflicted commit does NOT clear the parent's",
+		"   conflict for push (jj refuses to push any commit whose tree carries markers) —",
+		"   squash the resolution INTO the conflicted commit: JJ_EDITOR=true jj squash -r <res>",
 		"",
 		"4. Add-vs-delete conflicts: a file DELETED on one side and kept on the other",
 		"   resolves via :ours/:theirs, NOT mid-stack abandon (abandoning a commit mid-stack",
@@ -1647,14 +1650,21 @@ export async function executeTask(opts: ExecuteTaskOptions): Promise<TaskResult>
 		// escalated conflicts (markers still present after the union tool),
 		// if any, are visible here as conflict markers. The gate always
 		// validates the final tree — a finalization-incomplete recovery
-		// never merges or claims success without it.
-		verification = await runVerification(
-			spec.verification,
-			cwd,
-			verificationTimeoutMs ?? DEFAULT_VERIFICATION_TIMEOUT_MS,
-			signal,
-		);
-		if (!verification.passed && finalizationIncompleteIndexes.length > 0) {
+		// never merges or claims success without it. SKIPPED when escalated
+		// conflicts remain after the union ladder: the gate on a conflicted
+		// tree is meaningless (its "verified" output misleads) — the run
+		// fails fast on the conflicts, already artifacted above.
+		if (mergeMetrics.conflicts.length > 0) {
+			verification = { passed: false, commands: 0, duration_ms: 0, failures: [] };
+		} else {
+			verification = await runVerification(
+				spec.verification,
+				cwd,
+				verificationTimeoutMs ?? DEFAULT_VERIFICATION_TIMEOUT_MS,
+				signal,
+			);
+		}
+		if (mergeMetrics.conflicts.length === 0 && !verification.passed && finalizationIncompleteIndexes.length > 0) {
 			// R2: the gate FAILS a finalization-incomplete recovery → the
 			// current failure path with preserved workspaces: failure artifact
 			// (the recovery guide travels with it) + throw, so the finally
