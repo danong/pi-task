@@ -139,6 +139,7 @@ review = ["standards", "spec-fidelity", "architecture"]
 # tier's prewalk model is promoted to the work slot — no swap), and the
 # strong model reviews too. Review axes are supplied per dispatch (e.g.
 # /survey passes review = "survey-reviewer").
+channel = "sync"
 prewalk = false
 swap = false
 work_model = "prewalk"

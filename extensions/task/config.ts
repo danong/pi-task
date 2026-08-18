@@ -118,7 +118,17 @@ export interface BudgetTierConfig {
  * no prewalk swap) and the same spec can be benchmarked across shapes
  * (prewalk on/off, swap on/off) with everything recorded in the manifest.
  */
+/** The model channel a run uses: sync (interactive, fast), flex
+ *  (synchronous endpoint, 1-15 min per call, ~50% off), or batch
+ *  (async job lane — typed single-turn prompts, ~24h, ~50% off). The
+ *  channel calibrates the interactive watchdogs (flex needs longer
+ *  first-event/no-progress windows) and selects the execution path
+ *  (batch runs as a job, not a session). */
+export type RunChannel = "sync" | "flex" | "batch";
+
 export interface TaskShape {
+	/** The model channel (default "sync"). */
+	channel: RunChannel;
 	/** Run the prewalk phase on the tier's prewalk model (auto-skipped when
 	 *  the model is null/equal — the existing auto-skip rule). */
 	prewalk: boolean;
@@ -140,6 +150,7 @@ export const DEFAULT_TASK_SHAPES: Record<string, TaskShape> = {
 	 *  model on the first edit, the default review axes (standards +
 	 *  spec-fidelity + architecture) on the tier's review model. */
 	code: {
+		channel: "sync",
 		prewalk: true,
 		swap: true,
 		workModel: "execute",
@@ -151,6 +162,7 @@ export const DEFAULT_TASK_SHAPES: Record<string, TaskShape> = {
 	 *  strong model reviews too. Review axes are supplied per dispatch
 	 *  (e.g. /survey passes review: "survey-reviewer"). */
 	analysis: {
+		channel: "sync",
 		prewalk: false,
 		swap: false,
 		workModel: "prewalk",
@@ -158,6 +170,24 @@ export const DEFAULT_TASK_SHAPES: Record<string, TaskShape> = {
 		review: [],
 	},
 };
+
+/** Interactive watchdog windows for a channel (flex: synchronous
+ *  endpoints take 1-15 min per model call, so the first-event and
+ *  no-progress watchdogs must not false-fire; batch has no interactive
+ *  session — its run is a job, not a watcher). Pure — tested. */
+export function channelWatchdogWindows(channel: RunChannel): {
+	firstEventMs: number;
+	noProgressMs: number;
+} {
+	switch (channel) {
+		case "flex":
+			return { firstEventMs: 25 * 60_000, noProgressMs: 20 * 60_000 };
+		case "batch":
+			return { firstEventMs: Number.MAX_SAFE_INTEGER, noProgressMs: Number.MAX_SAFE_INTEGER };
+		default:
+			return { firstEventMs: 3 * 60_000, noProgressMs: 10 * 60_000 };
+	}
+}
 
 /** Resolve a shape by name: the loaded set, else the built-ins, else the
  *  code shape. Never throws — a bad name degrades to the default. */
@@ -508,7 +538,15 @@ function loadShape(sections: TomlSections, name: string): TaskShape | undefined 
 		if (raw !== undefined) warn(`${label} ${key} must be "execute" | "prewalk" — using ${fallbackValue}`);
 		return fallbackValue;
 	};
+	const channelRaw = str(section, "channel");
+	let channel: RunChannel = fallback.channel;
+	if (channelRaw === "sync" || channelRaw === "flex" || channelRaw === "batch") {
+		channel = channelRaw;
+	} else if (channelRaw !== undefined) {
+		warn(`${label} channel must be "sync" | "flex" | "batch" — using ${channel}`);
+	}
 	return {
+		channel,
 		prewalk: b("prewalk", fallback.prewalk),
 		swap: b("swap", fallback.swap),
 		workModel: slot("work_model", fallback.workModel),

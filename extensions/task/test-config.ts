@@ -23,6 +23,7 @@ import {
 	DEFAULT_TOOL_TIMEOUT_MS,
 	DEFAULT_VERIFICATION_TIMEOUT_MS,
 	DEFAULT_TASK_SHAPES,
+	channelWatchdogWindows,
 	aiIdentityToml,
 	resolveTaskShape,
 	formatAiAuthorName,
@@ -522,6 +523,21 @@ function testShapes(errors: string[]): void {
 	check(!DEFAULT_TASK_SHAPES.analysis.prewalk && !DEFAULT_TASK_SHAPES.analysis.swap
 		&& DEFAULT_TASK_SHAPES.analysis.workModel === "prewalk" && DEFAULT_TASK_SHAPES.analysis.reviewModel === "prewalk",
 		"analysis shape: no prewalk/swap, strong writer + reviewer");
+	// Channel: default sync; flex/batch parse; the watchdog calibration.
+	check(DEFAULT_TASK_SHAPES.code.channel === "sync" && DEFAULT_TASK_SHAPES.analysis.channel === "sync",
+		"built-in shapes default to the sync channel");
+	{
+		const sync = channelWatchdogWindows("sync");
+		const flex = channelWatchdogWindows("flex");
+		const batch = channelWatchdogWindows("batch");
+		check(sync.firstEventMs === 3 * 60_000 && sync.noProgressMs === 10 * 60_000,
+			"sync keeps the interactive watchdog defaults");
+		check(flex.firstEventMs > sync.firstEventMs && flex.noProgressMs > sync.noProgressMs
+			&& flex.firstEventMs >= 25 * 60_000,
+			"flex extends the first-event + no-progress windows (1-15 min calls must not false-fire)");
+		check(batch.firstEventMs === Number.MAX_SAFE_INTEGER && batch.noProgressMs === Number.MAX_SAFE_INTEGER,
+			"batch has no interactive session — watchdogs unbounded (job polling instead)");
+	}
 
 	// resolveTaskShape: loaded set, built-ins, unknown → code; never throws.
 	const loaded = { ...DEFAULT_TASK_SHAPES, custom: { ...DEFAULT_TASK_SHAPES.code, swap: false } };
@@ -534,6 +550,7 @@ function testShapes(errors: string[]): void {
 	withTempToml(
 		`
 [shapes.custom]
+channel = "flex"
 prewalk = false
 swap = true
 work_model = "execute"
@@ -546,8 +563,9 @@ review = ["survey-reviewer"]
 			check(custom !== undefined && custom.prewalk === false && custom.swap === true
 				&& custom.reviewModel === "prewalk" && JSON.stringify(custom.review) === JSON.stringify(["survey-reviewer"]),
 				`custom shape parses, got ${JSON.stringify(custom)}`);
-			// Absent keys fall back to the code shape.
+			// Absent keys fall back to the code shape; channel parses.
 			check(cfg.shapes.custom.workModel === "execute", "custom shape falls back per-key to code");
+			check(cfg.shapes.custom.channel === "flex", `custom shape channel parses, got ${cfg.shapes.custom.channel}`);
 			// A tier without an explicit shape still defaults to code.
 			check(cfg.tiers.full.shape === "code", `tier shape defaults to code, got ${cfg.tiers.full.shape}`);
 		},

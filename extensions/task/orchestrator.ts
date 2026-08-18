@@ -46,6 +46,7 @@ import { resolveSandbox, type ResolvedSandbox } from "./sandbox.ts";
 import {
 	DEFAULT_TASK_CONFIG,
 	DEFAULT_TASK_SHAPES,
+	channelWatchdogWindows,
 	aiIdentityToml,
 	formatAiAuthorName,
 	type SandboxConfig,
@@ -1350,6 +1351,7 @@ export async function executeTask(opts: ExecuteTaskOptions): Promise<TaskResult>
 	const sessions = workspaces.map((ws, i) =>
 		spawnWorkerSession({
 			cwd: ws.dir,
+			noProgressTimeoutMs: channelWatchdogWindows((shape ?? DEFAULT_TASK_SHAPES.code).channel).noProgressMs,
 			// Todo #89: the workspace differs from the project root — the
 			// sandbox must bind the shared jj store rw or workspace commits
 			// fail with EROFS.
@@ -1928,6 +1930,7 @@ async function executeSingle(
 		const session = spawnWorkerSession({
 			cwd,
 			model: usePrewalk ? prewalkModel! : executeModel,
+			noProgressTimeoutMs: channelWatchdogWindows((shape ?? DEFAULT_TASK_SHAPES.code).channel).noProgressMs,
 			task: taskPrompt,
 			systemPrompt: workerSystemPrompt,
 			extensions: workerExtensions,
@@ -2161,6 +2164,7 @@ async function executeSingle(
 			onUpdate?.({ type: "review_start" });
 			let outcomes: Array<{ result: ReviewResult; usage: { cost_usd: number } }>;
 			try {
+				const watchWindows = channelWatchdogWindows((shape ?? DEFAULT_TASK_SHAPES.code).channel);
 				outcomes = await Promise.all(
 					effectiveAxes.map((p) =>
 						forkedReview({
@@ -2173,6 +2177,7 @@ async function executeSingle(
 							summary: worker.yield.summary,
 							deviations: worker.yield.deviations,
 							persona: p,
+							firstEventTimeoutMs: watchWindows.firstEventMs,
 							signal,
 							onUpdate,
 						}),
@@ -2205,6 +2210,7 @@ async function executeSingle(
 			const fixSession = spawnWorkerSession({
 				cwd,
 				model: executeModel,
+				noProgressTimeoutMs: channelWatchdogWindows((shape ?? DEFAULT_TASK_SHAPES.code).channel).noProgressMs,
 				task: fixPrompt,
 				systemPrompt: workerSystemPrompt,
 				extensions: [CHECKLIST_EXTENSION_PATH],
