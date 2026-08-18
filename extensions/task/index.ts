@@ -51,6 +51,16 @@
  *    config/repo-map.toml [injection] workflow_contract (default on).
  *    Static text from a pure function: never blocks, never throws.
  *
+ * 6. Detached dispatch — the `task` tool's optional `detach` param runs
+ *    the orchestrator in a child process (runner.ts — a fresh process,
+ *    the bench-regression spawn pattern) and returns the run_id
+ *    immediately; `/task-status <run_id>` queries the run's live
+ *    heartbeat or its final manifest / failure artifact. Detached runs
+ *    write the SAME files a blocking run writes (results/<project>/
+ *    <run_id>.json, keyed by the returned id via the orchestrator's
+ *    injected runId) under the SAME bounds (wall clock, verification
+ *    gate, failure artifacts) — detach changes only WHO waits.
+ *
  * Model resolution is config-driven (Phases 10-11): config/task.toml is the
  * tier source of truth (loaded by config.ts; built-in defaults when
  * missing/invalid), and since Phase 11 the tier VOCABULARY is dynamic —
@@ -74,6 +84,8 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import { Text } from "@earendil-works/pi-tui";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { spawn, type ChildProcess } from "node:child_process";
+import { closeSync, openSync } from "node:fs";
 import { executeTask, type TaskResult } from "./orchestrator.ts";
 import {
 	applyProgressEvent,
@@ -85,8 +97,18 @@ import {
 } from "./progress.ts";
 import { buildMap, formatMapOverview, formatMapPrompt, loadCachedMap, loadRepoMapConfig, sliceRelevant } from "./repo-map.ts";
 import type { ReviewResult } from "./schemas/findings.ts";
-import { renderTaskStats, runLatencyMs, summarizeRuns } from "./metrics.ts";
+import { renderTaskStats, runLatencyMs, summarizeRuns, generateRunId, deriveProjectName, buildFailureArtifact, writeFailureArtifact } from "./metrics.ts";
 import type { RunManifest } from "./metrics.ts";
+import {
+	buildRunRequest,
+	logPathFor,
+	readRunStatus,
+	removeFileBestEffort,
+	renderRunStatus,
+	resolveRunnerSpawn,
+	writeRunRequest,
+	type DetachedRunOptions,
+} from "./runner.ts";
 import {
 	budgetModes,
 	DEFAULT_BUDGET_TIER,
@@ -306,6 +328,9 @@ export interface TaskToolParams {
 	 *  default: the tier's shape. analysis promotes the strong prewalk
 	 *  model into the writer/review slots with no swap. */
 	shape?: string;
+	/** Detached dispatch: return immediately with a run_id while the run
+	 *  executes in a child process (tracked via /task-status). */
+	detach?: boolean;
 }
 
 /**
@@ -382,6 +407,15 @@ export function taskToolSchema(
 					"reviews) | any [shapes.*] section in task.toml.",
 			}),
 		),
+		detach: Type.Optional(
+			Type.Boolean({
+				description:
+					"Detached dispatch: return immediately with a run_id while the run executes in a child process with " +
+					"the same spec/options. Track live or final state with /task-status <run_id>; the manifest and " +
+					"failure artifacts land exactly as a blocking run's (results/<project>/<run_id>.json) — only who " +
+					"waits changes.",
+			}),
+		),
 	};
 	if (locked) return Type.Object(base);
 	return Type.Object({
@@ -428,7 +462,29 @@ export interface TaskToolProgress {
 	progress: string;
 }
 
-export type TaskToolDetails = TaskToolReturn | TaskToolProgress;
+export type TaskToolDetails = TaskToolReturn | TaskToolProgress | TaskToolDetachedReturn;
+
+/** Detached dispatch return (R1): the run executes in a child process
+ *  (runner.ts) and the tool returns the run_id immediately. The manifest
+ *  lands under the SAME run_id (results/<project>/<run_id>.json — the
+ *  orchestrator's injected runId); /task-status tracks the run. */
+export interface TaskToolDetachedReturn {
+	detached: true;
+	run_id: string;
+	project: string;
+	request_path: string;
+	log_path: string;
+}
+
+/** The content text for a detached dispatch: the run_id + how to track
+ *  the run. Pure — tested hermetically. */
+export function detachedDispatchText(runId: string, project: string, logPath: string): string {
+	return [
+		`Task detached: run ${runId} (project ${project}) — the run continues in a child process.`,
+		`Track it with /task-status ${runId}; the final manifest lands at results/${project}/${runId}.json.`,
+		`Log: ${logPath}`,
+	].join("\n");
+}
 
 /**
  * Map the orchestrator's TaskResult to the tool's typed return shape.
@@ -733,6 +789,8 @@ export {
 const THIS_DIR = dirname(fileURLToPath(import.meta.url));
 /** Production default results dir (data, gitignored — see .gitignore). */
 const METRICS_DIR = join(getAgentDir(), "results");
+/** The detached-run child entry point (runner.ts — see its header). */
+const RUNNER_PATH = join(THIS_DIR, "runner.ts");
 
 /** Session entry key persisting a mid-session /task-budget override. */
 const BUDGET_ENTRY_TYPE = "pi-task-budget";
@@ -914,6 +972,111 @@ export default function (pi: ExtensionAPI) {
 					goals,
 				});
 
+				// Detached dispatch (R1): the run executes in a child process
+				// (runner.ts — a fresh process running the orchestrator with the
+				// SAME spec/options) and the tool returns the run_id immediately.
+				// Detach changes only WHO waits, never the guarantees: the child
+				// carries the same wall-clock / per-tool / verification timeouts
+				// and sandbox policy, and the orchestrator writes the SAME
+				// manifest + failure artifacts — keyed by this run_id (the
+				// injected runId), so the returned id is always the on-disk id.
+				// /task-status reads the child's live heartbeat while running,
+				// then the manifest / failure artifact once done.
+				if (p.detach === true) {
+					const runId = generateRunId();
+					const project = deriveProjectName(ctx.cwd);
+					const receivedAt = new Date().toISOString();
+					const mainSessionTokens = readSessionTokensBefore(ctx);
+					const options: DetachedRunOptions = {
+						cwd: ctx.cwd,
+						model: tierConfig.executeModel,
+						...(hasSubSpecs ? { subSpecs } : { spec }),
+						parallel: hasSubSpecs ? undefined : parallel,
+						prewalkModel: tierConfig.prewalkModel ?? undefined,
+						executeModel: tierConfig.executeModel,
+						reviewModel: tierConfig.reviewModel,
+						review: tierConfig.review,
+						persona: p.review,
+						maxFixIterations: taskConfig.defaults.maxFixIterations,
+						// Phase 11 (R4/R5): the same per-tier wall + per-tool budgets
+						// as a blocking run.
+						workerTimeoutMs: tierConfig.wallTimeoutMs,
+						toolTimeoutMs: taskConfig.defaults.toolTimeoutMs,
+						verificationTimeoutMs: taskConfig.defaults.verificationTimeoutMs,
+						// Todo #84: AI commit identity for worker commits.
+						aiAuthorName: taskConfig.defaults.aiAuthorName,
+						aiAuthorEmail: taskConfig.defaults.aiAuthorEmail,
+						budget: tier,
+						sandbox: taskConfig.sandbox,
+						shape,
+						receivedAt,
+						mainSessionTokens,
+					};
+					const request = buildRunRequest({
+						run_id: runId,
+						metrics_dir: METRICS_DIR,
+						project,
+						worker_count: workerCount,
+						plan,
+						options,
+					});
+					const requestPath = writeRunRequest(request);
+					const logPath = logPathFor(METRICS_DIR, project, runId);
+					const spawnInfo = resolveRunnerSpawn({ runnerPath: RUNNER_PATH, requestPath });
+					let child: ChildProcess;
+					try {
+						// detached: true + unref — the child outlives this pi
+						// session; its stdout/stderr go to the run's log file.
+						const outFd = openSync(logPath, "a");
+						child = spawn(spawnInfo.command, spawnInfo.args, {
+							cwd: ctx.cwd,
+							detached: true,
+							stdio: ["ignore", outFd, outFd],
+							env: process.env,
+						});
+						closeSync(outFd);
+						child.unref();
+					} catch (err) {
+						// Synchronous spawn failure (e.g. unwritable log dir): the
+						// run never started — drop the request so /task-status
+						// reports unknown, and surface the precise cause.
+						removeFileBestEffort(requestPath);
+						throw new Error(
+							`task detach failed to spawn the runner: ${err instanceof Error ? err.message : String(err)}`,
+						);
+					}
+					// Asynchronous spawn failure (e.g. the tsx binary is missing):
+					// the run cannot start after the id was returned — record a
+					// failure artifact under the id so /task-status is honest.
+					child.once("error", (err) => {
+						try {
+							writeFailureArtifact(
+								buildFailureArtifact({
+									kind: "worker",
+									runId,
+									tier,
+									specHash: hasSubSpecs ? subSpecs.join("\n\n") : spec,
+									cause: `runner spawn failed: ${err.message}`,
+								}),
+								{ metricsDir: METRICS_DIR, project },
+							);
+						} catch {
+							// Best effort — the tool already returned the run_id.
+						}
+					});
+					const ret: TaskToolDetachedReturn = {
+						detached: true,
+						run_id: runId,
+						project,
+						request_path: requestPath,
+						log_path: logPath,
+					};
+					return {
+						content: [{ type: "text", text: detachedDispatchText(runId, project, logPath) }],
+						details: ret,
+					};
+				}
+
 				// Stream progress to the TUI (no LLM tokens for the chrome).
 				const progress = createProgressState(workerCount, plan, Date.now());
 				const emitProgress = (): void => {
@@ -1002,6 +1165,14 @@ export default function (pi: ExtensionAPI) {
 					// updates in place; a fresh Text per update stacks a new
 					// line on every onUpdate.
 					return renderInPlace(context, theme.fg("muted", d.progress));
+				}
+				if (d && "detached" in d) {
+					const det = d as TaskToolDetachedReturn;
+					let text = theme.fg("muted", `⇢ detached: run ${det.run_id} — track with /task-status ${det.run_id}`);
+					if (options.expanded) {
+						text += `\n  request: ${det.request_path}\n  log: ${det.log_path}`;
+					}
+					return new Text(text, 0, 0);
 				}
 				const ret = d as TaskToolReturn;
 				// R1/R4: the completion line IS the one-line summary — wall-clock
@@ -1116,6 +1287,26 @@ export default function (pi: ExtensionAPI) {
 			const project = (args ?? "").trim() || undefined;
 			const summary = summarizeRuns(METRICS_DIR, project);
 			ctx.ui.notify(renderTaskStats(summary), "info");
+		},
+	});
+
+	pi.registerCommand("task-status", {
+		description:
+			"Show a task run's live or final state (/task-status <run_id>) — detached dispatches return a run_id",
+		handler: async (args, ctx) => {
+			const runId = (args ?? "").trim();
+			if (!runId) {
+				ctx.ui.notify("usage: /task-status <run_id> — the id a detached task dispatch returned", "error");
+				return;
+			}
+			// Live runs show the child's heartbeat (phases, elapsed, goals);
+			// finished runs show the manifest summary (verify result, findings,
+			// cost); unknown ids get a clear message.
+			const status = readRunStatus(METRICS_DIR, runId, Date.now());
+			ctx.ui.notify(
+				renderRunStatus(status, Date.now()).join("\n"),
+				status.kind === "unknown" ? "warning" : "info",
+			);
 		},
 	});
 

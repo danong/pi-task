@@ -35,6 +35,7 @@ import {
 	countSubSpecsRequirements,
 	createProgressState,
 	deriveRunMetrics,
+	detachedDispatchText,
 	failureMessageWithProgress,
 	formatDuration,
 	isLockedBudget,
@@ -146,10 +147,12 @@ function testBudgetSchemaLocking(errors: string[]): void {
 	check(unlocked.includes("parallel"), "unlocked schema should have parallel");
 	check(unlocked.includes("review"), "unlocked schema should have the review axis override");
 	check(unlocked.includes("shape"), "unlocked schema should have the shape param");
+	check(unlocked.includes("detach"), "unlocked schema should have the detach param");
 	check(unlocked.includes("budget"), "unlocked schema should expose budget");
 
 	check(locked.includes("spec") && locked.includes("sub_specs") && locked.includes("parallel") && locked.includes("review") && locked.includes("shape"),
 		"locked schema keeps the work parameters + review/shape overrides");
+	check(locked.includes("detach"), "locked schema keeps the detach param (it is not a budget override)");
 	check(!locked.includes("budget"), "locked schema must NOT expose budget (model cannot see or override it)");
 
 	// Budget enum values are exactly the four built-in modes (default tier set).
@@ -172,6 +175,8 @@ function testBudgetSchemaLocking(errors: string[]): void {
 	// tier removes the budget param entirely.
 	check(!schemaProperties(taskToolSchema(true, dynTiers)).includes("budget"),
 		"locked schema removes budget even with a dynamic tier set");
+	check(schemaProperties(taskToolSchema(true, dynTiers)).includes("detach"),
+		"detach survives schema locking over a dynamic tier set");
 
 	console.log("✓ taskToolSchema: budget param removed when locked; enum config-driven (dynamic tiers)");
 }
@@ -502,6 +507,16 @@ function testResultMapping(errors: string[]): void {
 	const check = (cond: boolean, msg: string): void => {
 		if (!cond) errors.push(msg);
 	};
+
+	// Detached dispatch text (R1): the run_id + the tracking path. The
+	// returned id IS the manifest's id, and the message says exactly that.
+	{
+		const text = detachedDispatchText("20260805T0000-abcd", "proj", "/m/proj/20260805T0000-abcd.log");
+		check(text.includes("Task detached: run 20260805T0000-abcd (project proj)"), "detached text names the run + project");
+		check(text.includes("/task-status 20260805T0000-abcd"), "detached text shows the tracking command");
+		check(text.includes("results/proj/20260805T0000-abcd.json"), "detached text names the manifest path");
+		check(text.includes("/m/proj/20260805T0000-abcd.log"), "detached text names the log path");
+	}
 
 	const ret: TaskToolReturn = taskResultToToolReturn(fakeResult());
 	check(ret.success === true && ret.tests === "passing", "mapping carries success/tests");

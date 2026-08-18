@@ -28,7 +28,8 @@ mise run test      # full hermetic test suite, zero LLM calls
 
 The repo ships `.pi/settings.json` registering itself as a project package
 (`"packages": [".."]`), so any trusted checkout auto-installs — the `task`
-tool, `/task-budget` and `/goals` commands, `--task-budget` flag, the
+tool, `/task-budget`, `/goals`, `/task-stats` and `/task-status` commands,
+`--task-budget` flag, the
 `delegation` and
 `architecture-survey` skills, and the `/build`, `/plan`, and `/survey`
 templates are available on the next session. For a
@@ -39,7 +40,8 @@ pi install /path/to/this/repo
 ```
 
 `pi install` adds the package to the pi agent dir's `settings.json` (`packages`)
-and the `task` tool, `/task-budget` and `/goals` commands, and `--task-budget`
+and the `task` tool, `/task-budget`, `/goals`, `/task-stats` and `/task-status`
+commands, and `--task-budget`
 flag become available after `/reload`.
 
 ## Workflow
@@ -68,7 +70,12 @@ when sub_specs is given).
 contract, the flow, template-by-template guidance, the run lifecycle, and the
 quality loops. `/task-stats` summarizes recorded runs (latency, cost, verify
 pass rate) from the agent-dir metrics — all projects, or one with an
-argument.
+argument. A task dispatch can also be **detached**: the `task` tool's
+`detach: true` param returns a `run_id` immediately while the run executes
+in a child process (`extensions/task/runner.ts`) with the same spec/options
+and the same bounds (wall clock, verification gate, failure artifacts) —
+`/task-status <run_id>` shows the run's live progress (phases, elapsed,
+goals) or its final manifest summary (verify result, findings, cost).
 
 ## Configuration
 
@@ -103,18 +110,40 @@ legitimately diverge — that is where overrides belong. `config/repo-map.toml`
 (agent dir) configures the cached codebase-map used to seed worker context,
 falling back to built-in defaults when missing.
 
+## Batch lane
+
+A shape whose `channel = "batch"` (the built-in `batch` shape) runs the
+task as an ASYNC batch job instead of an interactive worker: the spec's
+typed requirements become one single-turn prompt item each, submitted to
+OpenRouter's batch endpoint on the `[batch]` model, polled to completion,
+and validated against per-item output contracts (`extensions/task/batch.ts`
+— the wire protocol is pinned in the `OpenRouterBatchProvider` doc
+comment). Validated outputs are applied to the working copy as files,
+committed under the AI identity, and gated by the spec's verification
+commands. Batch is single-turn: no tool loop, no prewalk, no review.
+
+Failures are typed (`BatchError` codes) and recoverable: every run records
+a job-state file (`<metricsDir>/<project>/<run>.batch.json`) with the job
+id + per-item statuses, so an aborted or timed-out job can be polled later
+and failed items can be resubmitted alone — the failure artifact carries
+the state-file path. Batch runs need `OPENROUTER_API_KEY` (a missing key
+is the typed `no_api_key` failure).
+
 ## Testing
 
 ```sh
 mise run test                                    # full hermetic suite, zero LLM calls
 npx tsx extensions/task/test.ts                  # same suite, run directly
 timeout 900 npx tsx extensions/task/test-e2e.ts  # one real-LLM e2e, manual
+OPENROUTER_API_KEY=<key> timeout 2400 npx tsx extensions/task/test-batch-live.ts  # guarded real batch call
 ```
 
 `mise run test` runs the full hermetic suite in one process (zero LLM calls);
 `npx tsx extensions/task/test.ts` is the same suite as a direct command. The
 real-LLM e2e (`extensions/task/test-e2e.ts`) stays manual and is intentionally
-not part of `mise run test`.
+not part of `mise run test`, and so does the guarded real-OpenRouter batch
+test (`extensions/task/test-batch-live.ts`, network + cost — skips with exit
+0 when `OPENROUTER_API_KEY` is unset).
 
 ## Regression benchmarking
 

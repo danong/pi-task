@@ -51,9 +51,11 @@ export interface VerifyPhaseMetrics {
 	duration_ms: number;
 	/** Where verification ran: "worker-tree" (single-worker, post-yield,
 	 *  on the worker's commits) | "union-gate" (parallel, post-merge, on
-	 *  the merged tree). A run that died before either produces a failure
-	 *  artifact, not a manifest — so "unverified" is never written. */
-	source: "worker-tree" | "union-gate";
+	 *  the merged tree) | "batch" (batch lane, post-apply, on the tree the
+	 *  collected outputs were written to). A run that died before either
+	 *  produces a failure artifact, not a manifest — so "unverified" is
+	 *  never written. */
+	source: "worker-tree" | "union-gate" | "batch";
 	/** True when a command was killed by its timeout (exit 124). */
 	timed_out?: boolean;
 }
@@ -105,8 +107,11 @@ export interface MetricsConfig {
 	swap_trigger: string;
 	checklist: boolean;
 	review_forked: boolean;
-	/** The run-pipeline SHAPE that ran (e.g. "code" | "analysis"). */
+	/** The run-pipeline SHAPE that ran (e.g. "code" | "analysis" | "batch"). */
 	shape: string;
+	/** The model channel the run used (sync | flex | batch — M1). Optional:
+	 *  absent for manifests written before the channel landed. */
+	channel?: "sync" | "flex" | "batch";
 	/** Effective worker sandbox state (R3): enabled AND the host probe passed. */
 	sandbox: boolean;
 }
@@ -195,6 +200,12 @@ export interface BuildManifestInput {
 		budget?: string;
 		swapTrigger?: string;
 		checklist?: boolean;
+		/** Model channel (sync | flex | batch — M1). Optional: absent for
+		 *  direct callers that don't supply it. */
+		channel?: "sync" | "flex" | "batch";
+		/** Run-pipeline shape name (e.g. "code" | "analysis" | "batch").
+		 *  Default: "code". */
+		shape?: string;
 		/** Effective sandbox state — enabled AND probe passed (R3); false when a
 		 *  direct caller omits it. */
 		sandbox?: boolean;
@@ -255,6 +266,8 @@ export function buildRunManifest(input: BuildManifestInput): RunManifest {
 			checklist: input.config.checklist ?? true,
 			review_forked: input.config.reviewForked,
 			sandbox: input.config.sandbox ?? false,
+			channel: input.config.channel,
+			shape: input.config.shape ?? "code",
 		},
 		task: {
 			spec_hash: hashSpec(input.specMarkdown),
@@ -481,7 +494,7 @@ export function writeManifest(manifest: RunManifest, opts: { metricsDir: string;
  */
 export interface FailureArtifact {
 	run_id: string;
-	kind: "worker" | "review" | "parallel";
+	kind: "worker" | "review" | "parallel" | "batch";
 	timestamp: string;
 	spec_hash?: string;
 	tier?: string;
@@ -527,6 +540,10 @@ export interface MergeFailureRecord {
 
 export function buildFailureArtifact(input: {
 	kind: FailureArtifact["kind"];
+	/** Pre-generated run id (detached dispatch): the caller knows the id
+	 *  before the run dies, so the artifact lands under the same id the
+	 *  caller returned. Absent → generated from `now`. */
+	runId?: string;
 	now?: Date;
 	specHash?: string;
 	tier?: string;
@@ -543,7 +560,7 @@ export function buildFailureArtifact(input: {
 	recovery?: string;
 }): FailureArtifact {
 	return {
-		run_id: generateRunId(input.now ?? new Date()),
+		run_id: input.runId ?? generateRunId(input.now ?? new Date()),
 		kind: input.kind,
 		timestamp: (input.now ?? new Date()).toISOString(),
 		spec_hash: input.specHash,
@@ -679,6 +696,10 @@ export function summarizeRuns(metricsDir: string, project?: string): RunSummary 
 		const dir = join(metricsDir, proj);
 		if (!existsSync(dir)) continue;
 		for (const name of readdirSync(dir)) {
+			// Detached-dispatch sidecars (<run_id>.request.json — the run's input;
+			// <run_id>.live.json — the child's heartbeat) are NOT runs: they must
+			// never count as unreadable manifests or inflate the run count.
+			if (name.endsWith(".request.json") || name.endsWith(".live.json")) continue;
 			if (name.endsWith(".failure.json")) {
 				failures++;
 				continue;

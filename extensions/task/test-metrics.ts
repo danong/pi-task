@@ -399,6 +399,16 @@ export async function runTests(): Promise<void> {
 		check(artifact.timestamp === "2026-08-05T00:00:00.000Z", "timestamp ISO");
 		check(artifact.last_tool?.name === "bash" && artifact.stderr_tail === "err", "last tool + stderr tail land");
 	}
+	// buildFailureArtifact: an INJECTED run_id (detached dispatch — the caller
+	// knows the id before the run dies) wins over the generated one.
+	{
+		const now = new Date("2026-08-05T00:00:00.000Z");
+		const injected = buildFailureArtifact({ kind: "worker", now, runId: "20260805T0000-feed", cause: "x" });
+		check(injected.run_id === "20260805T0000-feed", `injected run_id wins, got ${injected.run_id}`);
+		const generated = buildFailureArtifact({ kind: "worker", now, cause: "x" });
+		check(generated.run_id !== "20260805T0000-feed" && generated.run_id.startsWith("20260805T0000"),
+			"absent runId still generates from now");
+	}
 	// writeFailureArtifact: atomic write + round-trip on a temp dir.
 	{
 		const metricsDir = mkdtempSync(join(tmpdir(), "pi-task-fail-"));
@@ -449,6 +459,11 @@ export async function runTests(): Promise<void> {
 			}));
 			writeFileSync(join(metricsDir, "alpha", "20260805T0003-abcd.failure.json"), "{}", "utf-8");
 			writeFileSync(join(metricsDir, "alpha", "garbage.json"), "{not json", "utf-8");
+			// Detached-dispatch sidecars (request input + live heartbeat) are NOT
+			// runs: summarizeRuns must skip them silently — not as unreadable.
+			writeFileSync(join(metricsDir, "alpha", "20260805T0005-abcd.request.json"), "{}", "utf-8");
+			writeFileSync(join(metricsDir, "alpha", "20260805T0005-abcd.live.json"), "{}", "utf-8");
+			writeFileSync(join(metricsDir, "alpha", "20260805T0005-abcd.log"), "log\n", "utf-8");
 			// beta: pass (economy, 30s, $0.01).
 			write("beta", manifest({ run_id: "20260805T0004-abcd", config: { budget: "economy" }, totals: { cost_usd: 0.01, duration_ms: 30000 } }));
 

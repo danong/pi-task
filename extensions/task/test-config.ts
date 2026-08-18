@@ -23,6 +23,10 @@ import {
 	DEFAULT_TOOL_TIMEOUT_MS,
 	DEFAULT_VERIFICATION_TIMEOUT_MS,
 	DEFAULT_TASK_SHAPES,
+	DEFAULT_BATCH_CONFIG,
+	DEFAULT_BATCH_MODEL,
+	DEFAULT_BATCH_POLL_INTERVAL_MS,
+	DEFAULT_BATCH_JOB_TIMEOUT_MS,
 	channelWatchdogWindows,
 	aiIdentityToml,
 	resolveTaskShape,
@@ -506,6 +510,7 @@ export async function runTests(): Promise<void> {
 	testAiIdentity(errors);
 	testShippedConfigMatchesDefaults(errors);
 	testShapes(errors);
+	testBatchSection(errors);
 
 
 // ─── [shapes.*] run-pipeline shapes ──────────────────────────────────
@@ -516,7 +521,7 @@ function testShapes(errors: string[]): void {
 	};
 	// Built-in shapes: code (the current pipeline) + analysis (strong
 	// writer/reviewer, no swap), both with a working review contract.
-	check(JSON.stringify(Object.keys(DEFAULT_TASK_SHAPES)) === JSON.stringify(["code", "analysis"]),
+	check(JSON.stringify(Object.keys(DEFAULT_TASK_SHAPES)) === JSON.stringify(["code", "analysis", "batch"]),
 		`built-in shapes, got ${JSON.stringify(Object.keys(DEFAULT_TASK_SHAPES))}`);
 	check(DEFAULT_TASK_SHAPES.code.prewalk && DEFAULT_TASK_SHAPES.code.swap && DEFAULT_TASK_SHAPES.code.workModel === "execute",
 		"code shape: prewalk + swap + execute writer");
@@ -526,6 +531,11 @@ function testShapes(errors: string[]): void {
 	// Channel: default sync; flex/batch parse; the watchdog calibration.
 	check(DEFAULT_TASK_SHAPES.code.channel === "sync" && DEFAULT_TASK_SHAPES.analysis.channel === "sync",
 		"built-in shapes default to the sync channel");
+	// Batch shape (M2): the async job lane — no prewalk/swap, no review axes.
+	check(DEFAULT_TASK_SHAPES.batch.channel === "batch"
+		&& !DEFAULT_TASK_SHAPES.batch.prewalk && !DEFAULT_TASK_SHAPES.batch.swap
+		&& DEFAULT_TASK_SHAPES.batch.review.length === 0,
+		"batch shape: channel batch, no prewalk/swap, no review axes");
 	{
 		const sync = channelWatchdogWindows("sync");
 		const flex = channelWatchdogWindows("flex");
@@ -571,6 +581,70 @@ review = ["survey-reviewer"]
 		},
 	);
 	console.log("✓ shapes: built-ins, resolveTaskShape, [shapes.*] parse + per-key fallback, tier default");
+}
+
+/** The [batch] lane section (M2): defaults, parse, warn-and-fallback. */
+function testBatchSection(errors: string[]): void {
+	const check = (cond: boolean, msg: string): void => {
+		if (!cond) errors.push(msg);
+	};
+
+	// Built-in defaults carry the batch lane surface.
+	check(DEFAULT_TASK_CONFIG.batch.model === DEFAULT_BATCH_MODEL,
+		`batch model default should be ${DEFAULT_BATCH_MODEL}, got ${DEFAULT_TASK_CONFIG.batch.model}`);
+	check(DEFAULT_TASK_CONFIG.batch.pollIntervalMs === DEFAULT_BATCH_POLL_INTERVAL_MS
+		&& DEFAULT_TASK_CONFIG.batch.jobTimeoutMs === DEFAULT_BATCH_JOB_TIMEOUT_MS,
+		"batch polling defaults should be the 30s/24h built-ins");
+
+	// A file with no [batch] table → silent defaults.
+	withTempToml(`[defaults]
+budget = "economy"
+`, (path) => {
+		let cfg: TaskConfig | undefined;
+		const warnings = captureWarnings(() => {
+			cfg = loadTaskConfig(path);
+		});
+		check(JSON.stringify(cfg!.batch) === JSON.stringify(DEFAULT_BATCH_CONFIG),
+			"missing [batch] table should fall back to built-in defaults");
+		check(warnings.length === 0, `missing [batch] table should be silent, got ${JSON.stringify(warnings)}`);
+	});
+
+	// A valid [batch] table parses (model override + polling budgets).
+	withTempToml(`[batch]
+model = "provider/batch-2"
+poll_interval_ms = 60000
+job_timeout_ms = 3600000
+`, (path) => {
+		let cfg: TaskConfig | undefined;
+		const warnings = captureWarnings(() => {
+			cfg = loadTaskConfig(path);
+		});
+		check(warnings.length === 0, `valid [batch] should not warn, got ${JSON.stringify(warnings)}`);
+		check(cfg!.batch.model === "provider/batch-2", `batch model override, got ${cfg!.batch.model}`);
+		check(cfg!.batch.pollIntervalMs === 60000, `batch poll_interval_ms override, got ${cfg!.batch.pollIntervalMs}`);
+		check(cfg!.batch.jobTimeoutMs === 3600000, `batch job_timeout_ms override, got ${cfg!.batch.jobTimeoutMs}`);
+	});
+
+	// Invalid values warn + fall back per field.
+	withTempToml(`[batch]
+model = ""
+poll_interval_ms = -1
+job_timeout_ms = "long"
+`, (path) => {
+		let cfg: TaskConfig | undefined;
+		const warnings = captureWarnings(() => {
+			cfg = loadTaskConfig(path);
+		});
+		check(cfg!.batch.model === DEFAULT_BATCH_MODEL, "empty batch model should fall back to the default");
+		check(cfg!.batch.pollIntervalMs === DEFAULT_BATCH_POLL_INTERVAL_MS,
+			"invalid poll_interval_ms should fall back");
+		check(cfg!.batch.jobTimeoutMs === DEFAULT_BATCH_JOB_TIMEOUT_MS,
+			"invalid job_timeout_ms should fall back");
+		check(warnings.some((w) => w.includes("model")), "should warn about the invalid batch model");
+		check(warnings.some((w) => w.includes("poll_interval_ms")), "should warn about poll_interval_ms");
+		check(warnings.some((w) => w.includes("job_timeout_ms")), "should warn about job_timeout_ms");
+	});
+	console.log("✓ [batch] section: defaults, parse, per-field warn-and-fallback");
 }
 
 	if (errors.length > 0) {

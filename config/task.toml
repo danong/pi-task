@@ -116,6 +116,27 @@ network = "allow"
 extra_ro_binds = []
 extra_rw_binds = []
 
+[batch]
+# The batch lane (M2): a shape whose channel = "batch" runs the task as an
+# ASYNC batch job instead of an interactive worker — one typed single-turn
+# prompt per requirement, no tool loop. The orchestrator submits the job,
+# polls it to completion, validates each item's output against its contract,
+# applies the returned files, commits them (AI identity), and runs the
+# spec's verification gate (extensions/task/batch.ts).
+#
+# model — an OpenRouter `:batch` model id (~50% off list price, up to ~24h
+# turnaround). Requires OPENROUTER_API_KEY in the environment; a batch run
+# without it fails typed (BatchError "no_api_key").
+model = "google/gemini-3.7-flash:batch"
+# Poll interval (ms) while the job is in flight.
+poll_interval_ms = 30000
+# Wall budget (ms) for polling the job to a terminal state (24h — the batch
+# lane's advertised turnaround). On timeout the job keeps running
+# provider-side; the job-state file (<metrics dir>/<project>/<run>.batch.json)
+# records the job id so polling can resume — the failure is typed +
+# recoverable.
+job_timeout_ms = 86400000
+
 
 # ─── Run pipeline shapes ([shapes.*]) ────────────────────────────────
 # The task's SHAPE: phase structure, swap policy, model slots, and review
@@ -144,4 +165,16 @@ prewalk = false
 swap = false
 work_model = "prewalk"
 review_model = "prewalk"
+review = []
+
+[shapes.batch]
+# The batch lane (M2): the run is an async batch job on the [batch] model —
+# one typed single-turn prompt per requirement, outputs validated against
+# their contracts and applied as files, no tool loop, no review. Pick it via
+# the task tool's shape param (shape = "batch") or a tier's shape = "batch".
+channel = "batch"
+prewalk = false
+swap = false
+work_model = "execute"
+review_model = "review"
 review = []

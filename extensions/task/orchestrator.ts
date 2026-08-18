@@ -25,7 +25,7 @@
  */
 
 import { execFile } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -49,6 +49,8 @@ import {
 	channelWatchdogWindows,
 	aiIdentityToml,
 	formatAiAuthorName,
+	loadTaskConfig,
+	type BatchLaneConfig,
 	type SandboxConfig,
 	type TaskShape,
 } from "./config.ts";
@@ -76,6 +78,16 @@ import { parseSpec, SpecError, type Spec } from "./schemas/spec.ts";
 import { extractFileScope } from "./progress.ts";
 import { forkedReview, mergeReviewOutcomes } from "./review.ts";
 import { DEFAULT_PERSONA, DEFAULT_REVIEW_PERSONAS, getPersona, type Persona } from "./personas.ts";
+import {
+	batchJobStatePath,
+	BatchError,
+	extractBatchFiles,
+	mergeBatchFiles,
+	runBatchLane,
+	type BatchFile,
+	type BatchProvider,
+} from "./batch.ts";
+import { OpenRouterBatchProvider } from "./batch.ts";
 import type { Finding, ReviewResult } from "./schemas/findings.ts";
 import {
 	aggregateExecutePhase,
@@ -122,6 +134,7 @@ export interface MergeFailureInfo {
 	project: string;
 	specMarkdown: string;
 	tier?: string;
+	runId?: string;
 }
 
 /** Write a merge-failure artifact via the existing .failure.json pattern
@@ -132,6 +145,7 @@ export function writeMergeFailureArtifact(opts: MergeFailureInfo): void {
 	try {
 		const artifact = buildFailureArtifact({
 			kind: "parallel",
+			runId: opts.runId,
 			specHash: hashSpec(opts.specMarkdown),
 			tier: opts.tier,
 			cause: opts.cause,
@@ -423,25 +437,31 @@ export async function rescueAbortedWorkBestEffort(cwd: string, err: unknown): Pr
 
 /**
  * Best-effort failure artifact: write the run's failure state to
- * <metricsDir>/<project>/<run_id>.failure.json when a worker, review, or
- * parallel run dies without a manifest, so timeouts and aborts are
- * inspectable after the fact. Reads the structured `diagnostics` the
+ * <metricsDir>/<project>/<run_id>.failure.json when a worker, review,
+ * parallel, or batch run dies without a manifest, so timeouts and aborts
+ * are inspectable after the fact. Reads the structured `diagnostics` the
  * worker/review rejections carry (worker.ts buildAbortError). Swallows
  * write errors — never masks the original failure.
  */
 function writeFailureArtifactBestEffort(opts: {
 	err: unknown;
 	kind: "worker" | "review" | "parallel";
+	runId?: string;
+	kind: "worker" | "review" | "parallel" | "batch";
 	metricsDir?: string;
 	project: string;
 	specMarkdown: string;
 	tier?: string;
+	/** R4 recovery hint (batch lane): the job-state file path — the
+	 *  recovery handle for aborted/timed-out jobs and failed items. */
+	recovery?: string;
 }): void {
 	if (!opts.metricsDir) return;
 	try {
 		const d = (opts.err as { diagnostics?: WorkerFailureDiagnostics }).diagnostics;
 		const artifact = buildFailureArtifact({
 			kind: opts.kind,
+			runId: opts.runId,
 			specHash: hashSpec(opts.specMarkdown),
 			tier: opts.tier,
 			cause: d?.cause ?? (opts.err instanceof Error ? opts.err.message : String(opts.err)),
@@ -449,6 +469,7 @@ function writeFailureArtifactBestEffort(opts: {
 			idleMs: d?.idleMs,
 			lastTool: d?.lastTool,
 			stderrTail: d?.stderrTail,
+			recovery: opts.recovery,
 		});
 		writeFailureArtifact(artifact, { metricsDir: opts.metricsDir, project: opts.project });
 	} catch {
@@ -527,6 +548,14 @@ export interface ExecuteTaskOptions {
 	shape?: TaskShape;
 	/** Max fix workers the loop may dispatch (when review enabled). Default: 2. */
 	maxFixIterations?: number;
+	/** Batch lane config ([batch] section, M2). Omitted → loadTaskConfig's
+	 *  [batch] (the shipped defaults when no task.toml). Only consulted on
+	 *  the batch channel (shape.channel === "batch"). */
+	batch?: BatchLaneConfig;
+	/** Batch provider injection (hermetic tests inject the fake; the task
+	 *  tool never passes one). Default: OpenRouterBatchProvider (needs
+	 *  OPENROUTER_API_KEY — typed BatchError("no_api_key") when absent). */
+	batchProvider?: BatchProvider;
 	/** Budget tier label for the manifest (Phase 10). Orchestrator does
 	 *  not interpret it — the task tool passes the resolved tier so
 	 *  persisted manifests carry config.budget. Direct executeTask callers
@@ -568,6 +597,11 @@ export interface ExecuteTaskOptions {
 	 *  compatible). dispatched_at/completed_at are stamped by the orchestrator. */
 	receivedAt?: string;
 	mainSessionTokens?: number;
+	/** Pre-generated run id (detached dispatch): the caller knows the id
+	 *  BEFORE the run completes (it returns it immediately), so the manifest
+	 *  and any failure artifact must land under that same id. Absent →
+	 *  generated at finalization (blocking runs, unchanged). */
+	runId?: string;
 }
 
 export interface VerificationCommandResult {
@@ -623,6 +657,10 @@ export interface TaskResult {
 	 *  the completion summary is consistent even when no manifest is
 	 *  present. Same clock as the progress view's total-elapsed line. */
 	durationMs: number;
+	/** Batch-lane record (M2): present when the run took the batch channel
+	 *  (shape.channel === "batch") — the provider job id, the batch model,
+	 *  and the collected item count. */
+	batch?: { jobId: string; model: string; items: number };
 }
 
 // ─── Verification runner ─────────────────────────────────────────────
@@ -742,6 +780,36 @@ export function splitSpec(spec: Spec, parallel: number): string[] {
 		);
 		return parts.join("\n\n");
 	});
+}
+
+// ─── Batch channel routing (M2) ─────────────────────────────────────
+
+/**
+ * Pure channel-routing decision: a shape on the batch channel (declared
+ * in M1) routes the run to the batch lane (single-turn job, no interactive
+ * worker); sync/flex run the interactive pipeline. The batch lane has no
+ * tool loop and no workspace model, so parallel/sub_specs runs on it are
+ * a configuration error (invalid — the caller throws the reason). Pure —
+ * hermetically tested in test-batch.ts.
+ */
+export type RunRoute =
+	| { kind: "batch" }
+	| { kind: "interactive" }
+	| { kind: "invalid"; reason: string };
+
+export function routeRun(
+	shape: TaskShape | undefined,
+	opts: { parallel?: number; hasSubSpecs?: boolean } = {},
+): RunRoute {
+	const channel = (shape ?? DEFAULT_TASK_SHAPES.code).channel;
+	if (channel !== "batch") return { kind: "interactive" };
+	if ((opts.parallel ?? 1) > 1) {
+		return { kind: "invalid", reason: "the batch channel does not support parallel runs (single-turn job lane, no workspaces)" };
+	}
+	if (opts.hasSubSpecs) {
+		return { kind: "invalid", reason: "the batch channel does not support sub_specs runs (single-turn job lane, one spec)" };
+	}
+	return { kind: "batch" };
 }
 
 // ─── Review + bounded fix loop (Phase 7) ─────────────────────────────
@@ -994,11 +1062,12 @@ function finalizeMetrics(opts: {
 	project?: string;
 	metricsDir?: string;
 	preserveSessions?: boolean;
+	runId?: string;
 	worker: WorkerResult;
 	assemble: Omit<Parameters<typeof assembleManifest>[0], "runId" | "sessionFiles" | "completedAt">;
 }): { manifest: RunManifest; manifestPath?: string } {
 	const project = opts.project ?? deriveProjectName(opts.cwd);
-	const runId = generateRunId();
+	const runId = opts.runId ?? generateRunId();
 
 	let savedSessions: string[] = [];
 	if (opts.preserveSessions && opts.metricsDir && opts.worker.sessionFile) {
@@ -1051,6 +1120,7 @@ function finalizeParallelMetrics(opts: {
 	cwd: string;
 	project?: string;
 	metricsDir?: string;
+	runId?: string;
 	specMarkdown: string;
 	requirements: number;
 	prewalkModel: string;
@@ -1077,7 +1147,7 @@ function finalizeParallelMetrics(opts: {
 }): { manifest: RunManifest; manifestPath?: string } {
 	const project = opts.project ?? deriveProjectName(opts.cwd);
 	const manifest = buildRunManifest({
-		runId: generateRunId(),
+		runId: opts.runId ?? generateRunId(),
 		specMarkdown: opts.specMarkdown,
 		requirements: opts.requirements,
 		config: {
@@ -1182,7 +1252,42 @@ export async function executeTask(opts: ExecuteTaskOptions): Promise<TaskResult>
 	);
 	const aiEmail = opts.aiAuthorEmail ?? DEFAULT_TASK_CONFIG.defaults.aiAuthorEmail;
 
-	// 2b. Resolve the worker sandbox (R1): the option omitted → the built-in
+	// 2b. Batch channel routing (M2): a shape on the batch channel runs the
+	// spec as an ASYNC batch job — one typed single-turn prompt per
+	// requirement (batch.ts buildBatchItems), polled to completion,
+	// outputs validated against their contracts and applied as files; no
+	// interactive worker, no tool loop, no workspace model. parallel /
+	// sub_specs on the batch channel are a configuration error
+	// (routeRun → invalid). Review is single-turn-incompatible: silently
+	// skipped (reviewSkipped on the result — same contract as parallel).
+	const route = routeRun(shape, { parallel, hasSubSpecs: subSpecs !== undefined });
+	if (route.kind === "invalid") {
+		throw new Error(`executeTask: ${route.reason}`);
+	}
+	if (route.kind === "batch") {
+		return executeBatchLane(cwd, {
+			spec,
+			specMarkdown,
+			// Mirror the parallel path: a REQUESTED review (opts.review or an
+			// explicit persona) is reported as skipped — the batch lane is
+			// single-turn and cannot fork a reviewer session.
+			reviewRequested: opts.review === true || opts.persona !== undefined,
+			metricsDir,
+			project,
+			budget,
+			signal,
+			onUpdate,
+			verificationTimeoutMs: opts.verificationTimeoutMs,
+			aiAuthorName: aiName,
+			aiAuthorEmail: aiEmail,
+			receivedAt: opts.receivedAt,
+			mainSessionTokens: opts.mainSessionTokens,
+			batch: opts.batch,
+			batchProvider: opts.batchProvider,
+		});
+	}
+
+	// 2c. Resolve the worker sandbox (R1): the option omitted → the built-in
 	// defaults (same shape as loadTaskConfig with no task.toml file).
 	// Availability is probed ONCE for the whole run with a real
 	// user-namespace-exercising call (probeBwrapAvailability); a
@@ -1261,6 +1366,7 @@ export async function executeTask(opts: ExecuteTaskOptions): Promise<TaskResult>
 			// omit them (manifest fields then absent/zero).
 			receivedAt: opts.receivedAt,
 			mainSessionTokens: opts.mainSessionTokens,
+			runId: opts.runId,
 		});
 	}
 
@@ -1498,6 +1604,7 @@ export async function executeTask(opts: ExecuteTaskOptions): Promise<TaskResult>
 					danglingCommitIds: [],
 					conflictedFiles: [],
 					metricsDir,
+					runId: opts.runId,
 					project,
 					specMarkdown,
 					tier: budget,
@@ -1607,6 +1714,7 @@ export async function executeTask(opts: ExecuteTaskOptions): Promise<TaskResult>
 						cause:
 							`merge conflicts remain after the deterministic union ladder ` +
 							`(${conflictsAfterUnion.length} file(s))`,
+						runId: opts.runId,
 						workspaces: workspaces.map((w) => ({
 							name: w.name,
 							commit_id: workspaceAtIds.get(w.name) ?? "",
@@ -1636,6 +1744,7 @@ export async function executeTask(opts: ExecuteTaskOptions): Promise<TaskResult>
 					commit_id: workspaceAtIds.get(w.name) ?? "",
 				})),
 				danglingCommitIds: [...workspaceAtIds.values()].filter((id) => id.length > 0),
+				runId: opts.runId,
 				conflictedFiles: [],
 				metricsDir,
 				project,
@@ -1686,6 +1795,7 @@ export async function executeTask(opts: ExecuteTaskOptions): Promise<TaskResult>
 					commit_id: workspaceAtIds.get(w.name) ?? "",
 				})),
 				danglingCommitIds: [],
+				runId: opts.runId,
 				conflictedFiles: mergeMetrics.conflicts,
 				metricsDir,
 				project,
@@ -1764,6 +1874,8 @@ export async function executeTask(opts: ExecuteTaskOptions): Promise<TaskResult>
 		cwd,
 		project: opts.project,
 		metricsDir: opts.metricsDir,
+		// Detached dispatch: the manifest must land under the caller's id.
+		runId: opts.runId,
 		// sub_specs mode: the AGGREGATE spec's markdown (the union, rendered
 		// as one spec); the mechanical fallback: the original spec markdown.
 		specMarkdown: subSpecs ? renderSpecMarkdown(spec) : specMarkdown,
@@ -1824,6 +1936,305 @@ export async function executeTask(opts: ExecuteTaskOptions): Promise<TaskResult>
 	};
 }
 
+// ─── Batch lane path (M2) ───────────────────────────────────────────
+
+/**
+ * The batch channel path (routeRun → "batch"): the run is an ASYNC batch
+ * job, not an interactive session. The spec's typed requirements are
+ * submitted as one single-turn prompt item each (batch.ts buildBatchItems,
+ * output contract BATCH_FILE_CONTRACT), polled to a terminal phase,
+ * collected, and validated against the contracts; the validated file
+ * outputs are applied to the working copy, committed under the AI
+ * identity (the same createAiTaskBase/restore dance as the single-worker
+ * path), and gated by the spec's verification commands (bash, zero
+ * tokens). Single-turn: no tool loop, no prewalk, no review, no sandbox
+ * (no subprocess workers).
+ *
+ * Failures are TYPED (BatchError) + RECOVERABLE: the job-state file
+ * (<metricsDir>/<project>/<run_id>.batch.json) records the job id + every
+ * item's status, and the failure artifact carries the state-file path —
+ * an aborted/timed-out job can be polled later; failed items can be
+ * resubmitted alone.
+ */
+async function executeBatchLane(
+	cwd: string,
+	opts: {
+		spec: Spec;
+		specMarkdown: string;
+		reviewRequested: boolean;
+		metricsDir?: string;
+		project?: string;
+		budget?: string;
+		signal?: AbortSignal;
+		onUpdate?: (partial: unknown) => void;
+		verificationTimeoutMs?: number;
+		/** AI commit identity — already formatted ({model} resolved). */
+		aiAuthorName: string;
+		aiAuthorEmail: string;
+		receivedAt?: string;
+		mainSessionTokens?: number;
+		batch?: BatchLaneConfig;
+		batchProvider?: BatchProvider;
+	},
+): Promise<TaskResult> {
+	const {
+		spec,
+		specMarkdown,
+		reviewRequested,
+		metricsDir,
+		project,
+		budget,
+		signal,
+		onUpdate,
+		aiAuthorName,
+		aiAuthorEmail,
+		receivedAt,
+		mainSessionTokens,
+	} = opts;
+	// The [batch] config: an explicit override (direct callers/tests), else
+	// task.toml's [batch] section (shipped defaults when no file).
+	const batchCfg = opts.batch ?? loadTaskConfig().batch;
+	const provider = opts.batchProvider ?? new OpenRouterBatchProvider();
+	const verifyTimeout = opts.verificationTimeoutMs ?? DEFAULT_VERIFICATION_TIMEOUT_MS;
+	const projectName = project ?? deriveProjectName(cwd);
+	const runStartMs = Date.now();
+	const runId = generateRunId();
+
+	// AI commit identity (todo #84): root the batch commit on a fresh
+	// AI-authored commit (mirrors executeSingle — `jj commit` preserves the
+	// working-copy commit's author).
+	let identityDir: string | null = null;
+	let identityFile: string | null = null;
+	if (aiAuthorName.trim().length > 0 && aiAuthorEmail.trim().length > 0) {
+		identityDir = mkdtempSync(join(tmpdir(), "pi-task-identity-"));
+		identityFile = join(identityDir, "jj-identity.toml");
+		writeFileSync(identityFile, aiIdentityToml(aiAuthorName, aiAuthorEmail), "utf-8");
+		try {
+			await createAiTaskBase(cwd, identityFile, spec.goal);
+		} catch (err) {
+			try {
+				rmSync(identityDir, { recursive: true, force: true });
+			} catch {
+				/* best effort */
+			}
+			throw err;
+		}
+	}
+	// The run's diff base: the recorded @ AFTER the AI base creation (the
+	// AI base is empty — diffing from it or from @- is equivalent).
+	const baseCommit = await headCommitId(cwd);
+
+	try {
+		// 1. The lane: submit → poll → collect → validate (typed failures;
+		// job state persisted to the metrics dir at every transition).
+		const lane = await runBatchLane({
+			spec,
+			model: batchCfg.model,
+			provider,
+			pollIntervalMs: batchCfg.pollIntervalMs,
+			jobTimeoutMs: batchCfg.jobTimeoutMs,
+			metricsDir,
+			project: projectName,
+			runId,
+			signal,
+			onUpdate,
+		});
+
+		// 2. Apply the validated file outputs to the working copy. The
+		// model's output is untrusted input — extractBatchFiles enforces
+		// repo-relative path safety; mergeBatchFiles rejects conflicting
+		// duplicate paths deterministically (never silent last-wins).
+		let files: BatchFile[] = [];
+		try {
+			files = mergeBatchFiles(
+				lane.items.map((rec) => ({
+					customId: rec.custom_id,
+					files: extractBatchFiles(lane.outputs[rec.custom_id], rec.custom_id),
+				})),
+			);
+		} catch (err) {
+			throw err instanceof BatchError
+				? err
+				: new BatchError("invalid_output", `batch output extraction failed: ${(err as Error).message}`);
+		}
+		for (const f of files) {
+			const target = join(cwd, f.path);
+			mkdirSync(dirname(target), { recursive: true });
+			writeFileSync(target, f.content, "utf-8");
+		}
+		onUpdate?.({ type: "batch_applied", files: files.map((f) => f.path) });
+
+		// 3. Commit the applied files. The working-copy commit @ is already
+		// AI-authored (createAiTaskBase), so `jj commit` keeps the AI
+		// identity — the same invariant as the single-worker path. No files
+		// → nothing to commit (verification decides the outcome).
+		let commitIds: string[] = [];
+		if (files.length > 0) {
+			const commit = await execJj(["commit", "-m", `batch(task): ${spec.goal}`], cwd);
+			if (commit.code !== 0) {
+				throw new Error(`batch commit failed (${commit.code}): ${commit.stderr.trim()}`);
+			}
+			const id = await execJj(
+				["log", "-r", "@-", "-T", "commit_id", "--no-graph", "--ignore-working-copy"],
+				cwd,
+			);
+			if (id.code === 0 && /^[0-9a-f]{40}$/.test(id.stdout.trim())) {
+				commitIds = [id.stdout.trim()];
+			}
+		}
+
+		// 4. Verification (bash hard gate, zero tokens) on the applied tree.
+		const verification = await runVerification(spec.verification, cwd, verifyTimeout, signal);
+
+		// 5. Metrics: ONE RunManifest — phases.execute is the lane's
+		// aggregate usage (turns = items, edits = applied files, duration =
+		// the lane's wall time), verify.source "batch", config carries the
+		// channel. Diff stats over baseCommit..@- (best effort).
+		const diffStat = await computeDiffStatBestEffort(cwd, baseCommit);
+		const manifest = buildRunManifest({
+			runId,
+			specMarkdown,
+			requirements: spec.requirements.length,
+			config: {
+				prewalkModel: batchCfg.model,
+				executeModel: batchCfg.model,
+				reviewModel: batchCfg.model,
+				reviewForked: false,
+				shape: "batch",
+				channel: "batch",
+				budget,
+				checklist: false,
+				swapTrigger: "none",
+			},
+			phases: {
+				prewalk: null,
+				execute: {
+					model: batchCfg.model,
+					turns: lane.items.length,
+					tokens_in: lane.usage.prompt_tokens,
+					tokens_out: lane.usage.completion_tokens,
+					reads: 0,
+					edits: files.length,
+					duration_ms: lane.durationMs,
+					cost_usd: lane.usage.cost_usd,
+				},
+				verify: {
+					passed: verification.passed,
+					commands: verification.commands,
+					duration_ms: verification.duration_ms,
+					source: "batch",
+					timed_out: verification.timed_out,
+				},
+				review: null,
+				fixLoop: { iterations: 0, cost_usd: 0 },
+			},
+			durationMs: Date.now() - runStartMs,
+			readDuplicationTokens: 0,
+			receivedAt,
+			dispatchedAt: new Date().toISOString(),
+			completedAt: new Date().toISOString(),
+			mainSessionTokens,
+			filesChanged: files.map((f) => f.path),
+			insertions: diffStat.insertions,
+			deletions: diffStat.deletions,
+		});
+		const manifestPath = metricsDir
+			? writeManifest(manifest, { metricsDir, project: projectName })
+			: undefined;
+
+		// The synthesized worker result: the lane has no session — usage is
+		// the lane's aggregate, turns = items, edits = applied files.
+		const worker: WorkerResult = {
+			yield: {
+				files_changed: files.map((f) => f.path),
+				summary:
+					`batch lane: ${lane.items.length}/${lane.items.length} item(s) collected via ` +
+					`${batchCfg.model} (job ${lane.jobId}) — ${files.length} file(s) applied`,
+				commit_ids: commitIds,
+				deviations: [],
+			},
+			usage: {
+				turns: lane.items.length,
+				tokens_in: lane.usage.prompt_tokens,
+				tokens_out: lane.usage.completion_tokens,
+				cache_read: 0,
+				cache_write: 0,
+				cost_usd: lane.usage.cost_usd,
+				reads: 0,
+				edits: files.length,
+			},
+			exitCode: 0,
+			reads: [],
+			turnUsage: [],
+		};
+
+		return {
+			success: verification.passed,
+			commits: commitIds,
+			files_changed: files.map((f) => f.path),
+			tests: verification.passed ? "passing" : "failing",
+			spec,
+			worker,
+			verification,
+			// A requested review is single-turn-incompatible — surface that it
+			// was skipped (todo #73: no console output; the flag carries it).
+			...(reviewRequested ? { reviewSkipped: true } : {}),
+			batch: { jobId: lane.jobId, model: batchCfg.model, items: lane.items.length },
+			manifest,
+			manifestPath,
+			durationMs: Date.now() - runStartMs,
+		};
+	} catch (err) {
+		// Typed + recoverable failure: the failure artifact carries the
+		// cause (the BatchError message names the job id) AND the job-state
+		// file path — the recovery handle (resume polling an aborted/
+		// timed-out job; resubmit only the failed items).
+		if (err instanceof BatchError) {
+			const statePath = metricsDir ? batchJobStatePath(metricsDir, projectName, runId) : undefined;
+			const recovery = statePath
+				? `Batch lane failure — recover from the job-state file:\n  ${statePath}\n` +
+					(err.code === "aborted" || err.code === "poll_timeout"
+						? "The job is still live provider-side (job id in the state file) — poll it later, or run a new batch lane and compare.\n"
+						: err.code === "items_incomplete"
+							? "The job completed but some items failed validation — resubmit ONLY the failed items (per-item statuses in the state file).\n"
+							: "The job did not produce a manifest — fix the cause and resubmit.\n")
+				: undefined;
+			writeFailureArtifactBestEffort({
+				err,
+				kind: "batch",
+				metricsDir,
+				project: projectName,
+				specMarkdown,
+				tier: budget,
+				recovery,
+			});
+		}
+		throw err;
+	} finally {
+		// Restore the working copy to the USER's identity (mirrors
+		// executeSingle): `jj new` opens a fresh empty commit; the leftover
+		// empty AI-authored WC (or the empty AI base when nothing was
+		// committed) is abandoned. Best effort — never masks the run's
+		// outcome.
+		if (identityDir) {
+			try {
+				await execJj(["new"], cwd);
+				const leftover = (
+					await execJj(["log", "-r", "@-", "-T", "if(empty, 'EMPTY', 'X')", "--no-graph"], cwd)
+				).stdout.trim();
+				if (leftover === "EMPTY") await execJj(["abandon", "@-"], cwd);
+			} catch {
+				/* best effort */
+			}
+			try {
+				rmSync(identityDir, { recursive: true, force: true });
+			} catch {
+				/* best effort */
+			}
+		}
+	}
+}
+
 /**
  * Single-worker path. Without `review` this is byte-for-byte the Phases 2-5
  * behavior (spawn → verify once → return). With `review`, the worker persists
@@ -1856,6 +2267,7 @@ async function executeSingle(
 		metricsDir?: string;
 		project?: string;
 		preserveSessions?: boolean;
+		runId?: string;
 		budget?: string;
 		sandbox: ResolvedSandbox;
 		/** AI commit identity (todo #84) — already formatted ({model} resolved). */
@@ -1871,7 +2283,7 @@ async function executeSingle(
 		taskPrompt, usePrewalk, prewalkModel, executeModel, systemPrompt, signal, onSwap, onUpdate,
 		verificationTimeoutMs, workerTimeoutMs, toolTimeoutMs, spec, specMarkdown, review, reviewModel,
 		persona, shape, maxFixIterations, metricsDir, project, preserveSessions, budget, sandbox,
-		aiAuthorName, aiAuthorEmail,
+		runId, aiAuthorName, aiAuthorEmail,
 	} = opts;
 
 	const workerSystemPrompt = systemPrompt ?? DEFAULT_WORKER_SYSTEM_PROMPT;
@@ -2016,7 +2428,7 @@ async function executeSingle(
 					// recovery story.
 					const worker = abortedWorkerResult();
 					const metrics = finalizeMetrics({
-						cwd, project, metricsDir, preserveSessions, worker,
+						cwd, project, metricsDir, preserveSessions, runId, worker,
 						assemble: {
 							specMarkdown,
 							requirements: spec.requirements.length,
@@ -2066,6 +2478,7 @@ async function executeSingle(
 			writeFailureArtifactBestEffort({
 				err,
 				kind: "worker",
+				runId,
 				metricsDir,
 				project,
 				specMarkdown,
@@ -2085,7 +2498,7 @@ async function executeSingle(
 			// leaves @ as an empty working-copy commit after its last `jj commit`).
 			const diffStat = await computeDiffStatBestEffort(cwd, baseCommit);
 			const metrics = finalizeMetrics({
-				cwd, project, metricsDir, preserveSessions, worker,
+				cwd, project, metricsDir, preserveSessions, runId, worker,
 				assemble: {
 					specMarkdown,
 					requirements: spec.requirements.length,
@@ -2190,6 +2603,7 @@ async function executeSingle(
 				writeFailureArtifactBestEffort({
 					err,
 					kind: "review",
+					runId,
 					metricsDir,
 					project,
 					specMarkdown,
@@ -2228,6 +2642,7 @@ async function executeSingle(
 					writeFailureArtifactBestEffort({
 						err,
 						kind: "worker",
+						runId,
 						metricsDir,
 						project,
 						specMarkdown,
@@ -2248,7 +2663,7 @@ async function executeSingle(
 		// pure. files_changed is the deduped union incl. fix workers.
 		const diffStat = parseDiffStat(diff);
 		const metrics = finalizeMetrics({
-			cwd, project, metricsDir, preserveSessions, worker,
+			cwd, project, metricsDir, preserveSessions, runId, worker,
 			assemble: {
 				specMarkdown,
 				requirements: spec.requirements.length,

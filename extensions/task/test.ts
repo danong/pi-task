@@ -25,6 +25,7 @@ import { runTests as runPruneTests } from "./test-prune.ts";
 import { runTests as runPersonasTests } from "./test-personas.ts";
 import { runTests as runReviewTests } from "./test-review.ts";
 import { runTests as runMetricsTests } from "./test-metrics.ts";
+import { runTests as runBatchTests } from "./test-batch.ts";
 import { runTests as runWorkerTests } from "./test-worker.ts";
 import { runTests as runPrewalkTests } from "./test-prewalk.ts";
 import { runTests as runChecklistTests } from "./test-checklist.ts";
@@ -34,6 +35,7 @@ import { runTests as runWorkspaceTests } from "./test-workspace.ts";
 import { runTests as runSandboxTests } from "./test-sandbox.ts";
 import { runTests as runRepoMapTests } from "./test-repo-map.ts";
 import { runTests as runIndexTests } from "./test-index.ts";
+import { runTests as runRunnerTests } from "./test-runner.ts";
 import { runTests as runBenchRegressionTests } from "./test-bench-regression.ts";
 
 const SUITES: Array<{ name: string; run: () => Promise<void> }> = [
@@ -44,6 +46,7 @@ const SUITES: Array<{ name: string; run: () => Promise<void> }> = [
 	{ name: "personas", run: runPersonasTests },
 	{ name: "review", run: runReviewTests },
 	{ name: "metrics", run: runMetricsTests },
+	{ name: "batch", run: runBatchTests },
 	{ name: "worker", run: runWorkerTests },
 	{ name: "prewalk", run: runPrewalkTests },
 	{ name: "checklist", run: runChecklistTests },
@@ -53,6 +56,7 @@ const SUITES: Array<{ name: string; run: () => Promise<void> }> = [
 	{ name: "sandbox", run: runSandboxTests },
 	{ name: "repo-map", run: runRepoMapTests },
 	{ name: "index", run: runIndexTests },
+	{ name: "runner", run: runRunnerTests },
 	{ name: "bench-regression", run: runBenchRegressionTests },
 ];
 

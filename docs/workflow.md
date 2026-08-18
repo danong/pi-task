@@ -177,6 +177,11 @@ late aborts ("work committed, finalization incomplete") attempt finalization
   breakdown, tokens, cost, wall-clock latency, merge record, verification
   provenance); `/task-stats` summarizes them. Failure artifacts (`.failure.json`)
   carry the recovery guide.
+- **Detached dispatch** — the `task` tool's `detach: true` returns a `run_id`
+  immediately while the run executes in a child process (`extensions/task/runner.ts`)
+  with the same spec/options and the same bounds; `/task-status <run_id>` queries
+  the run's live heartbeat or its final manifest / failure artifact (the same
+  files a blocking run writes, keyed by the returned run_id).
 
 ## Shared domain language (CONTEXT.md)
 

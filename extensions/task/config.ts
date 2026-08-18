@@ -169,6 +169,20 @@ export const DEFAULT_TASK_SHAPES: Record<string, TaskShape> = {
 		reviewModel: "prewalk",
 		review: [],
 	},
+	/** Batch lane (M2): the run is an ASYNC batch job, not an interactive
+	 *  session — one typed single-turn prompt per requirement on the [batch]
+	 *  model (config/task.toml), outputs validated against their contracts
+	 *  and applied as files, no tool loop, no review (batch.ts runBatchLane).
+	 *  The batch channel also unbinds the interactive watchdogs
+	 *  (channelWatchdogWindows) — job polling replaces the watchers. */
+	batch: {
+		channel: "batch",
+		prewalk: false,
+		swap: false,
+		workModel: "execute",
+		reviewModel: "review",
+		review: [],
+	},
 };
 
 /** Interactive watchdog windows for a channel (flex: synchronous
@@ -254,6 +268,46 @@ export const DEFAULT_BUDGET_TIERS: Record<BudgetTier, BudgetTierConfig> = {
 
 /** Default tier for auto/unset — the design doc's `[defaults] budget = "full"`. */
 export const DEFAULT_BUDGET_TIER: BudgetTier = "full";
+
+// ─── Batch lane (M2) ───────────────────────────────────────────────
+
+/**
+ * Default batch-lane model id — OpenRouter's async batch lane (`:batch`
+ * suffix, ~50% off list price, up to ~24h turnaround). The orchestrator's
+ * batch channel (TaskShape.channel === "batch") submits the run's typed
+ * single-turn prompts to this model and polls the job to completion
+ * (extensions/task/batch.ts).
+ */
+export const DEFAULT_BATCH_MODEL = "google/gemini-3.7-flash:batch";
+
+/** Default poll interval while a batch job is in flight (30s). */
+export const DEFAULT_BATCH_POLL_INTERVAL_MS = 30_000;
+
+/** Default wall budget for polling one batch job to a terminal state
+ *  (24h — the batch lane's advertised turnaround). The job itself keeps
+ *  running provider-side on timeout; the job-state file records the
+ *  job id so polling can resume (typed, recoverable failure). */
+export const DEFAULT_BATCH_JOB_TIMEOUT_MS = 24 * 60 * 60_000;
+
+/**
+ * Batch-lane configuration ([batch] section in task.toml). The channel
+ * wiring lives on the shape (TaskShape.channel === "batch"); this table
+ * supplies the model id + polling budgets the lane runs with.
+ */
+export interface BatchLaneConfig {
+	/** Batch model id (OpenRouter `:batch` model). */
+	model: string;
+	/** Poll interval (ms) while the job is in flight. */
+	pollIntervalMs: number;
+	/** Wall budget (ms) for polling the job to a terminal state. */
+	jobTimeoutMs: number;
+}
+
+export const DEFAULT_BATCH_CONFIG: BatchLaneConfig = {
+	model: DEFAULT_BATCH_MODEL,
+	pollIntervalMs: DEFAULT_BATCH_POLL_INTERVAL_MS,
+	jobTimeoutMs: DEFAULT_BATCH_JOB_TIMEOUT_MS,
+};
 
 // ─── AI commit identity (todo #84) ───────────────────────────────────
 
@@ -359,6 +413,9 @@ export interface TaskConfig {
 	/** Run-pipeline shapes ([shapes.*]): the phase structure, swap policy,
 	 *  model slots, and review axes — separated from the model tiers. */
 	shapes: Record<string, TaskShape>;
+	/** Batch lane ([batch]): the async job channel's model id + polling
+	 *  budgets (M2 — consumed when a shape's channel is "batch"). */
+	batch: BatchLaneConfig;
 	sandbox: SandboxConfig;
 }
 
@@ -374,6 +431,7 @@ export const DEFAULT_TASK_CONFIG: TaskConfig = {
 	tiers: DEFAULT_BUDGET_TIERS,
 	tierOrder: [...BUDGET_TIERS],
 	shapes: DEFAULT_TASK_SHAPES,
+	batch: DEFAULT_BATCH_CONFIG,
 	sandbox: DEFAULT_SANDBOX_CONFIG,
 };
 
@@ -538,6 +596,15 @@ function loadShape(sections: TomlSections, name: string): TaskShape | undefined 
 		if (raw !== undefined) warn(`${label} ${key} must be "execute" | "prewalk" — using ${fallbackValue}`);
 		return fallbackValue;
 	};
+	// The REVIEW slot's full vocabulary includes "review" (the tier's review
+	// model — the code shape's default): the shipped [shapes.code] section
+	// declares it explicitly, so it must parse without a warning.
+	const reviewSlot = (key: string, fallbackValue: "review" | "prewalk"): "review" | "prewalk" => {
+		const raw = str(section, key);
+		if (raw === "review" || raw === "prewalk") return raw;
+		if (raw !== undefined) warn(`${label} ${key} must be "review" | "prewalk" — using ${fallbackValue}`);
+		return fallbackValue;
+	};
 	const channelRaw = str(section, "channel");
 	let channel: RunChannel = fallback.channel;
 	if (channelRaw === "sync" || channelRaw === "flex" || channelRaw === "batch") {
@@ -550,7 +617,7 @@ function loadShape(sections: TomlSections, name: string): TaskShape | undefined 
 		prewalk: b("prewalk", fallback.prewalk),
 		swap: b("swap", fallback.swap),
 		workModel: slot("work_model", fallback.workModel),
-		reviewModel: slot("review_model", fallback.reviewModel),
+		reviewModel: reviewSlot("review_model", fallback.reviewModel),
 		review: strArray(section, "review", label).length > 0 || section?.["review"] !== undefined
 			? strArray(section, "review", label)
 			: fallback.review,
@@ -590,6 +657,44 @@ function loadSandbox(sections: TomlSections): SandboxConfig {
 		network,
 		extraRoBinds: strArray(section, "extra_ro_binds", label),
 		extraRwBinds: strArray(section, "extra_rw_binds", label),
+	};
+}
+
+/**
+ * Load the [batch] table (M2) with per-field warn-and-fallback. A missing
+ * table degrades silently to DEFAULT_BATCH_CONFIG.
+ */
+function loadBatch(sections: TomlSections): BatchLaneConfig {
+	const section = asTable(sections["batch"]);
+	const fallback = DEFAULT_BATCH_CONFIG;
+	const label = "[batch]";
+
+	// model: non-empty string; present-but-invalid → warn + fallback.
+	const modelPresent = section?.["model"] !== undefined;
+	const modelRaw = str(section, "model");
+	let model = fallback.model;
+	if (modelPresent && (modelRaw === undefined || modelRaw.trim().length === 0)) {
+		warn(`${label} model must be a non-empty string — using ${fallback.model}`);
+	} else if (modelRaw !== undefined) {
+		model = modelRaw.trim();
+	}
+
+	// poll_interval_ms / job_timeout_ms: positive integer ms; invalid →
+	// warn + fallback (same policy as [defaults] tool_timeout_ms).
+	const ms = (key: string, fallbackValue: number): number => {
+		const present = section?.[key] !== undefined;
+		const raw = int(section, key);
+		if (present && (raw === undefined || raw <= 0)) {
+			warn(`${label} ${key} must be a positive integer (ms) — using ${fallbackValue}`);
+			return fallbackValue;
+		}
+		return raw ?? fallbackValue;
+	};
+
+	return {
+		model,
+		pollIntervalMs: ms("poll_interval_ms", fallback.pollIntervalMs),
+		jobTimeoutMs: ms("job_timeout_ms", fallback.jobTimeoutMs),
 	};
 }
 
@@ -725,6 +830,10 @@ export function loadTaskConfig(configPath?: string): TaskConfig {
 		aiAuthorEmail = emailRaw;
 	}
 
+	// [batch]: the batch lane's model id + polling budgets (M2); missing
+	// table → silent defaults.
+	const batch = loadBatch(sections);
+
 	// [sandbox]: worker sandbox policy; missing table → silent defaults.
 	const sandbox = loadSandbox(sections);
 
@@ -740,6 +849,7 @@ export function loadTaskConfig(configPath?: string): TaskConfig {
 		tiers,
 		tierOrder,
 		shapes,
+		batch,
 		sandbox,
 	};
 }
