@@ -310,7 +310,10 @@ export const PLAN_LINE_GOALS_MAX = 60;
  * max−3 chars + "…" when cut). Pure — tested hermetically.
  */
 export function truncateGoals(goals: string, max: number = PLAN_LINE_GOALS_MAX): string {
-	const g = goals.trim();
+	// Collapse whitespace (incl. newlines) to a single line FIRST: a
+	// multi-line goals statement must never embed a newline into the
+	// plan line or a notify message (the RPC crash vector).
+	const g = goals.replace(/\s+/g, " ").trim();
 	return g.length > max ? `${g.slice(0, max - 3)}…` : g;
 }
 

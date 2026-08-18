@@ -33,8 +33,11 @@ Create each with minimal stub content; the user fleshes them out later:
   bridge runs `mise run setup` then `verify` per project at startup):
   `setup` = `npm ci` gated on package.json/package-lock.json vs node_modules
   staleness; `verify` = a light toolchain gate; `test` = the test suite.
-- **`.pi/settings.json`** — `{"packages": [".."]}` so pi-task auto-registers
-  when the project is trusted.
+- **`.pi/settings.json`** — `{}` by default. The `{"packages": [".."]}`
+  self-registration is ONLY valid in the pi-task repo itself (".." is its
+  package root); in a consuming project it makes pi try to load the project
+  directory as an extension, which fails and breaks the session. Consuming
+  projects get pi-task from user settings (or a real package path).
 
 ## Ask before environment setup
 

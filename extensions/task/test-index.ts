@@ -741,6 +741,9 @@ function testRunPlan(errors: string[]): void {
 	check(renderGoalsClause("keep it small") === "goals: keep it small", "goals clause prefix");
 	check(truncateGoals("a".repeat(60)) === "a".repeat(60) && truncateGoals("a".repeat(61)) === "a".repeat(57) + "…",
 		"truncation boundary: 60 chars kept, 61+ cut with ellipsis");
+	check(truncateGoals("multi\nline\ngoal statement") === "multi line goal statement",
+		"newlines collapse to a single line (no embedded newline in plan line/notify)");
+	check(truncateGoals("  padded  goal  ") === "padded goal", "whitespace collapsed + trimmed");
 	check(!renderPlanLine(full).includes("goals:"), "absent goals → no goals clause (backward compatible)");
 
 	console.log("✓ buildRunPlan: phase sequence + per-phase models; tier-gated omissions");

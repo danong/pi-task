@@ -81,6 +81,7 @@ import {
 	buildRunPlan,
 	createProgressState,
 	formatDuration,
+	truncateGoals,
 } from "./progress.ts";
 import { buildMap, formatMapOverview, formatMapPrompt, loadCachedMap, loadRepoMapConfig, sliceRelevant } from "./repo-map.ts";
 import type { ReviewResult } from "./schemas/findings.ts";
@@ -1098,13 +1099,13 @@ export default function (pi: ExtensionAPI) {
 			if (arg === "") {
 				const goals = readGoals(ctx);
 				ctx.ui.notify(
-					goals ? `goals: ${goals}` : "no goals set — /goals <statement> sets them",
+					goals ? `goals: ${truncateGoals(goals)}` : "no goals set — /goals <statement> sets them",
 					"info",
 				);
 				return;
 			}
 			pi.appendEntry(GOALS_ENTRY_TYPE, { goals: arg });
-			ctx.ui.notify(`goals: ${arg}`, "info");
+			ctx.ui.notify(`goals: ${truncateGoals(arg)}`, "info");
 		},
 	});
 
