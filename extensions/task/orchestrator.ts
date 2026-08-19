@@ -1023,6 +1023,7 @@ function assembleManifest(opts: {
 			reviewModel: opts.reviewModel,
 			reviewForked: opts.reviewForked,
 			shape: opts.shape?.name ?? "code",
+			channel: opts.shape?.channel ?? "sync",
 			budget: opts.budget,
 			sandbox: opts.sandbox,
 		},

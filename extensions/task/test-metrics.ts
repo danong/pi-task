@@ -27,6 +27,7 @@ import {
 	writeManifest,
 	copySessionTraces,
 	deriveProjectName,
+	recentCompletions,
 	summarizeRuns,
 	renderTaskStats,
 	formatDuration,
@@ -563,7 +564,47 @@ export async function runTests(): Promise<void> {
 	if (errors.length > 0) {
 		throw new Error("test-metrics failed:\n  ✗ " + errors.join("\n  ✗ "));
 	}
-	console.log("✓ metrics: hashSpec, generateRunId, countByPriority, buildRunManifest, phase split, aggregation, duplication, storage");
+	
+// ─── recentCompletions: derived from manifests + failure artifacts (M3) ───
+async function testRecentCompletions(errors: string[]): Promise<void> {
+	const check = (cond: boolean, msg: string): void => {
+		if (!cond) errors.push(msg);
+	};
+	const metricsDir = mkdtempSync(join(tmpdir(), "pi-task-recent-"));
+	try {
+		// Completed manifest (with channel) + a failure artifact.
+		const proj = join(metricsDir, "demo");
+		mkdirSync(proj, { recursive: true });
+		const now = Date.now();
+		const manifest = {
+			run_id: "run1", config: { channel: "flex" }, phases: {}, totals: {},
+		};
+		const mtime = new Date(now - 60_000);
+		const write = (name: string, body: string): void => {
+			const path = join(proj, name);
+			writeFileSync(path, body, "utf-8");
+			try { const s = statSync(path); /* touch */ } catch { /* ignore */ }
+		};
+		write("run1.json", JSON.stringify(manifest));
+		write("run2.failure.json", "{}");
+		write("garbage.json", "{not json");
+
+		const recent = recentCompletions(metricsDir, 5);
+		check(recent.length === 2, `derived 2 completions, got ${recent.length}`);
+		check(recent[0].status === "failed" && recent[0].project === "demo" && recent[0].runId === "run2",
+			"failure artifact surfaces as a failed completion");
+		const done = recent.find((c) => c.runId === "run1");
+		check(done?.status === "completed" && done?.channel === "flex", `manifest channel surfaces, got ${JSON.stringify(done)}`);
+		// limit + empty
+		check(recentCompletions(metricsDir, 1).length === 1, "limit respected");
+		check(recentCompletions(join(metricsDir, "nope")).length === 0, "missing dir → empty");
+	} finally {
+		rmSync(metricsDir, { recursive: true, force: true });
+	}
+	console.log("✓ recentCompletions: manifests + failures derived, channel surfaced (M3)");
+}
+await testRecentCompletions(errors);
+console.log("✓ metrics: hashSpec, generateRunId, countByPriority, buildRunManifest, phase split, aggregation, duplication, storage");
 }
 
 // Direct execution support: `npx tsx extensions/task/test-metrics.ts`

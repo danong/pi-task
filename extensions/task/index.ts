@@ -97,7 +97,7 @@ import {
 } from "./progress.ts";
 import { buildMap, formatMapOverview, formatMapPrompt, loadCachedMap, loadRepoMapConfig, sliceRelevant } from "./repo-map.ts";
 import type { ReviewResult } from "./schemas/findings.ts";
-import { renderTaskStats, runLatencyMs, summarizeRuns, generateRunId, deriveProjectName, buildFailureArtifact, writeFailureArtifact } from "./metrics.ts";
+import { recentCompletions, renderTaskStats, runLatencyMs, summarizeRuns, generateRunId, deriveProjectName, buildFailureArtifact, writeFailureArtifact } from "./metrics.ts";
 import type { RunManifest } from "./metrics.ts";
 import {
 	buildRunRequest,
@@ -1286,7 +1286,10 @@ export default function (pi: ExtensionAPI) {
 		handler: async (args, ctx) => {
 			const project = (args ?? "").trim() || undefined;
 			const summary = summarizeRuns(METRICS_DIR, project);
-			ctx.ui.notify(renderTaskStats(summary), "info");
+			const recent = recentCompletions(METRICS_DIR, 5)
+				.filter((c) => !project || c.project === project)
+				.map((c) => `  ${c.status === "failed" ? "✗" : "✓"} [${c.channel}] ${c.project}/${c.runId} (${formatDuration(Date.now() - c.completedAtMs)} ago)`);
+			ctx.ui.notify([...renderTaskStats(summary), ...(recent.length ? ["recent completions:", ...recent] : [])], "info");
 		},
 	});
 

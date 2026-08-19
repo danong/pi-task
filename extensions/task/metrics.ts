@@ -27,7 +27,7 @@
  */
 
 import { createHash, randomBytes } from "node:crypto";
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import type { Finding } from "./schemas/findings.ts";
 import type { ReadRecord, WorkerResult, WorkerUsage } from "./worker.ts";
@@ -753,6 +753,54 @@ export function summarizeRuns(metricsDir: string, project?: string): RunSummary 
 		byTier,
 		byProject,
 	};
+}
+
+/** One terminal run, derived from the manifests/failure artifacts — the
+ *  "recent completions" view (M3): no separate record to write or go
+ *  stale, the manifests are the source of truth. Pure — tested. */
+export interface CompletionView {
+	runId: string;
+	project: string;
+	channel: string;
+	status: "completed" | "failed";
+	path: string;
+	completedAtMs: number;
+}
+
+/** The most recent terminal runs across projects, newest first. Derives
+ *  from <metricsDir>/<project>/*.json + *.failure.json mtimes. */
+export function recentCompletions(metricsDir: string, limit = 5): CompletionView[] {
+	const out: CompletionView[] = [];
+	if (!existsSync(metricsDir)) return out;
+	for (const project of readdirSync(metricsDir, { withFileTypes: true })) {
+		if (!project.isDirectory()) continue;
+		const dir = join(metricsDir, project.name);
+		for (const name of readdirSync(dir)) {
+			if (!name.endsWith(".json") || name.endsWith(".tmp")) continue;
+			const failed = name.endsWith(".failure.json");
+			const runId = failed ? name.slice(0, -".failure.json".length) : name.slice(0, -".json".length);
+			const path = join(dir, name);
+			let channel = "sync";
+			if (!failed) {
+				try {
+					const m = JSON.parse(readFileSync(path, "utf-8")) as { config?: { channel?: string } };
+					channel = m.config?.channel ?? "sync";
+				} catch {
+					/* unreadable manifest — keep sync */
+				}
+			}
+			out.push({
+				runId,
+				project: project.name,
+				channel,
+				status: failed ? "failed" : "completed",
+				path,
+				completedAtMs: statSync(path).mtimeMs,
+			});
+		}
+	}
+	out.sort((a, b) => b.completedAtMs - a.completedAtMs);
+	return out.slice(0, limit);
 }
 
 /** Compact human duration, e.g. "42s", "7m12s", "1h2m". */
