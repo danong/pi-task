@@ -33,6 +33,7 @@ import {
 	mergeBatchFiles,
 	readBatchJobState,
 	requirementId,
+	resumeBatchJob,
 	runBatchLane,
 	stripCodeFences,
 	validateBatchOutput,
@@ -315,6 +316,67 @@ async function testLaneRoundTrip(errors: string[]): Promise<void> {
 	}
 	console.log("✓ fake provider round-trip: submit → poll → collect → validated outputs + persisted state");
 }
+
+// ─── Recovery: resume an existing job + resubmit the failed subset (P2) ──
+
+async function testBatchRecovery(errors: string[]): Promise<void> {
+	const check = (cond: boolean, msg: string): void => {
+		if (!cond) errors.push(msg);
+	};
+	const dir = mkdtempSync(join(tmpdir(), "pi-task-batch-rec-"));
+	try {
+		const spec = specWith("- R1: one\n- R2: two", "true");
+		const out = (req: string) =>
+			JSON.stringify({ requirement: req, files: [{ path: req + ".txt", content: "1" }], summary: req });
+		// 1. existingJobId resumes the SAME provider job on the same provider
+		//    (a full re-run would double-spend the same work): the first run
+		//    submits once; re-running with existingJobId must NOT submit again.
+		{
+			const provider = new FakeBatchProvider({ outputs: { R1: out("R1"), R2: out("R2") } });
+			await runBatchLane({ spec, model: "fake/batch", provider, pollIntervalMs: 1, sleep: noSleep });
+			check(provider.submitCalls === 1, "first run submits once");
+			const lane = await runBatchLane({
+				spec, model: "fake/batch", provider, pollIntervalMs: 1, sleep: noSleep,
+				existingJobId: provider.jobId!,
+			});
+			check(provider.submitCalls === 1, `resume must not re-submit, got ${provider.submitCalls} submits`);
+			check(lane.jobId === provider.jobId, "resume reuses the existing provider job id");
+			check(lane.items.length === 2 && lane.items.every((i) => i.status === "completed"),
+				"resumed job collects to terminal state");
+		}
+		// 2. resumeBatchJob reads the persisted state + resumes that job id.
+		{
+			const metricsDir = join(dir, "results");
+			const provider = new FakeBatchProvider({ outputs: { R1: out("R1"), R2: out("R2") } });
+			const first = await runBatchLane({
+				spec, model: "fake/batch", provider, pollIntervalMs: 1, sleep: noSleep, metricsDir, project: "p",
+			});
+			const beforeSubmit = provider.submitCalls;
+			const resumed = await resumeBatchJob({
+				metricsDir, project: "p", runId: first.runId, spec, model: "fake/batch", provider,
+				pollIntervalMs: 1, sleep: noSleep,
+			});
+			check(provider.submitCalls === beforeSubmit, "resumeBatchJob re-drives the same job, no re-submit");
+			check(resumed.jobId === first.jobId && resumed.items.length === 2,
+				"resumeBatchJob reuses the persisted provider job id");
+		}
+		// 3. resubmitCustomIds re-submits ONLY the failed set (no re-send of
+		//    the whole batch).
+		{
+			const provider = new FakeBatchProvider({ outputs: { R2: out("R2") } });
+			const lane = await runBatchLane({
+				spec, model: "fake/batch", provider, pollIntervalMs: 1, sleep: noSleep,
+				resubmitCustomIds: ["R2"],
+			});
+			check(provider.submitCalls === 1 && lane.items.length === 1 && lane.items[0].custom_id === "R2",
+				"resubmit only the failed items, got " + lane.items.length);
+		}
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+	console.log("✓ batch recovery: resume existing job + resubmit failed subset (P2)");
+}
+
 
 // ─── Typed lane failures ────────────────────────────────────────────
 
@@ -635,6 +697,33 @@ async function testExecuteBatchLane(errors: string[]): Promise<void> {
 		});
 		check(result2.reviewSkipped === true, "review on the batch channel → reviewSkipped");
 
+		// Overwrite guard (review P2): an item targeting an EXISTING file is
+		// refused — context-free single-turn output must never silently
+		// replace content the model never saw (greenfield-only).
+		{
+			const provider3 = new FakeBatchProvider({
+				outputs: {
+					R1: JSON.stringify({ requirement: "R1", files: [{ path: "hello.txt", content: "clobber" }], summary: "x" }),
+				},
+			});
+			let threw: string | null = null;
+			try {
+				await executeTask({
+					cwd: dir,
+					model: "provider/exec",
+					spec: "## Goal\nG\n## Requirements\n- R1: one\n## Verification\ntrue",
+					shape: BATCH_SHAPE,
+					batchProvider: provider3,
+					batch: { model: "m", pollIntervalMs: 1, jobTimeoutMs: 60_000 },
+				});
+			} catch (err) {
+				threw = err instanceof BatchError ? err.code : (err as Error).message;
+			}
+			check(threw === "existing_file", `existing-file overwrite refused (P2), got ${threw}`);
+			check(readFileSync(join(dir, "hello.txt"), "utf-8") === "hi",
+				"existing file content untouched after the refused overwrite");
+		}
+
 		// Failure: contract-violating output → typed BatchError + failure
 		// artifact (kind batch) with the recovery hint; working copy restored.
 		const failDir = mkdtempSync(join(tmpdir(), "pi-task-batch-failrun-"));
@@ -715,6 +804,7 @@ export async function runTests(): Promise<void> {
 	testItemBuilding(errors);
 	testJobState(errors);
 	await testLaneRoundTrip(errors);
+	await testBatchRecovery(errors);
 	await testLaneFailures(errors);
 	testOpenRouterWire(errors);
 	testRouteRun(errors);

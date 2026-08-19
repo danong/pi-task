@@ -709,6 +709,15 @@ export interface BatchLaneOptions {
 	project?: string;
 	/** Run id (default: generated). The job-state file is keyed on it. */
 	runId?: string;
+	/** Recovery (review P2): resume polling/collection of an ALREADY
+	 *  submitted provider job instead of submitting a new one — avoids the
+	 *  double-spend a full re-run would incur. The job must have been
+	 *  created from the same spec. */
+	existingJobId?: string;
+	/** Recovery: submit a NEW job carrying only the given failed customIds
+	 *  (from an items_incomplete state) rather than re-submitting every
+	 *  item. Ignored when existingJobId is set. */
+	resubmitCustomIds?: string[];
 	/** Abort signal — an abort mid-flight records the job state as
 	 *  "aborted" (typed + recoverable) and throws BatchError("aborted"). */
 	signal?: AbortSignal;
@@ -773,7 +782,12 @@ export async function runBatchLane(opts: BatchLaneOptions): Promise<BatchLaneRes
 	const now = opts.now ?? Date.now;
 	const startedMs = now();
 	const project = opts.project ?? "batch";
-	const items = buildBatchItems(opts.spec);
+	const allItems = buildBatchItems(opts.spec);
+	// Recovery: resubmit only the failed customIds (no re-send of the batch).
+	const items =
+		opts.resubmitCustomIds && !opts.existingJobId
+			? allItems.filter((i) => opts.resubmitCustomIds!.includes(i.customId))
+			: allItems;
 
 	const persist = (state: BatchJobState): void => {
 		if (!opts.metricsDir) return;
@@ -797,16 +811,22 @@ export async function runBatchLane(opts: BatchLaneOptions): Promise<BatchLaneRes
 	let state = makeState("submitting");
 	persist(state);
 
-	// 1. Submit.
+	// 1. Submit — or resume an existing provider job (recovery: no re-submit,
+	// so no double-spend for the same work; the caller re-drives the same
+	// spec through the same jobId via resumeBatchJob).
 	let jobId: string;
-	try {
-		const submitted = await opts.provider.submit(opts.model, items);
-		jobId = submitted.jobId;
-	} catch (err) {
-		persist({ ...state, status: "failed", updated_at: stamp() });
-		throw err instanceof BatchError
-			? err
-			: new BatchError("submit_failed", `batch submit failed: ${(err as Error).message}`);
+	if (opts.existingJobId) {
+		jobId = opts.existingJobId;
+	} else {
+		try {
+			const submitted = await opts.provider.submit(opts.model, items);
+			jobId = submitted.jobId;
+		} catch (err) {
+			persist({ ...state, status: "failed", updated_at: stamp() });
+			throw err instanceof BatchError
+				? err
+				: new BatchError("submit_failed", `batch submit failed: ${(err as Error).message}`);
+		}
 	}
 	state = { ...state, job_id: jobId, status: "in_progress", updated_at: stamp() };
 	persist(state);
@@ -923,3 +943,55 @@ export async function runBatchLane(opts: BatchLaneOptions): Promise<BatchLaneRes
 		durationMs: now() - startedMs,
 	};
 }
+
+/**
+ * Recovery entrypoint (review P2): resume an aborted/timed-out batch job
+ * from its persisted job-state file, re-driving the SAME provider job to a
+ * terminal phase and collecting the results — no new submission, so no
+ * double-spend. The caller re-supplies the original spec (a detached run
+ * keeps it in its <run_id>.request.json sidecar next to the batch state).
+ *
+ * Throws BatchError("not_found") when no state file exists for the run.
+ */
+export async function resumeBatchJob(
+	opts: {
+		metricsDir: string;
+		project: string;
+		runId: string;
+		/** The ORIGINAL spec the job was submitted with. */
+		spec: Spec;
+		/** Batch model id (config [batch].model). */
+		model: string;
+		provider: BatchProvider;
+		pollIntervalMs?: number;
+		jobTimeoutMs?: number;
+		signal?: AbortSignal;
+		onUpdate?: (event: BatchLaneUpdate) => void;
+		sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
+		now?: () => number;
+	},
+): Promise<BatchLaneResult> {
+	const state = readBatchJobState(opts.metricsDir, opts.project, opts.runId);
+	if (!state?.job_id) {
+		throw new BatchError(
+			"not_found",
+			`no recoverable batch job for ${opts.project}/${opts.runId} — nothing to resume`,
+		);
+	}
+	return runBatchLane({
+		spec: opts.spec,
+		model: opts.model,
+		provider: opts.provider,
+		metricsDir: opts.metricsDir,
+		project: opts.project,
+		runId: opts.runId,
+		existingJobId: state.job_id,
+		pollIntervalMs: opts.pollIntervalMs,
+		jobTimeoutMs: opts.jobTimeoutMs,
+		signal: opts.signal,
+		onUpdate: opts.onUpdate,
+		sleep: opts.sleep,
+		now: opts.now,
+	});
+}
+

@@ -353,3 +353,74 @@ a `[jobs.*]` TOML round-trip, a scheduler-request model assertion, and
 `executeTask(batch, runId)` id-stability — because every finding above sat in
 a seam that no hermetic test crosses. Until then, treat the batch lane as
 interactive-detached-only and document the 24h-checkout-exposure caveat.
+
+## Resolution (2026-08-19)
+
+All P0–P2 findings addressed; this doc is the point-in-time review, so the
+details above are as-found, and this section records what changed after.
+
+### P0 — `[jobs.*]` never loaded
+Fixed with the one-line guard inversion in `config.ts`
+(`parent !== null` → `parent === null`). Probe now returns the job; the
+scheduler sees `TaskConfig.jobs`. Commit `c20c98df`.
+
+### P1 — scheduler flex request unrunnable
+`buildJobRequest` now carries the tier's real `executeModel`/`prewalkModel`/
+`reviewModel`, the tier wall, the shared tool timeout, and the AI identity
+into the run request — instead of `model: <tier name>`. (Request-shape
+regression assertions added in `test-scheduler.ts`.)
+
+### P1 — scheduler batch submit fire-and-forget with model `"batch"`
+`dispatchJob` no longer submits a bare batch job. Flex AND batch dispatch
+through the detached runner; the child's orchestrator routes by the shape's
+channel and `executeBatchLane` (which reads `config.batch.model`) runs the
+full lane — poll, collect, validate, apply, commit, verify, manifest.
+
+### P1 — batch runs lose their run_id
+`executeTask`'s batch branch passes `runId` into `executeBatchLane`, which
+uses `opts.runId ?? generateRunId()` — the manifest, job-state file, and
+failure artifact all land under the ONE injected id.
+
+### P1 — `recentCompletions` surfaces sidecars as completions
+Now skips `<run_id>.request.json` / `.live.json` / `.batch.json` (and their
+failure variants), matching `summarizeRuns`. Regression: a RUNNING detached
+run no longer shows as the newest completion in `/task-stats`.
+
+### P2 — `--loop --dry-run` dispatched real jobs
+The loop branch now passes `--dry-run` through.
+
+### P2 — 24h checkout exposure
+`executeBatchLane` re-runs `assertCleanWorkingCopy` immediately before
+applying files, so user work-in-progress started during the polling window
+is never swept into the batch commit.
+
+### P2 — context-free whole-file overwrite
+The batch lane is now **greenfield-only**: the apply loop refuses to write to
+an existing file (typed `BatchError("existing_file")`) rather than silently
+replacing content the model never saw. Batch specs for edits must stub/remove
+the target first.
+
+### P2 — no recovery mechanism
+`runBatchLane` accepts `existingJobId` (re-drive the SAME provider job — no
+re-submit/double-spend) and `resubmitCustomIds` (submit only the failed
+subset). New `resumeBatchJob()` entrypoint in `batch.ts` reads the persisted
+`<run>.batch.json` state and resumes that job (the caller re-supplies the
+original spec, kept in the run's `*.request.json` sidecar). Regression tests in
+`test-batch.ts`.
+
+### P2 — batch channel could block the session
+`index.ts` now forces detachment for any batch-channel dispatch (the shape's
+`channel === "batch"`), since the lane polls for up to 24h — a non-detached
+batch dispatch can no longer block the calling session.
+
+### P3 — flex is watchdog-only (no pricing/endpoint mechanism)
+Left as-is: flex remains M1's calibration-only story until the user builds a
+tier of flex-priced models. Not a code defect.
+
+### Design lesson (see the surrounding conversation)
+This review was wrongly dispatched as a default code-shaped task: the engine's
+three-axis code review then validated the worker's REPORT prose ("ship — 5
+P3s") instead of the report's claims about the code, masking the P0/P1s above.
+Reviews/analysis must use `shape: "analysis"` + `review: "survey-reviewer"`
+(report validation), and its verdict means "the report is well-formed", never
+"the code is sound".

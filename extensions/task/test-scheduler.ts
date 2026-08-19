@@ -19,7 +19,7 @@ import {
 	buildJobRequest,
 	type JobConfig,
 } from "./scheduler.ts";
-import { DEFAULT_TASK_SHAPES, DEFAULT_SANDBOX_CONFIG } from "./config.ts";
+import { loadTaskConfig } from "./config.ts";
 
 function job(over: Partial<JobConfig> = {}): JobConfig {
 	return {
@@ -99,26 +99,36 @@ export async function runTests(): Promise<void> {
 		check(threw.includes("bogus"), "unknown arg throws");
 	}
 
-	// buildJobRequest: writes the detached-run request file (flex lane)
+	// buildJobRequest: writes the detached-run request file (flex lane) and
+	// carries the tier's MODELS + timeouts (not the tier NAME) so the runner
+	// child can actually start a session (review P1).
 	{
 		const dir = mkdtempSync(join(tmpdir(), "pi-task-req-"));
 		try {
 			const metricsDir = join(dir, "results");
+			const config = loadTaskConfig();
 			const { runId, requestPath } = buildJobRequest({
 				metricsDir,
 				project: "proj",
 				spec: "## Goal\ng\n## Requirements\n- R1: x\n## Verification\ntrue",
 				tier: "full",
 				shape: "analysis",
-				shapeConfig: DEFAULT_TASK_SHAPES,
-				sandbox: DEFAULT_SANDBOX_CONFIG,
+				channel: "flex",
+				config,
 				cwd: dir,
 			});
 			const { run_id, options } = JSON.parse(readFileSync(requestPath, "utf-8"));
 			check(run_id === runId, "request carries the run id");
 			check(options.spec && options.budget === "full", "request carries spec + tier");
-			check(options.shape.channel === "sync" && options.shape.workModel === "prewalk",
-				"request carries the resolved shape");
+			check(options.shape.channel === "flex" && options.shape.workModel === "prewalk",
+				"request carries the resolved shape with the job's channel forced");
+			const t = config.tiers.full;
+			check(options.model === t.executeModel, "request model is the tier's execute model, not the tier name (P1)");
+			check(options.prewalkModel === (t.prewalkModel ?? undefined), "request carries the tier prewalk model (P1)");
+			check(options.reviewModel === t.reviewModel, "request carries the tier review model (P1)");
+			check(options.workerTimeoutMs === t.wallTimeoutMs, "request carries the tier wall timeout (P1)");
+			check(typeof options.toolTimeoutMs === "number", "request carries the shared tool timeout (P1)");
+			check(typeof options.aiAuthorName === "string", "request carries the AI commit identity (P1)");
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}

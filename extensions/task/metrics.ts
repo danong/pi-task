@@ -777,6 +777,13 @@ export function recentCompletions(metricsDir: string, limit = 5): CompletionView
 		const dir = join(metricsDir, project.name);
 		for (const name of readdirSync(dir)) {
 			if (!name.endsWith(".json") || name.endsWith(".tmp")) continue;
+			// Detached-dispatch sidecars and batch job-state files are NOT runs:
+			// <run_id>.request.json (the run's input), <run_id>.live.json (the
+			// child's heartbeat), <run_id>.batch.json (job state) — plus their
+			// failure variants. Skipping here matches summarizeRuns so
+			// /task-stats never surfaces a POLLING detached run as a completion.
+			const baseNoJson = name.slice(0, -".json".length);
+			if (/\.(request|live|batch)$/.test(baseNoJson)) continue;
 			const failed = name.endsWith(".failure.json");
 			const runId = failed ? name.slice(0, -".failure.json".length) : name.slice(0, -".json".length);
 			const path = join(dir, name);

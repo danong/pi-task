@@ -25,7 +25,7 @@
  */
 
 import { execFile } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -1269,6 +1269,7 @@ export async function executeTask(opts: ExecuteTaskOptions): Promise<TaskResult>
 		return executeBatchLane(cwd, {
 			spec,
 			specMarkdown,
+			runId: opts.runId,
 			// Mirror the parallel path: a REQUESTED review (opts.review or an
 			// explicit persona) is reported as skipped — the batch lane is
 			// single-turn and cannot fork a reviewer session.
@@ -1974,6 +1975,9 @@ async function executeBatchLane(
 		aiAuthorEmail: string;
 		receivedAt?: string;
 		mainSessionTokens?: number;
+		/** The injected run_id (the manifest + failure artifact must land
+		 *  under THIS id — a detached dispatch keys everything by it). */
+		runId?: string;
 		batch?: BatchLaneConfig;
 		batchProvider?: BatchProvider;
 	},
@@ -1999,7 +2003,7 @@ async function executeBatchLane(
 	const verifyTimeout = opts.verificationTimeoutMs ?? DEFAULT_VERIFICATION_TIMEOUT_MS;
 	const projectName = project ?? deriveProjectName(cwd);
 	const runStartMs = Date.now();
-	const runId = generateRunId();
+	const runId = opts.runId ?? generateRunId();
 
 	// AI commit identity (todo #84): root the batch commit on a fresh
 	// AI-authored commit (mirrors executeSingle — `jj commit` preserves the
@@ -2041,7 +2045,11 @@ async function executeBatchLane(
 			onUpdate,
 		});
 
-		// 2. Apply the validated file outputs to the working copy. The
+		// 2. Re-check the working copy is CLEAN before applying — the job may
+		// have polled for up to 24h, and user work-in-progress started during
+		// that window must never be swept into the batch commit (review P2).
+		await assertCleanWorkingCopy(cwd);
+		// Apply the validated file outputs to the working copy. The
 		// model's output is untrusted input — extractBatchFiles enforces
 		// repo-relative path safety; mergeBatchFiles rejects conflicting
 		// duplicate paths deterministically (never silent last-wins).
@@ -2060,6 +2068,15 @@ async function executeBatchLane(
 		}
 		for (const f of files) {
 			const target = join(cwd, f.path);
+			// Greenfield-only: the items are context-free single-turn prompts,
+			// so overwriting an existing file would silently replace content
+			// the model never saw (review P2). Refuse rather than lose data.
+			if (existsSync(target)) {
+				throw new BatchError(
+					"existing_file",
+					`batch item targets existing file ${f.path} — the batch lane is greenfield-only; delete it or adapt the spec`,
+				);
+			}
 			mkdirSync(dirname(target), { recursive: true });
 			writeFileSync(target, f.content, "utf-8");
 		}

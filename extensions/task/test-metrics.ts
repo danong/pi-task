@@ -588,9 +588,18 @@ async function testRecentCompletions(errors: string[]): Promise<void> {
 		write("run1.json", JSON.stringify(manifest));
 		write("run2.failure.json", "{}");
 		write("garbage.json", "{not json");
+		// Detached-dispatch sidecars + batch job-state (review P1): none of
+		// these are runs and none may surface as a completion.
+		write("run3.request.json", "{}");
+		write("run4.live.json", "{}");
+		write("run4.live.failure.json", "{}");
+		write("run5.batch.json", "{}");
+		write("run6.batch.failure.json", "{}");
 
 		const recent = recentCompletions(metricsDir, 5);
-		check(recent.length === 2, `derived 2 completions, got ${recent.length}`);
+		check(recent.length === 2, `derived 2 completions (sidecar skips), got ${recent.length} = ${recent.map((c) => c.runId).join(",")}`);
+		check(recent.every((c) => !/\.(request|live|batch)($|\.)/.test(c.runId)),
+			"no sidecar / job-state file surfaces as a completion (P1)");
 		check(recent[0].status === "failed" && recent[0].project === "demo" && recent[0].runId === "run2",
 			"failure artifact surfaces as a failed completion");
 		const done = recent.find((c) => c.runId === "run1");

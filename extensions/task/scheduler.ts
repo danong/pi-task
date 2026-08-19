@@ -18,10 +18,8 @@ import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { loadTaskConfig, resolveTaskShape, type JobConfig } from "./config.ts";
-import { parseSpec } from "./schemas/spec.ts";
 import { buildRunRequest, resolveRunnerSpawn, requestPathFor } from "./runner.ts";
 import { generateRunId } from "./metrics.ts";
-import { FakeBatchProvider, OpenRouterBatchProvider, buildBatchItems, type BatchProvider } from "./batch.ts";
 
 export const SCHEDULER_STATE_FILENAME = "scheduler-state.json";
 
@@ -87,13 +85,20 @@ export function buildJobRequest(input: {
 	spec: string;
 	tier: string;
 	shape: JobConfig["shape"];
-	shapeConfig: ReturnType<typeof loadTaskConfig>["shapes"];
-	sandbox: ReturnType<typeof loadTaskConfig>["sandbox"];
+	channel: JobConfig["channel"];
+	config: ReturnType<typeof loadTaskConfig>;
 	cwd: string;
 	now?: Date;
 }) {
 	const runId = generateRunId(input.now ?? new Date());
 	const requestPath = requestPathFor(input.metricsDir, input.project, runId);
+	const tierConfig = input.config.tiers[input.tier];
+	if (!tierConfig) throw new Error(`[jobs] unknown tier "${input.tier}"`);
+	// The request must carry the tier's MODELS (not its name), the tier
+	// wall, the shared tool timeout, and the AI identity — otherwise the
+	// runner child starts with model id "economy" and the session dies
+	// before the first model call (review P1).
+	const shape = { ...resolveTaskShape(input.shape, input.config.shapes), channel: input.channel };
 	const request = buildRunRequest({
 		run_id: runId,
 		metrics_dir: input.metricsDir,
@@ -102,16 +107,25 @@ export function buildJobRequest(input: {
 		plan: {
 			tier: input.tier,
 			phases: [],
-			wallTimeoutMs: undefined,
+			wallTimeoutMs: tierConfig.wallTimeoutMs,
 			goals: undefined,
 		},
 		options: {
 			cwd: input.cwd,
-			model: input.tier,
+			model: tierConfig.executeModel,
+			prewalkModel: tierConfig.prewalkModel ?? undefined,
+			executeModel: tierConfig.executeModel,
+			reviewModel: tierConfig.reviewModel,
+			review: tierConfig.review,
 			spec: input.spec,
 			budget: input.tier,
-			shape: resolveTaskShape(input.shape, input.shapeConfig),
-			sandbox: input.sandbox,
+			workerTimeoutMs: tierConfig.wallTimeoutMs,
+			toolTimeoutMs: input.config.defaults.toolTimeoutMs,
+			verificationTimeoutMs: input.config.defaults.verificationTimeoutMs,
+			aiAuthorName: input.config.defaults.aiAuthorName,
+			aiAuthorEmail: input.config.defaults.aiAuthorEmail,
+			shape,
+			sandbox: input.config.sandbox,
 		},
 		now: input.now,
 	});
@@ -137,33 +151,32 @@ export async function dispatchJob(
 		project: string;
 		config: ReturnType<typeof loadTaskConfig>;
 		cwd: string;
-		batchProvider: BatchProvider;
 		baseDir: string;
 		spawnRunner?: (cmd: string, args: string[], cwd: string) => ChildProcess;
 	},
 ): Promise<DispatchResult> {
 	const spec = resolveJobSpec(job);
-	if (job.channel === "batch") {
-		const parsed = parseSpec(spec);
-		const items = buildBatchItems(parsed);
-		const { jobId } = await opts.batchProvider.submit("batch", items); // provider uses the ambient batch model
-		return { lane: "batch", id: jobId };
-	}
+	// Both flex and batch dispatch through the detached runner: the child's
+	// orchestrator routes by the shape's channel — batch runs the full lane
+	// (poll, collect, validate, apply, commit, verify, manifest + the
+	// config.batch.model id), flex runs the interactive worker. The scheduler
+	// records the run_id; it never submits a bare batch job (that was
+	// fire-and-forget with the literal model "batch").
 	const { runId, requestPath } = buildJobRequest({
 		metricsDir: opts.metricsDir,
 		project: opts.project,
 		spec,
 		tier: job.tier,
 		shape: job.shape,
-		shapeConfig: opts.config.shapes,
-		sandbox: opts.config.sandbox,
+		channel: job.channel,
+		config: opts.config,
 		cwd: opts.cwd,
 	});
 	const runnerPath = join(opts.baseDir, "runner.ts");
 	const { command, args } = resolveRunnerSpawn({ runnerPath, requestPath, baseDir: opts.baseDir });
 	const spawnFn = opts.spawnRunner ?? spawn;
 	spawnFn(command, args, { cwd: opts.cwd, detached: true, stdio: "ignore" }).unref();
-	return { lane: "flex", id: runId };
+	return { lane: job.channel as "flex" | "batch", id: runId };
 }
 
 /** Check due jobs, dispatch them, record state. Returns the dispatched
@@ -174,7 +187,6 @@ export async function runOnce(
 		metricsDir: string;
 		project: string;
 		cwd: string;
-		batchProvider: BatchProvider;
 		baseDir: string;
 		now?: Date;
 		dryRun?: boolean;
@@ -203,7 +215,6 @@ export async function runOnce(
 				project: opts.project,
 				config,
 				cwd: opts.cwd,
-				batchProvider: opts.batchProvider,
 				baseDir: opts.baseDir,
 			});
 			state[name] = { lastRunMs: nowMs, runId: result.id };
@@ -281,15 +292,14 @@ export async function main(): Promise<number> {
 		// eslint-disable-next-line no-constant-condition
 		while (true) {
 			try {
-				await runOnce({ agentDir, metricsDir, project, cwd, batchProvider: new OpenRouterBatchProvider(), baseDir });
+				await runOnce({ agentDir, metricsDir, project, cwd, baseDir, dryRun: args.dryRun });
 			} catch (err) {
 				console.error(`[scheduler] run failed: ${(err as Error).message}`);
 			}
 			await new Promise((r) => setTimeout(r, 60_000));
 		}
 	}
-	const dryBatch = args.dryRun ? new FakeBatchProvider() : new OpenRouterBatchProvider();
-	await runOnce({ agentDir, metricsDir, project, cwd, batchProvider: dryBatch, baseDir, dryRun: args.dryRun });
+	await runOnce({ agentDir, metricsDir, project, cwd, baseDir, dryRun: args.dryRun });
 	return 0;
 }
 

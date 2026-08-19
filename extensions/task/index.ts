@@ -982,7 +982,11 @@ export default function (pi: ExtensionAPI) {
 				// injected runId), so the returned id is always the on-disk id.
 				// /task-status reads the child's live heartbeat while running,
 				// then the manifest / failure artifact once done.
-				if (p.detach === true) {
+				// BATCH-channel runs are ALWAYS detached: the batch lane polls for up
+				// to 24h, and a non-detached dispatch would block this session for the
+				// whole window (review P2). The channel forces detach regardless of
+				// the param; the returned text notes it.
+				if (p.detach === true || shape.channel === "batch") {
 					const runId = generateRunId();
 					const project = deriveProjectName(ctx.cwd);
 					const receivedAt = new Date().toISOString();
