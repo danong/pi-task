@@ -157,9 +157,10 @@ review = ["standards", "spec-fidelity", "architecture"]
 
 [shapes.analysis]
 # Analysis tasks (surveys, design reviews): the STRONG model writes (the
-# tier's prewalk model is promoted to the work slot — no swap), and the
-# strong model reviews too. Review axes are supplied per dispatch (e.g.
-# /survey passes review = "survey-reviewer").
+# tier's prewalk model is promoted to the work slot — no swap). No review
+# axes: a review/survey is a SINGLE task — the worker IS the review, and
+# the quality gate is the spec's Verification commands plus the
+# conversational agent's judgment (no nested reviewer).
 channel = "sync"
 prewalk = false
 swap = false

@@ -158,9 +158,11 @@ export const DEFAULT_TASK_SHAPES: Record<string, TaskShape> = {
 		review: ["standards", "spec-fidelity", "architecture"],
 	},
 	/** Analysis tasks (surveys, design reviews): the STRONG model writes
-	 *  (the prewalk model is promoted to the work slot — no swap), and the
-	 *  strong model reviews too. Review axes are supplied per dispatch
-	 *  (e.g. /survey passes review: "survey-reviewer"). */
+	 *  (the prewalk model is promoted to the work slot — no swap). Review
+	 *  axes: [] — a review/survey is a SINGLE task (the worker IS the
+	 *  review); the forked nested review only runs on shapes that declare
+	 *  axes, and the quality gate is the spec's Verification commands plus
+	 *  the conversational agent's judgment. */
 	analysis: {
 		channel: "sync",
 		prewalk: false,

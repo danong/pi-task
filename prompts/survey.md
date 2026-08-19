@@ -24,7 +24,7 @@ Decide the scope first — ask the user when the request is ambiguous:
 ## Vocabulary
 
 The survey speaks one shared vocabulary — put these definitions in the spec
-so the worker and the reviewer score candidates the same way:
+so the writer and whoever judges the report score candidates the same way:
 
 - **Module** — an implementation unit whose interface hides its complexity.
 - **Interface** — the contract a module presents; good design pushes
@@ -73,12 +73,13 @@ e.g.:
 
 ## Dispatch
 
-Call the task tool with the survey spec, `shape: "analysis"`, `review:
-"survey-reviewer"`, and `budget: "full"` (or another tier with `review =
-true`) — the analysis shape runs the STRONG model in the writer/review slots
-(no prewalk swap: the report IS the thinking), the survey-reviewer validates
-the report itself, and an explicit review tier beats the auto-tier heuristic
-(economy would silently skip the review).
+The survey is a SINGLE-STEP dispatch — call the task tool with the survey
+spec, `shape: "analysis"`, and `budget: "full"`. The analysis shape runs
+only the WORK phase on the STRONG model (no prewalk swap: the report IS the
+thinking). Do NOT pass a review/persona: the analysis shape declares no
+review axes, so no nested reviewer ever forks — the worker IS the review.
+The quality gate is the spec's structural Verification bash commands plus
+the conversational agent's own judgment of the report when it returns.
 
 ## No code changes
 
@@ -86,5 +87,8 @@ The survey changes no source code — the report file is the only file the
 worker writes. Say so explicitly among the spec's requirements, and let the
 verification commands (not the worker's claims) enforce it.
 
-Then call the task tool with the spec. The run's review phase validates the
-report itself (cited files exist, claims traceable, candidates prioritized).
+Then call the task tool with the spec. The run is single-step: there is no
+nested reviewer, so no report-validator fork — the Verification commands
+assert the report structure, and the conversational agent judges the report
+itself (cited files exist, claims traceable, candidates prioritized) when it
+returns.

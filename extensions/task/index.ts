@@ -322,7 +322,8 @@ export interface TaskToolParams {
 	budget?: string;
 	/** Reviewer persona/axis override: unset → the default review axes
 	 *  (standards + spec-fidelity + architecture); a single name (e.g.
-	 *  "survey-reviewer" for /survey dispatches, "adversarial") overrides it. */
+	 *  "adversarial") overrides it. Applies only on shapes that declare
+	 *  review axes — an analysis run never forks a reviewer (single task). */
 	review?: string;
 	/** Run-pipeline shape (code | analysis | any [shapes.*] section);
 	 *  default: the tier's shape. analysis promotes the strong prewalk
@@ -395,8 +396,9 @@ export function taskToolSchema(
 			Type.String({
 				description:
 					"Reviewer persona/axis override — unset → the default review axes (standards + spec-fidelity + " +
-					"architecture, parallel forks); a single name overrides it, e.g. \"survey-reviewer\" for /survey " +
-					"dispatches (validates the report artifact) or \"adversarial\" (the original single-axis reviewer).",
+					"architecture, parallel forks); a single name overrides it, e.g. \"adversarial\" (the original " +
+					"single-axis reviewer). Applies only on shapes that declare review axes — an analysis run is a " +
+					"single task and never forks a reviewer.",
 			}),
 		),
 		shape: Type.Optional(
@@ -627,7 +629,7 @@ export function summarizeResult(result: TaskResult): string {
 		parts.push(renderReviewReport(result.review));
 	}
 	if (result.reviewSkipped) {
-		parts.push("Review skipped (single-worker only).");
+		parts.push("Review requested but not run (only single-worker runs on shapes with review axes fork one).");
 	}
 	// R2: a finalization-incomplete recovery reports success WITH the caveat
 	// (the worker aborted during finalization; the gate verified post-merge).
@@ -951,10 +953,13 @@ export default function (pi: ExtensionAPI) {
 					shape.workModel === "prewalk" ? (tierConfig.prewalkModel ?? tierConfig.executeModel) : tierConfig.executeModel;
 				// Review runs only on the single-worker non-sub_specs path (the
 				// orchestrator warns and skips it otherwise) — the plan line
-				// reflects that. Shape axes AND the tier's review flag; an explicit
-				// persona (review param) forces it on.
+				// reflects that. The shape's DECLARED REVIEW AXES are the
+				// precondition (resolveReviewGate): a persona override or the
+				// tier's review flag forks ONLY on shapes with axes — an
+				// axis-less analysis run never forks, whatever is requested.
 				const reviewWillRun =
-					(p.review !== undefined || (tierConfig.review && shape.review.length > 0)) &&
+					shape.review.length > 0 &&
+					(p.review !== undefined || tierConfig.review) &&
 					!hasSubSpecs &&
 					parallel <= 1;
 				// R2: the session's current /goals (readGoals, same ctx.sessionManager

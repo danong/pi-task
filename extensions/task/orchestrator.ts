@@ -539,8 +539,10 @@ export interface ExecuteTaskOptions {
 	reviewModel?: string;
 	/** Reviewer persona name (when review enabled). Unset → the DEFAULT
 	 *  review axes (standards + spec-fidelity + architecture, run as
-	 *  parallel forks); a single name (e.g. "survey-reviewer" for /survey
-	 *  dispatches, or "adversarial") overrides the set. */
+	 *  parallel forks); a single name (e.g. "adversarial") overrides the
+	 *  set. Only shapes that declare review axes fork a review — an
+	 *  explicit persona on an axis-less shape (analysis) is skipped, never
+	 *  forked. */
 	persona?: string;
 	/** The run-pipeline SHAPE (resolved by the task tool from its `shape`
 	 *  param / the tier's default): the phase structure, swap policy, model
@@ -640,9 +642,11 @@ export interface TaskResult {
 	review?: ReviewResult;
 	/** Fix-loop metadata. Present when review is enabled. */
 	fixLoop?: { iterations: number; fixesDispatched: number };
-	/** True when a requested review was skipped: review is single-worker
-	 *  only, and a parallel run ignores the flag and verifies only. Set when
-	 *  opts.review is true on a parallel run. */
+	/** True when a requested review was skipped instead of forked: review is
+	 *  single-worker only (a parallel run ignores the flag and verifies
+	 *  only), and it forks only on shapes that declare review axes — a
+	 *  requested review on an axis-less shape (e.g. analysis) is never
+	 *  forked, whatever was requested. */
 	reviewSkipped?: boolean;
 	/** R2: success-with-caveat note — present when a finalization-incomplete
 	 *  abort recovered (the merge landed and the verification gate PASSED
@@ -810,6 +814,27 @@ export function routeRun(
 		return { kind: "invalid", reason: "the batch channel does not support sub_specs runs (single-turn job lane, one spec)" };
 	}
 	return { kind: "batch" };
+}
+
+/**
+ * Review fork gate (R1): the nested forked review runs ONLY when the run's
+ * shape declares a review axis — the declared axes are a required
+ * precondition for the tier's review flag AND the persona override alike.
+ * A shape with no axes (the built-in analysis shape: surveys/reviews are a
+ * single task, the worker itself IS the review) never forks a nested
+ * reviewer, whatever is requested — the request surfaces as `skipped` (the
+ * TaskResult.reviewSkipped disposition, same contract as parallel/batch).
+ * The gate keys on DECLARED AXES, never the shape name/channel: a
+ * hypothetical custom shape that declares axes still forks. Pure — tested
+ * hermetically (testReviewGate in test-orchestrator.ts).
+ */
+export function resolveReviewGate(
+	opts: { review?: boolean; persona?: string },
+	shape: TaskShape,
+): { requested: boolean; enabled: boolean; skipped: boolean } {
+	const requested = opts.review === true || opts.persona !== undefined;
+	const enabled = requested && shape.review.length > 0;
+	return { requested, enabled, skipped: requested && !enabled };
 }
 
 // ─── Review + bounded fix loop (Phase 7) ─────────────────────────────
@@ -1238,10 +1263,13 @@ export async function executeTask(opts: ExecuteTaskOptions): Promise<TaskResult>
 		shape.reviewModel === "prewalk"
 			? (opts.prewalkModel ?? opts.reviewModel ?? executeModel)
 			: (opts.reviewModel ?? executeModel);
-	// Review runs when the shape declares axes AND the tier's review flag,
-	// or when an explicit persona override forces a single-axis review
-	// (e.g. /survey passes review: "survey-reviewer").
-	const reviewEnabled = opts.persona !== undefined || (opts.review === true && shape.review.length > 0);
+	// Review forks only when the shape declares review axes: the declared
+	// axes are the precondition for the tier's review flag and the persona
+	// override alike. An axis-less shape (analysis: a survey/review is a
+	// single task, the worker IS the review) never forks a nested reviewer,
+	// even when an explicit persona or `review: true` is passed — the
+	// request surfaces as reviewSkipped on the result instead.
+	const reviewGate = resolveReviewGate(opts, shape);
 
 	// 2a. AI commit identity (todo #84): resolve once per run — worker
 	// commits (single + fix workers) and the parallel merge target are
@@ -1273,7 +1301,7 @@ export async function executeTask(opts: ExecuteTaskOptions): Promise<TaskResult>
 			// Mirror the parallel path: a REQUESTED review (opts.review or an
 			// explicit persona) is reported as skipped — the batch lane is
 			// single-turn and cannot fork a reviewer session.
-			reviewRequested: opts.review === true || opts.persona !== undefined,
+			reviewRequested: reviewGate.requested,
 			metricsDir,
 			project,
 			budget,
@@ -1351,7 +1379,7 @@ export async function executeTask(opts: ExecuteTaskOptions): Promise<TaskResult>
 			toolTimeoutMs: opts.toolTimeoutMs,
 			spec,
 			specMarkdown,
-			review: reviewEnabled,
+			review: reviewGate.enabled,
 			reviewModel,
 			persona: opts.persona,
 			shape,
@@ -2549,6 +2577,10 @@ async function executeSingle(
 				spec,
 				worker,
 				verification,
+				// R1: a requested review on an axis-less shape (analysis — surveys
+				// are a single task, the worker IS the review) never forks; surface
+				// the skipped disposition instead (same contract as parallel/batch).
+				...(reviewRequested ? { reviewSkipped: true } : {}),
 				manifest: metrics.manifest,
 				manifestPath: metrics.manifestPath,
 				durationMs: Date.now() - runStartMs,
@@ -2561,15 +2593,13 @@ async function executeSingle(
 			throw new Error("review enabled but the worker did not persist a session (no sessionFile)");
 		}
 		const maxFixes = Math.max(0, maxFixIterations ?? 2);
-		// The review axes: an explicit persona (single — e.g. /survey
-		// dispatches pass "survey-reviewer" to validate the report artifact)
-		// or the DEFAULT axes (standards + spec-fidelity + architecture),
-		// each run as its own parallel fork so neither pollutes the other.
-		// Findings merge, verdict = worst, requirements = worst per id.
-		// The review axes come from the SHAPE (its review list — the analysis
-		// shape is empty and relies on an explicit persona like
-		// survey-reviewer), ANDed with the tier's review flag upstream
-		// (reviewEnabled); an explicit persona overrides to a single axis.
+		// The review axes: an explicit persona (single-axis override — e.g.
+		// "adversarial") or the shape's declared axes (the code shape:
+		// standards + spec-fidelity + architecture), each run as its own
+		// parallel fork so neither pollutes the other. Findings merge,
+		// verdict = worst, requirements = worst per id. Axis-less shapes
+		// never reach here — resolveReviewGate disabled the review upstream
+		// (surveys are a single task, the worker IS the review).
 		const shapeAxes = (shape ?? DEFAULT_TASK_SHAPES.code).review;
 		const reviewAxes = persona
 			? [getPersona(persona) ?? DEFAULT_PERSONA]

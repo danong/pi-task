@@ -22,7 +22,9 @@ import {
 	isFinalizationIncomplete,
 	classifyWorkerFailures,
 	buildRecoveryGuide,
+	resolveReviewGate,
 } from "./orchestrator.ts";
+import { DEFAULT_TASK_SHAPES } from "./config.ts";
 import type { ChecklistProgress } from "./checklist-relay.ts";
 import type { Finding, ReviewResult } from "./schemas/findings.ts";
 
@@ -439,6 +441,62 @@ function testRecoveryGuide(errors: string[]): void {
 	console.log("✓ recovery guide: stacking + stub-abandon + add-vs-delete warnings (R4)");
 }
 
+/** resolveReviewGate (R1/R6): the forked nested review runs ONLY on shapes
+ *  that declare review axes — the axes are a required precondition for the
+ *  tier's review flag AND the persona override alike. An axis-less shape
+ *  (analysis: surveys are a single task, the worker IS the review) never
+ *  forks, whatever is requested; the request surfaces as the skipped
+ *  disposition instead. Gating keys on DECLARED AXES, never the shape name. */
+function testReviewGate(errors: string[]): void {
+	const check = (cond: boolean, msg: string): void => {
+		if (!cond) errors.push(msg);
+	};
+
+	// Analysis shape (review: []): NEVER forks — persona, flag, or both.
+	{
+		const none = resolveReviewGate({}, DEFAULT_TASK_SHAPES.analysis);
+		const flag = resolveReviewGate({ review: true }, DEFAULT_TASK_SHAPES.analysis);
+		const persona = resolveReviewGate({ persona: "adversarial" }, DEFAULT_TASK_SHAPES.analysis);
+		const both = resolveReviewGate({ review: true, persona: "adversarial" }, DEFAULT_TASK_SHAPES.analysis);
+		for (const [name, gate] of Object.entries({ none, flag, persona, both })) {
+			check(gate.enabled === false, `analysis + ${name}: no forked review`);
+		}
+		check(none.requested === false && none.skipped === false,
+			"analysis + nothing requested: not requested, not skipped");
+		for (const [name, gate] of Object.entries({ flag, persona, both })) {
+			check(gate.requested === true && gate.skipped === true,
+				`analysis + ${name}: requested but skipped (the result's reviewSkipped disposition)`);
+		}
+	}
+
+	// Code shape (declares axes): the flag or a persona forks; nothing → no review.
+	{
+		const none = resolveReviewGate({}, DEFAULT_TASK_SHAPES.code);
+		check(none.enabled === false && none.requested === false && none.skipped === false,
+			"code + nothing: no review requested");
+		const flag = resolveReviewGate({ review: true }, DEFAULT_TASK_SHAPES.code);
+		check(flag.enabled === true && flag.skipped === false, "code + review flag: forks");
+		const persona = resolveReviewGate({ persona: "adversarial" }, DEFAULT_TASK_SHAPES.code);
+		check(persona.enabled === true && persona.skipped === false, "code + persona: forks");
+		const off = resolveReviewGate({ review: false }, DEFAULT_TASK_SHAPES.code);
+		check(off.enabled === false && off.requested === false, "code + explicit false: not requested");
+	}
+
+	// Declared axes, not the shape name, decide: a hypothetical custom shape
+	// with axes still forks; the batch shape (no axes) never does.
+	{
+		const custom = { ...DEFAULT_TASK_SHAPES.code, review: ["adversarial"] };
+		check(resolveReviewGate({ review: true }, custom).enabled === true,
+			"custom shape declaring axes still forks");
+		check(resolveReviewGate({ persona: "adversarial" }, custom).enabled === true,
+			"custom shape declaring axes forks on a persona too");
+		check(resolveReviewGate({ review: true, persona: "adversarial" }, DEFAULT_TASK_SHAPES.batch).enabled === false,
+			"batch shape (no axes) never forks");
+	}
+
+	console.log("✓ resolveReviewGate: axes are the fork precondition (analysis never forks; code/custom-axes do)");
+}
+
 export async function runTests(): Promise<void> {
 	const errors: string[] = [];
 	console.log("── test-orchestrator: spec parse + splitSpec + aggregateSubSpecs + runVerification + fix loop ──");
@@ -447,6 +505,7 @@ export async function runTests(): Promise<void> {
 	testAggregateSubSpecs(errors);
 	await testRunVerification(errors);
 	testFixLoop(errors);
+	testReviewGate(errors);
 	testParseDiffStat(errors);
 	testClassifyOverlapDiffs(errors);
 	testFinalizationIncomplete(errors);

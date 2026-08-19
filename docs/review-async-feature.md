@@ -424,3 +424,9 @@ P3s") instead of the report's claims about the code, masking the P0/P1s above.
 Reviews/analysis must use `shape: "analysis"` + `review: "survey-reviewer"`
 (report validation), and its verdict means "the report is well-formed", never
 "the code is sound".
+
+*(Superseded by the final design: a review/survey is a SINGLE task — the
+analysis shape declares no review axes at all, the "survey-reviewer" persona
+was removed, and there is no nested report validator. The worker writes the
+report and the spec's Verification commands plus the conversational agent's
+judgment are the quality gate.)*

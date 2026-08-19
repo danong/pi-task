@@ -178,9 +178,10 @@ Files: src/auth.ts, src/api.ts, src/lib.ts
   elided with "... and M more finding(s)" so the text stays reasonable; a
   clean review (no findings) stays compact with no finding lines. The
   structured details still hold the complete, uncapped ReviewResult.
-- **Review skipped** — a parallel run's requested review (single-worker
-  only) is surfaced as "Review skipped (single-worker only)." instead of
-  a console warning (see Console discipline).
+- **Review skipped** — a requested review that did not run (parallel runs:
+  review is single-worker only; axis-less shapes like analysis: the forked
+  review never runs without declared axes) is surfaced as "Review requested
+  but not run" instead of a console warning (see Console discipline).
 
 Decomposition is the main agent's job: for parallel work it writes either
 `sub_specs` (preferred — encapsulated, no leakage) or a single `spec` with

@@ -77,8 +77,9 @@ For any non-trivial request:
 
 For **big-picture architecture reviews** (one-off surveys of an area, or a
 hotspot scan for deepening opportunities), dispatch `/survey` instead — the
-survey runs as a worker that produces a ranked report, which is then itself
-adversarially reviewed (see below).
+survey runs as a single-step task: the worker produces the ranked report,
+and the conversational agent judges it (analysis shapes fork no nested
+reviewer; see below).
 
 ## Templates (user-invoked)
 
@@ -119,9 +120,10 @@ param overrides the tier's default, and the manifest records which shape ran.
   execute model on the first edit, three-axis review (standards + spec
   fidelity + architecture fidelity). Built for implementation.
 - **`analysis`** — no prewalk, no swap: the STRONG model writes (the tier's
-  prewalk model is promoted into the work slot) and reviews. For surveys and
-  design reviews, where the report IS the thinking. `/survey` dispatches
-  `shape: "analysis"` + `review: "survey-reviewer"`.
+  prewalk model is promoted into the work slot). For surveys and design
+  reviews, where the report IS the thinking. `/survey` dispatches
+  `shape: "analysis"`; analysis declares NO review axes — a review/survey is
+  a single task (no nested reviewer), judged by the conversational agent.
 
 `bench-regression` accepts `--shape <name>` (default `code`; baselines key
 `<tier>@<shape>` with a tier fallback) — run the same canned specs across
@@ -154,8 +156,10 @@ The task tool's lifecycle, roughly in order:
      the latest docs/architecture-review.md)?
    Each axis runs as its own fork so neither pollutes the other; findings
    merge, blockers (P0/P1) drive a bounded fix loop.
-   For `/survey` dispatches, a survey-reviewer persona validates the report
-   itself (cited files exist, claims traceable, candidates prioritized).
+   The review only forks on shapes that declare review axes — an analysis
+   run (`/survey`) is a single task: no nested reviewer, the spec's
+   Verification commands assert the report structure, and the conversational
+   agent judges the report itself.
 7. **Result** — success-with-caveat (e.g. a worker aborted during
    finalization but the merged work verified post-merge), or a failure
    artifact recording the cause, preserved workspaces, and a scripted

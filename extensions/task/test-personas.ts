@@ -14,7 +14,6 @@ import { adversarialPersona,
 	PERSONAS,
 	standardsPersona,
 	specFidelityPersona,
-	surveyReviewerPersona,
 } from "./personas.ts";
 import { DEFAULT_TASK_SHAPES } from "./config.ts";
 
@@ -42,12 +41,9 @@ export async function runTests(): Promise<void> {
 	check(getPersona("adversarial") === adversarialPersona, "getPersona finds adversarial");
 	check(getPersona("does-not-exist") === undefined, "getPersona returns undefined for unknown");
 
-	// 3b. The default + survey personas (the DEFAULT review axes + the
-	//     survey-report validator), all resolving through the registry.
+	// 3b. The DEFAULT review axes, all resolving through the registry.
 	check(standardsPersona.name === "standards" && specFidelityPersona.name === "spec-fidelity",
 		"standards/spec-fidelity personas named");
-	check(surveyReviewerPersona.name === "survey-reviewer" && surveyReviewerPersona.output.kind === "findings",
-		"survey-reviewer persona named + findings contract");
 	check(JSON.stringify(DEFAULT_TASK_SHAPES.code.review) === JSON.stringify(DEFAULT_REVIEW_PERSONAS),
 		"the code shape's review axes match the default axes");
 	check(DEFAULT_TASK_SHAPES.code.review.includes("architecture"),
@@ -58,9 +54,8 @@ export async function runTests(): Promise<void> {
 		`default axes are standards + spec-fidelity + architecture, got ${JSON.stringify(DEFAULT_REVIEW_PERSONAS)}`);
 	check(
 		standardsPersona.systemPrompt.includes("standards") &&
-			specFidelityPersona.systemPrompt.includes("SPEC") &&
-			surveyReviewerPersona.systemPrompt.includes("report"),
-		"each new persona has a focused non-empty prompt",
+			specFidelityPersona.systemPrompt.includes("SPEC"),
+		"each default persona has a focused non-empty prompt",
 	);
 
 	// 3c. The architecture-fidelity persona (R1): registered, resolvable,

@@ -552,16 +552,18 @@ function testResultMapping(errors: string[]): void {
 		`summary text, got: ${summary}`);
 	check(summary.includes("hello.txt"), "summary lists files");
 
-	// reviewSkipped (R7): a review requested on a parallel run is skipped —
-	// surfaced in the tool return and the summary (the dispatch plan already
-	// omitted the review phase; todo #73 removed the console.warn entirely).
+	// reviewSkipped (R7/R1): a requested review that did not run — parallel
+	// (single-worker only) or an axis-less shape like analysis (the forked
+	// review never runs on a shape with no declared axes) — is surfaced in
+	// the tool return and the summary (todo #73 removed the console.warn
+	// entirely).
 	const skipped = taskResultToToolReturn(fakeResult({ reviewSkipped: true }));
 	check(skipped.review_skipped === true,
-		"review_skipped surfaced when review was requested on a parallel run");
+		"review_skipped surfaced when review was requested but did not run");
 	const notSkipped = taskResultToToolReturn(fakeResult());
 	check(!("review_skipped" in notSkipped), "review_skipped omitted when no review was requested");
 	const skippedSummary = summarizeResult(fakeResult({ reviewSkipped: true }));
-	check(skippedSummary.includes("Review skipped (single-worker only)"),
+	check(skippedSummary.includes("Review requested but not run"),
 		`summary notes the skipped review, got: ${skippedSummary}`);
 
 	// caveat (R2): a finalization-incomplete recovery reports success WITH

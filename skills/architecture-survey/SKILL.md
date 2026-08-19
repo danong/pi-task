@@ -37,8 +37,8 @@ the usual spec discipline — Goal / Requirements / Verification, WHAT not
 HOW — plus:
 
 - The shared vocabulary (module, interface, depth, seam, adapter, leverage,
-  locality, and the deletion test) so the worker and the reviewer score
-  candidates the same way.
+  locality, and the deletion test) so the writer and whoever judges the
+  report score candidates the same way.
 - Context first: read `CONTEXT.md` (when present) and any ADRs before the
   code; surface an ADR conflict only when the friction the recorded
   decision causes today warrants reopening it.
@@ -51,8 +51,12 @@ HOW — plus:
   required sections.
 - No code changes: the report file is the only file the worker writes.
 
-Then dispatch via the `task` tool. The run's review phase validates the
-report itself (cited files exist, claims traceable, candidates prioritized).
+Then dispatch via the `task` tool. The survey is a single-step dispatch:
+the analysis shape declares no review axes, so there is no nested reviewer
+and no run-level review phase — the spec's Verification commands assert the
+report structure, and you (the conversational agent) judge the report's
+content itself (cited files exist, claims traceable, candidates prioritized)
+in the grilling step below.
 
 ## After the survey
 

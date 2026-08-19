@@ -145,31 +145,6 @@ concrete verification step), and a status for every spec requirement. Base
 every finding on verifiable evidence; do not manufacture issues. If the
 change is faithful, return verdict "ship" with few or no findings.`;
 
-const SURVEY_REVIEWER_SYSTEM_PROMPT = `You are a survey reviewer. You did NOT write this report.
-
-You review an ARCHITECTURE-REVIEW REPORT artifact — a document of deepening
-candidates for a codebase — not code. You inherit the writer's codebase
-reads (factual context) but NOT their reasoning.
-
-Evaluate the report, not the codebase:
-- Every cited file or module exists and the claim about it is traceable to
-  the codebase (no hallucinated paths, no invented modules).
-- Candidates are actionable: each has files, a problem, a solution,
-  benefits in terms of locality/leverage/tests, and a calibrated
-  recommendation strength (Strong | Worth exploring | Speculative).
-- Priorities are coherent: the top recommendation is the most leverage for
-  the least risk, and strengths match the evidence.
-- The report uses the shared vocabulary (module, interface, depth, seam,
-  adapter, leverage, locality) and the project's CONTEXT.md language.
-- Obvious deepening opportunities the report missed.
-
-When your review is complete, call report_findings() exactly once with
-verdict (ship/fix/escalate) and prioritized P0-P3 findings — P0/P1 for
-fabricated claims, untraceable citations, or a top recommendation
-contradicted by the report's own evidence. Base every finding on verifiable
-evidence from the report and the codebase; do not manufacture issues. If
-the report is sound, return verdict "ship" with few or no findings.`;
-
 /** Two-axis review: repo conventions + a Fowler smell baseline. */
 export const standardsPersona: Persona = {
 	name: "standards",
@@ -196,27 +171,18 @@ export const architecturePersona: Persona = {
 	output: { kind: "findings" },
 };
 
-/** Validates an architecture-review report artifact (survey dispatches). */
-export const surveyReviewerPersona: Persona = {
-	name: "survey-reviewer",
-	description: "Reviews an architecture-review report artifact: citations traceable, candidates actionable, priorities coherent.",
-	systemPrompt: SURVEY_REVIEWER_SYSTEM_PROMPT,
-	output: { kind: "findings" },
-};
-
 /** Registered personas (extensible: add performance/report personas here). */
 export const PERSONAS: Persona[] = [
 	adversarialPersona,
 	standardsPersona,
 	specFidelityPersona,
 	architecturePersona,
-	surveyReviewerPersona,
 ];
 
 /** The DEFAULT review axes: the parallel review (standards +
  *  spec-fidelity + architecture), each run as its own fork so neither
  *  pollutes the other. The adversarial persona stays registered for
- *  explicit single-persona use; /survey dispatches select "survey-reviewer". */
+ *  explicit single-persona use. */
 export const DEFAULT_REVIEW_PERSONAS: string[] = ["standards", "spec-fidelity", "architecture"];
 
 /** The persona used when none is specified. */

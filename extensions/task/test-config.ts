@@ -520,14 +520,16 @@ function testShapes(errors: string[]): void {
 		if (!cond) errors.push(msg);
 	};
 	// Built-in shapes: code (the current pipeline) + analysis (strong
-	// writer/reviewer, no swap), both with a working review contract.
+	// writer, no swap, no review axes), both with a working review contract
+	// (analysis never forks — the shape declares no axes).
 	check(JSON.stringify(Object.keys(DEFAULT_TASK_SHAPES)) === JSON.stringify(["code", "analysis", "batch"]),
 		`built-in shapes, got ${JSON.stringify(Object.keys(DEFAULT_TASK_SHAPES))}`);
 	check(DEFAULT_TASK_SHAPES.code.prewalk && DEFAULT_TASK_SHAPES.code.swap && DEFAULT_TASK_SHAPES.code.workModel === "execute",
 		"code shape: prewalk + swap + execute writer");
 	check(!DEFAULT_TASK_SHAPES.analysis.prewalk && !DEFAULT_TASK_SHAPES.analysis.swap
-		&& DEFAULT_TASK_SHAPES.analysis.workModel === "prewalk" && DEFAULT_TASK_SHAPES.analysis.reviewModel === "prewalk",
-		"analysis shape: no prewalk/swap, strong writer + reviewer");
+		&& DEFAULT_TASK_SHAPES.analysis.workModel === "prewalk" && DEFAULT_TASK_SHAPES.analysis.reviewModel === "prewalk"
+		&& DEFAULT_TASK_SHAPES.analysis.review.length === 0,
+		"analysis shape: no prewalk/swap, strong writer, no review axes (single task)");
 	// Channel: default sync; flex/batch parse; the watchdog calibration.
 	check(DEFAULT_TASK_SHAPES.code.channel === "sync" && DEFAULT_TASK_SHAPES.analysis.channel === "sync",
 		"built-in shapes default to the sync channel");
@@ -565,13 +567,13 @@ prewalk = false
 swap = true
 work_model = "execute"
 review_model = "prewalk"
-review = ["survey-reviewer"]
+review = ["adversarial"]
 `,
 		(path) => {
 			const cfg = loadTaskConfig(path);
 			const custom = cfg.shapes.custom;
 			check(custom !== undefined && custom.prewalk === false && custom.swap === true
-				&& custom.reviewModel === "prewalk" && JSON.stringify(custom.review) === JSON.stringify(["survey-reviewer"]),
+				&& custom.reviewModel === "prewalk" && JSON.stringify(custom.review) === JSON.stringify(["adversarial"]),
 				`custom shape parses, got ${JSON.stringify(custom)}`);
 			// Absent keys fall back to the code shape; channel parses.
 			check(cfg.shapes.custom.workModel === "execute", "custom shape falls back per-key to code");
