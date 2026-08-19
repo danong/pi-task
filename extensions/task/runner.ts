@@ -98,6 +98,8 @@ export interface DetachedRunOptions {
 	workerTimeoutMs?: number;
 	toolTimeoutMs?: number;
 	verificationTimeoutMs?: number;
+	/** Per-fork review wall (ms); absent → review.ts's 20-min default. */
+	reviewWallTimeoutMs?: number;
 	aiAuthorName?: string;
 	aiAuthorEmail?: string;
 	budget?: string;

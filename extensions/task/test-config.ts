@@ -22,6 +22,7 @@ import {
 	DEFAULT_TIER_WALL_TIMEOUT_MS,
 	DEFAULT_TOOL_TIMEOUT_MS,
 	DEFAULT_VERIFICATION_TIMEOUT_MS,
+	DEFAULT_REVIEW_WALL_TIMEOUT_MS,
 	DEFAULT_TASK_SHAPES,
 	DEFAULT_BATCH_CONFIG,
 	DEFAULT_BATCH_MODEL,
@@ -86,6 +87,10 @@ function testMissingFile(errors: string[]): void {
 		`missing file defaults should carry tool_timeout_ms, got ${cfg!.defaults.toolTimeoutMs}`);
 	check(cfg!.defaults.verificationTimeoutMs === DEFAULT_VERIFICATION_TIMEOUT_MS,
 		`missing file defaults should carry verification_timeout_ms, got ${cfg!.defaults.verificationTimeoutMs}`);
+	check(cfg!.defaults.reviewWallTimeoutMs === DEFAULT_REVIEW_WALL_TIMEOUT_MS,
+		`missing file defaults should carry review_wall_timeout_ms, got ${cfg!.defaults.reviewWallTimeoutMs}`);
+	check(DEFAULT_REVIEW_WALL_TIMEOUT_MS === 20 * 60_000,
+		`the review wall default must stay 20 minutes, got ${DEFAULT_REVIEW_WALL_TIMEOUT_MS}`);
 	check(cfg!.defaults.aiAuthorName === "Pi ({model})" && cfg!.defaults.aiAuthorEmail === "noreply@danong.dev",
 		`missing file defaults should carry the AI commit identity, got ${cfg!.defaults.aiAuthorName} <${cfg!.defaults.aiAuthorEmail}>`);
 	check(JSON.stringify(cfg!.tierOrder) === JSON.stringify(["max", "full", "economy", "free"]),
@@ -108,6 +113,7 @@ budget = "auto"
 max_fix_iterations = 4
 tool_timeout_ms = 300000
 verification_timeout_ms = 600000
+review_wall_timeout_ms = 600000
 ai_author_name = "Assistant ({model})"
 ai_author_email = "ai@example.dev"
 
@@ -153,6 +159,8 @@ extra_rw_binds = ["/build"]
 				`aiAuthorEmail override, got ${cfg!.defaults.aiAuthorEmail}`);
 			check(cfg!.defaults.verificationTimeoutMs === 600000,
 				`verificationTimeoutMs override, got ${cfg!.defaults.verificationTimeoutMs}`);
+			check(cfg!.defaults.reviewWallTimeoutMs === 600000,
+				`reviewWallTimeoutMs override, got ${cfg!.defaults.reviewWallTimeoutMs}`);
 			check(cfg!.tiers.full.prewalkModel === "provider/strong", "full.prewalkModel override");
 			check(cfg!.tiers.full.executeModel === "provider/fast", "full.executeModel override");
 			check(cfg!.tiers.full.review === true, "full.review override");
@@ -405,6 +413,16 @@ extra_rw_binds = [1, 2]
 		check(cfg!.defaults.maxFixIterations === 2, "string max_fix_iterations falls back to 2");
 	});
 	// Wrong-type tool_timeout_ms / wall_timeout_ms variants.
+	withTempToml(`[defaults]\nreview_wall_timeout_ms = -5\n`, (path) => {
+		let cfg: TaskConfig | undefined;
+		const warnings = captureWarnings(() => {
+			cfg = loadTaskConfig(path);
+		});
+		check(warnings.some((w) => w.includes("review_wall_timeout_ms")),
+			"invalid review_wall_timeout_ms should warn");
+		check(cfg!.defaults.reviewWallTimeoutMs === DEFAULT_REVIEW_WALL_TIMEOUT_MS,
+			`invalid review_wall_timeout_ms should fall back to the 20-min default, got ${cfg!.defaults.reviewWallTimeoutMs}`);
+	});
 	withTempToml(`[defaults]\ntool_timeout_ms = 2.5\n`, (path) => {
 		let cfg: TaskConfig | undefined;
 		captureWarnings(() => {
@@ -486,6 +504,8 @@ function testShippedConfigMatchesDefaults(errors: string[]): void {
 	// built-in defaults (economy/free get the shorter 25-min wall).
 	check(cfg.defaults.toolTimeoutMs === DEFAULT_TOOL_TIMEOUT_MS,
 		"shipped tool_timeout_ms should equal the built-in default");
+	check(cfg.defaults.reviewWallTimeoutMs === DEFAULT_REVIEW_WALL_TIMEOUT_MS,
+		"shipped review_wall_timeout_ms should equal the built-in 20-min default");
 	check(cfg.tiers.max.wallTimeoutMs === DEFAULT_BUDGET_TIERS.max.wallTimeoutMs &&
 		cfg.tiers.full.wallTimeoutMs === DEFAULT_BUDGET_TIERS.full.wallTimeoutMs,
 		"shipped max/full wall_timeout_ms should equal the built-in defaults");

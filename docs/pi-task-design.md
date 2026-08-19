@@ -1082,13 +1082,17 @@ against pi's RPC surface; see `review.ts`, `prune.ts`, `personas.ts`):
   watchdog (`REVIEW_NO_PROGRESS_TIMEOUT_MS`, deliberately shorter than the
   worker's — a review is one fast model pass, not a 70-turn exploration;
   any event resets the clock and an in-flight tool call counts as
-  progress), and the wall backstop (`REVIEW_WALL_TIMEOUT_MS`). The
+  progress), and the wall backstop (`REVIEW_WALL_TIMEOUT_MS`, 20 min — the
+  default for `[defaults] review_wall_timeout_ms`; each review fork gets its
+  OWN wall, independent of the worker's tier wall). The
   reviewer's first model call re-encodes the whole pruned fork context on
   an empty prompt cache, and a wedged call emits zero RPC events, so the
   settle-based idle watchdog never fires; the two tighter bounds kill the
   run in minutes with messages naming the cause (stalled first call / no
   progress). Windows are overridable via
-  `ForkReviewOptions.firstEventTimeoutMs` / `.noProgressTimeoutMs`. Root
+  `ForkReviewOptions.firstEventTimeoutMs` / `.noProgressTimeoutMs`; the
+  wall via `ExecuteTaskOptions.reviewWallTimeoutMs` (config:
+  `[defaults] review_wall_timeout_ms`). Root
   cause and evidence: docs/review-timeout-investigation.md.
 - **Scope limits.** Review is single-worker in Phase 7 (the fix loop operates
   on one working copy; parallel + review warns and proceeds verify-only).
@@ -1293,7 +1297,10 @@ The widget also answers "what is this worker doing" without any LLM:
 - a **live tool line** (in-flight tool name + summarized args via the
   `tool_start`/`tool_end` events),
 - **wall headroom** on the total clock (`total 45s/25m` from
-  `RunPlan.wallTimeoutMs`) so a wall abort is never a surprise.
+  `RunPlan.wallTimeoutMs`) so a wall abort is never a surprise,
+- **review wall headroom** on the plan line (`· review wall 20m` from
+  `RunPlan.reviewWallTimeoutMs`) when a review will run — the reminder
+  that the review phase has its OWN budget, separate from the worker's.
 
 **In-place rendering (todo #68).** The `task` tool's `renderResult`
 partial-progress branch reuses the previous component instead of

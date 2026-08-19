@@ -23,7 +23,10 @@ import {
 	classifyWorkerFailures,
 	buildRecoveryGuide,
 	resolveReviewGate,
+	resolveReviewAxes,
+	PARALLEL_REVIEW_PERSONA,
 } from "./orchestrator.ts";
+import { DEFAULT_PERSONA, getPersona, type Persona } from "./personas.ts";
 import { DEFAULT_TASK_SHAPES } from "./config.ts";
 import type { ChecklistProgress } from "./checklist-relay.ts";
 import type { Finding, ReviewResult } from "./schemas/findings.ts";
@@ -497,6 +500,68 @@ function testReviewGate(errors: string[]): void {
 	console.log("✓ resolveReviewGate: axes are the fork precondition (analysis never forks; code/custom-axes do)");
 }
 
+/** resolveReviewAxes (R1/R2/R6): fork selection for a single-run review. */
+function testReviewAxes(errors: string[]): void {
+	const check = (cond: boolean, msg: string): void => {
+		if (!cond) errors.push(msg);
+	};
+	const names = (axes: Persona[]): string[] => axes.map((p) => p.name);
+
+	// Default (R1): NO persona override → EXACTLY ONE adversarial fork,
+	// regardless of how many axes the shape declares.
+	{
+		const axes = resolveReviewAxes(undefined, DEFAULT_TASK_SHAPES.code);
+		check(JSON.stringify(names(axes)) === JSON.stringify(["adversarial"]),
+			`default code shape must fork ONE adversarial reviewer, got ${JSON.stringify(names(axes))}`);
+		check(axes[0] === DEFAULT_PERSONA, "the default fork IS the DEFAULT_PERSONA");
+		check(axes.length === 1 && axes[0]?.output.kind === "findings", "exactly one findings fork");
+		// Undefined shape → the code default, still one adversarial fork.
+		check(JSON.stringify(names(resolveReviewAxes(undefined, undefined))) === JSON.stringify(["adversarial"]),
+			"undefined shape → one adversarial fork");
+	}
+
+	// Explicit opt-in (R2): persona "parallel" → the shape's FULL declared
+	// axis set as parallel forks (the old default); falls back to the single
+	// adversarial fork when none of the declared axes resolve.
+	{
+		const axes = resolveReviewAxes(PARALLEL_REVIEW_PERSONA, DEFAULT_TASK_SHAPES.code);
+		check(JSON.stringify(names(axes)) === JSON.stringify(["standards", "spec-fidelity", "architecture"]),
+			`persona "parallel" must fork the full shape axis set, got ${JSON.stringify(names(axes))}`);
+		const emptyAxes = resolveReviewAxes(PARALLEL_REVIEW_PERSONA, { ...DEFAULT_TASK_SHAPES.code, review: [] });
+		check(JSON.stringify(names(emptyAxes)) === JSON.stringify(["adversarial"]),
+			`"parallel" with unresolvable axes falls back to [DEFAULT_PERSONA], got ${JSON.stringify(names(emptyAxes))}`);
+		// "parallel" is NOT resolved via getPersona — it is a sentinel.
+		check(getPersona(PARALLEL_REVIEW_PERSONA) === undefined, '"parallel" is not a registered persona');
+	}
+
+	// A single named persona → exactly that one axis (never the full set).
+	{
+		const adv = resolveReviewAxes("adversarial", DEFAULT_TASK_SHAPES.code);
+		check(JSON.stringify(names(adv)) === JSON.stringify(["adversarial"]),
+			`named "adversarial" → one adversarial fork, got ${JSON.stringify(names(adv))}`);
+		const arch = resolveReviewAxes("architecture", DEFAULT_TASK_SHAPES.code);
+		check(JSON.stringify(names(arch)) === JSON.stringify(["architecture"]),
+			`named "architecture" → one architecture fork, got ${JSON.stringify(names(arch))}`);
+		// Unknown persona name → falls back to the single default adversarial fork.
+		const unknown = resolveReviewAxes("not-a-persona", DEFAULT_TASK_SHAPES.code);
+		check(JSON.stringify(names(unknown)) === JSON.stringify(["adversarial"]),
+			`unknown persona name → single valid default fork, got ${JSON.stringify(names(unknown))}`);
+	}
+
+	// R3: the manifest must record the ACTUAL axes — the default one-adversarial
+	// tuple, or the full set under "parallel" (drive the same mapping the
+	// orchestrator uses for personas: effectiveAxes.map((p) => p.name)).
+	{
+		check(JSON.stringify(names(resolveReviewAxes(undefined, DEFAULT_TASK_SHAPES.code))) === JSON.stringify(["adversarial"]),
+			"manifest personas for a default run = ['adversarial']");
+		check(JSON.stringify(names(resolveReviewAxes(PARALLEL_REVIEW_PERSONA, DEFAULT_TASK_SHAPES.code))) ===
+			JSON.stringify(["standards", "spec-fidelity", "architecture"]),
+			"manifest personas for a 'parallel' run = the full axis set");
+	}
+
+	console.log("✓ resolveReviewAxes: default = one adversarial fork; 'parallel' = full axis set; named = one axis");
+}
+
 export async function runTests(): Promise<void> {
 	const errors: string[] = [];
 	console.log("── test-orchestrator: spec parse + splitSpec + aggregateSubSpecs + runVerification + fix loop ──");
@@ -506,6 +571,7 @@ export async function runTests(): Promise<void> {
 	await testRunVerification(errors);
 	testFixLoop(errors);
 	testReviewGate(errors);
+	testReviewAxes(errors);
 	testParseDiffStat(errors);
 	testClassifyOverlapDiffs(errors);
 	testFinalizationIncomplete(errors);

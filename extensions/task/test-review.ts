@@ -133,6 +133,10 @@ export async function runTests(): Promise<void> {
 			REVIEW_NO_PROGRESS_TIMEOUT_MS < REVIEW_WALL_TIMEOUT_MS;
 		check(ordered, `watchdog ordering violated: first-call ${REVIEW_FIRST_EVENT_TIMEOUT_MS} < no-progress ${REVIEW_NO_PROGRESS_TIMEOUT_MS} < wall ${REVIEW_WALL_TIMEOUT_MS}`);
 		check(
+			REVIEW_WALL_TIMEOUT_MS === 20 * 60_000,
+			`review wall default must be 20 minutes, got ${REVIEW_WALL_TIMEOUT_MS}`,
+		);
+		check(
 			REVIEW_NO_PROGRESS_TIMEOUT_MS < WORKER_NO_PROGRESS_TIMEOUT_MS,
 			`review no-progress window (${REVIEW_NO_PROGRESS_TIMEOUT_MS}) must be shorter than the worker's (${WORKER_NO_PROGRESS_TIMEOUT_MS})`,
 		);

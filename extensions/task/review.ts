@@ -95,6 +95,16 @@ export interface ForkReviewOptions {
 	 */
 	noProgressTimeoutMs?: number;
 	/**
+	 * Wall-clock budget for THIS review fork (ms). Default:
+	 * {@link REVIEW_WALL_TIMEOUT_MS} (20 min). The config-driven value
+	 * ([defaults] review_wall_timeout_ms) arrives here as
+	 * ExecuteTaskOptions.reviewWallTimeoutMs, threaded through as this
+	 * per-fork wall. Per-assessment: every review fork gets its own budget,
+	 * independent of (never subtracted from) the worker's tier wall
+	 * (workerTimeoutMs).
+	 */
+	wallTimeoutMs?: number;
+	/**
 	 * First-call fail-fast deadline (ms): the first parsed RPC event must
 	 * arrive within this window of the prompt write. Default:
 	 * {@link REVIEW_FIRST_EVENT_TIMEOUT_MS}.
@@ -452,11 +462,14 @@ export async function forkedReview(opts: ForkReviewOptions): Promise<ReviewOutco
 	// ─── Wall-clock timeout (R3) ─────────────────────────────────
 	// Bounds the review the same way worker.ts bounds workers (a reviewer
 	// that neither settles nor reports must not hang the orchestrator);
-	// cleared on close/error (see the close handler above).
+	// cleared on close/error (see the close handler above). Per-assessment:
+	// every review fork carries its own budget (opt.wallTimeoutMs —
+	// default REVIEW_WALL_TIMEOUT_MS), independent of the worker's wall.
+	const wallTimeoutMs = opts.wallTimeoutMs ?? REVIEW_WALL_TIMEOUT_MS;
 	wallTimer = setTimeout(() => {
 		wallTimer = null;
-		failReview(`Reviewer timed out after ${REVIEW_WALL_TIMEOUT_MS} ms`);
-	}, REVIEW_WALL_TIMEOUT_MS);
+		failReview(`Reviewer timed out after ${wallTimeoutMs} ms`);
+	}, wallTimeoutMs);
 
 	// Send the review prompt — the reviewer settles after report_findings
 	// (terminate:true + ctx.shutdown() in the tool). Guard the write: an
@@ -488,7 +501,7 @@ export async function forkedReview(opts: ForkReviewOptions): Promise<ReviewOutco
 				firstEventArrived,
 			}) === "abort"
 		) {
-			failReview(firstEventTimeoutErrorMessage(firstEventTimeoutMs, REVIEW_WALL_TIMEOUT_MS));
+			failReview(firstEventTimeoutErrorMessage(firstEventTimeoutMs, wallTimeoutMs));
 		}
 	}, firstEventTimeoutMs);
 
@@ -514,7 +527,7 @@ export async function forkedReview(opts: ForkReviewOptions): Promise<ReviewOutco
 			noProgressFired = true;
 			if (noProgressTimer) clearInterval(noProgressTimer);
 			noProgressTimer = null;
-			failReview(reviewNoProgressErrorMessage(noProgressTimeoutMs, REVIEW_WALL_TIMEOUT_MS));
+			failReview(reviewNoProgressErrorMessage(noProgressTimeoutMs, wallTimeoutMs));
 		}
 	}, REVIEW_NO_PROGRESS_CHECK_INTERVAL_MS);
 

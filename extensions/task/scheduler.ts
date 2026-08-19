@@ -122,6 +122,7 @@ export function buildJobRequest(input: {
 			workerTimeoutMs: tierConfig.wallTimeoutMs,
 			toolTimeoutMs: input.config.defaults.toolTimeoutMs,
 			verificationTimeoutMs: input.config.defaults.verificationTimeoutMs,
+			reviewWallTimeoutMs: input.config.defaults.reviewWallTimeoutMs,
 			aiAuthorName: input.config.defaults.aiAuthorName,
 			aiAuthorEmail: input.config.defaults.aiAuthorEmail,
 			shape,

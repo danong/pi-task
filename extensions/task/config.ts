@@ -10,6 +10,7 @@
  *   budget = "full"            # "auto" or any [budget.*] tier
  *   max_fix_iterations = 2
  *   tool_timeout_ms = 900000   # per-tool-call budget (15 min default)
+ *   review_wall_timeout_ms = 1200000   # per-review-fork wall (20 min default)
  *
  *   [budget.full]              # prewalk_model / execute_model /
  *   ...                        # review_model / review / wall_timeout_ms
@@ -147,8 +148,11 @@ export interface TaskShape {
 
 export const DEFAULT_TASK_SHAPES: Record<string, TaskShape> = {
 	/** The default pipeline: strong prewalk plans, swap to the fast execute
-	 *  model on the first edit, the default review axes (standards +
-	 *  spec-fidelity + architecture) on the tier's review model. */
+	 *  model on the first edit. The default review is ONE adversarial fork
+	 *  (DEFAULT_PERSONA, regardless of the declared axes); the declared axes
+	 *  below (standards + spec-fidelity + architecture) are the code shape's
+	 *  parallel set — forked only under the explicit `persona = "parallel"`
+	 *  opt-in (PARALLEL_REVIEW_PERSONA, orchestrator.ts). */
 	code: {
 		channel: "sync",
 		prewalk: true,
@@ -428,6 +432,15 @@ export const DEFAULT_TOOL_TIMEOUT_MS = 15 * 60_000;
  */
 export const DEFAULT_VERIFICATION_TIMEOUT_MS = DEFAULT_TOOL_TIMEOUT_MS;
 
+/**
+ * Default wall-clock budget for ONE forked review (20 min, Phase 11 —
+ * [defaults] review_wall_timeout_ms). Mirrors REVIEW_WALL_TIMEOUT_MS in
+ * review.ts; per-assessment — each review fork gets its own budget,
+ * independent of (never subtracted from) the worker's tier wall
+ * (workerTimeoutMs).
+ */
+export const DEFAULT_REVIEW_WALL_TIMEOUT_MS = 20 * 60_000;
+
 export interface TaskConfig {
 	defaults: {
 		/** Effective budget mode when neither flag nor param locks a tier.
@@ -442,6 +455,11 @@ export interface TaskConfig {
 		 * when the wall expires mid-verification (ms). Default:
 		 * {@link DEFAULT_VERIFICATION_TIMEOUT_MS} (15 min). */
 		verificationTimeoutMs: number;
+		/** Wall-clock budget for ONE forked review (ms). Default:
+		 * {@link DEFAULT_REVIEW_WALL_TIMEOUT_MS} (20 min). Per-assessment:
+		 * each review fork gets its own budget, independent of (never
+		 * subtracted from) the worker's tier wall (workerTimeoutMs). */
+		reviewWallTimeoutMs: number;
 		/**
 		 * AI commit identity (todo #84): task-worker commits are authored as
 		 * aiAuthorName / aiAuthorEmail — jj reads them via the JJ_CONFIG env
@@ -480,6 +498,7 @@ export const DEFAULT_TASK_CONFIG: TaskConfig = {
 		maxFixIterations: 2,
 		toolTimeoutMs: DEFAULT_TOOL_TIMEOUT_MS,
 		verificationTimeoutMs: DEFAULT_VERIFICATION_TIMEOUT_MS,
+		reviewWallTimeoutMs: DEFAULT_REVIEW_WALL_TIMEOUT_MS,
 		aiAuthorName: "Pi ({model})",
 		aiAuthorEmail: "noreply@danong.dev",
 	},
@@ -866,6 +885,18 @@ export function loadTaskConfig(configPath?: string): TaskConfig {
 		verificationTimeoutMs = verifyRaw;
 	}
 
+	// [defaults] review_wall_timeout_ms: positive integer ms; invalid →
+	// warn + the built-in 20-min default. Independent of the per-tier
+	// worker wall: each forked review gets its own budget (Phase 11).
+	const reviewWallPresent = defaults?.["review_wall_timeout_ms"] !== undefined;
+	const reviewWallRaw = int(defaults, "review_wall_timeout_ms");
+	let reviewWallTimeoutMs = DEFAULT_TASK_CONFIG.defaults.reviewWallTimeoutMs;
+	if (reviewWallPresent && (reviewWallRaw === undefined || reviewWallRaw <= 0)) {
+		warn(`[defaults] review_wall_timeout_ms must be a positive integer (ms) — using ${reviewWallTimeoutMs}`);
+	} else if (reviewWallRaw !== undefined) {
+		reviewWallTimeoutMs = reviewWallRaw;
+	}
+
 	// [defaults] ai_author_name / ai_author_email: the AI commit identity
 	// (todo #84). Strings; an explicitly invalid value warns + falls back
 	// to the built-in default, per the warn-and-fallback policy.
@@ -899,6 +930,7 @@ export function loadTaskConfig(configPath?: string): TaskConfig {
 			maxFixIterations,
 			toolTimeoutMs,
 			verificationTimeoutMs,
+			reviewWallTimeoutMs,
 			aiAuthorName,
 			aiAuthorEmail,
 		},

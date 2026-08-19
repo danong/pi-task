@@ -42,6 +42,11 @@ export interface RunPlan {
 	/** The tier's wall-clock budget (ms) — shown as the total-clock
 	 *  headroom ("total 45s/25m") so a wall abort is never a surprise. */
 	wallTimeoutMs?: number;
+	/** R5: the per-review-fork wall budget (ms) — shown on the plan line
+	 *  as the review phase's own budget headroom ("· review wall 20m").
+	 *  Only rendered when the plan INCLUDES a review phase; independent of
+	 *  wallTimeoutMs (the worker and review phases have separate walls). */
+	reviewWallTimeoutMs?: number;
 	/** The session's current /goals statement (resolved at execute via
 	 *  readGoals; absent → no goals clause anywhere). */
 	goals?: string;
@@ -60,6 +65,9 @@ export interface BuildRunPlanOptions {
 	review?: boolean;
 	/** The tier's wall-clock budget (ms) — rendered as total-clock headroom. */
 	wallTimeoutMs?: number;
+	/** R5: the per-review-fork wall (ms) — rendered on the plan line ONLY
+	 *  when the review phase is included (see RunPlan.reviewWallTimeoutMs). */
+	reviewWallTimeoutMs?: number;
 	/** The session's current /goals statement (readGoals at execute). */
 	goals?: string;
 }
@@ -79,7 +87,13 @@ export function buildRunPlan(opts: BuildRunPlanOptions): RunPlan {
 	if (opts.review) {
 		phases.push({ name: "review", model: opts.reviewModel ?? opts.executeModel });
 	}
-	return { tier: opts.tier, phases, wallTimeoutMs: opts.wallTimeoutMs, goals: opts.goals };
+	return {
+		tier: opts.tier,
+		phases,
+		wallTimeoutMs: opts.wallTimeoutMs,
+		reviewWallTimeoutMs: opts.reviewWallTimeoutMs,
+		goals: opts.goals,
+	};
 }
 
 /** The phase a fresh worker starts in (the plan's first phase). */
@@ -294,11 +308,18 @@ export function formatDuration(ms: number): string {
 	return `${minutes}m${String(seconds).padStart(2, "0")}s`;
 }
 
-/** The plan line: `plan(<tier>): prewalk(<model>) → work(<model>) → ...` */
+/** The plan line: `plan(<tier>): prewalk(<model>) → work(<model>) → ...`,
+ *  with optional clauses: the session goals and — when a review phase will
+ *  run — the per-review fork's own wall budget ("· review wall 20m", R5). */
 export function renderPlanLine(plan: RunPlan): string {
 	const base = `plan(${plan.tier}): ${plan.phases.map((p) => `${p.name}(${p.model})`).join(" → ")}`;
+	const clauses: string[] = [];
 	const goals = renderGoalsClause(plan.goals);
-	return goals ? `${base} · ${goals}` : base;
+	if (goals) clauses.push(goals);
+	if (plan.phases.some((p) => p.name === "review") && plan.reviewWallTimeoutMs !== undefined) {
+		clauses.push(`review wall ${formatDuration(plan.reviewWallTimeoutMs)}`);
+	}
+	return clauses.length > 0 ? `${base} · ${clauses.join(" · ")}` : base;
 }
 
 /** Max goals characters kept on the plan line before the ellipsis. */

@@ -737,6 +737,45 @@ function testRunPlan(errors: string[]): void {
 	const fallback = buildRunPlan({ tier: "x", executeModel: "prov/fast", review: true });
 	check(fallback.phases[1]?.model === "prov/fast", "review model falls back to the execute model");
 
+	// R5: the review phase carries its OWN wall budget on the plan line
+	// ("· review wall 20m"), shown ONLY when a review will run and the
+	// value is set — never on a review-less plan (no review wall clause).
+	const withReviewWall = buildRunPlan({
+		tier: "full",
+		executeModel: "prov/fast",
+		reviewModel: "prov/strong",
+		review: true,
+		reviewWallTimeoutMs: 20 * 60_000,
+	});
+	check(withReviewWall.reviewWallTimeoutMs === 20 * 60_000, "plan carries the review wall");
+	check(
+		renderPlanLine(withReviewWall) === "plan(full): work(prov/fast) → review(prov/strong) · review wall 20m",
+		`plan line carries the review wall, got: ${renderPlanLine(withReviewWall)}`,
+	);
+	// Goals + review wall compose in clause order (goals first).
+	const goalsAndWall = buildRunPlan({
+		tier: "full",
+		executeModel: "prov/fast",
+		reviewModel: "prov/strong",
+		review: true,
+		reviewWallTimeoutMs: 10 * 60_000,
+		goals: "keep it small",
+	});
+	check(
+		renderPlanLine(goalsAndWall) === "plan(full): work(prov/fast) → review(prov/strong) · goals: keep it small · review wall 10m",
+		`goals then review-wall clauses, got: ${renderPlanLine(goalsAndWall)}`,
+	);
+	// No review phase → never a review-wall clause, even when the value is set.
+	const noReviewWall = buildRunPlan({
+		tier: "free",
+		executeModel: "prov/fast",
+		review: false,
+		reviewWallTimeoutMs: 20 * 60_000,
+	});
+	check(!renderPlanLine(noReviewWall).includes("review wall"), "no review phase → no review-wall clause");
+	const noReviewWallValue = buildRunPlan({ tier: "full", executeModel: "prov/fast", review: true });
+	check(!renderPlanLine(noReviewWallValue).includes("review wall"), "review phase without a wall value → no clause");
+
 	// R2: the session goals flow into the plan and render truncated on the
 	// plan line — "goals: <statement>…" — so the dispatch linkage is visible
 	// in the widget. Absent/blank goals → no goals clause (backward

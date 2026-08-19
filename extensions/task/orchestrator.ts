@@ -77,7 +77,7 @@ import {
 import { parseSpec, SpecError, type Spec } from "./schemas/spec.ts";
 import { extractFileScope } from "./progress.ts";
 import { forkedReview, mergeReviewOutcomes } from "./review.ts";
-import { DEFAULT_PERSONA, DEFAULT_REVIEW_PERSONAS, getPersona, type Persona } from "./personas.ts";
+import { DEFAULT_PERSONA, getPersona, type Persona } from "./personas.ts";
 import {
 	batchJobStatePath,
 	BatchError,
@@ -445,9 +445,8 @@ export async function rescueAbortedWorkBestEffort(cwd: string, err: unknown): Pr
  */
 function writeFailureArtifactBestEffort(opts: {
 	err: unknown;
-	kind: "worker" | "review" | "parallel";
-	runId?: string;
 	kind: "worker" | "review" | "parallel" | "batch";
+	runId?: string;
 	metricsDir?: string;
 	project: string;
 	specMarkdown: string;
@@ -531,6 +530,14 @@ export interface ExecuteTaskOptions {
 	 * cannot see. Mirrors verificationTimeoutMs.
 	 */
 	toolTimeoutMs?: number;
+	/**
+	 * Wall-clock budget for EACH forked review (ms, [defaults]
+	 * review_wall_timeout_ms). Default: 20 min — the same REVIEW_WALL_TIMEOUT_MS
+	 * constant review.ts falls back to. Independent of workerTimeoutMs:
+	 * every review fork gets its own budget, never subtracted from or
+	 * shared with the worker's tier wall.
+	 */
+	reviewWallTimeoutMs?: number;
 	/** Enable forked adversarial review + bounded fix loop (single-worker).
 	 *  Default: false — the pre-Phase-7 verify-once path, unchanged. The
 	 *  task.toml budget wiring is Phase 10; this is the per-call switch. */
@@ -538,9 +545,12 @@ export interface ExecuteTaskOptions {
 	/** Reviewer model (when review enabled). Default: the execute model. */
 	reviewModel?: string;
 	/** Reviewer persona name (when review enabled). Unset → the DEFAULT
-	 *  review axes (standards + spec-fidelity + architecture, run as
-	 *  parallel forks); a single name (e.g. "adversarial") overrides the
-	 *  set. Only shapes that declare review axes fork a review — an
+	 *  review: ONE adversarial fork (DEFAULT_PERSONA), regardless of how
+	 *  many axes the shape declares. "parallel" (PARALLEL_REVIEW_PERSONA)
+	 *  → the shape's full declared axis set as parallel forks (the old
+	 *  default; the explicit opt-in for high-stakes/shared code). A single
+	 *  name (e.g. "adversarial" or "architecture") selects exactly that
+	 *  one axis. Only shapes that declare review axes fork a review — an
 	 *  explicit persona on an axis-less shape (analysis) is skipped, never
 	 *  forked. */
 	persona?: string;
@@ -835,6 +845,36 @@ export function resolveReviewGate(
 	const requested = opts.review === true || opts.persona !== undefined;
 	const enabled = requested && shape.review.length > 0;
 	return { requested, enabled, skipped: requested && !enabled };
+}
+
+/**
+ * Sentinel persona name: fork ALL of the shape's declared review axes in
+ * parallel (the pre-R1 default for code runs). Handled BEFORE getPersona —
+ * it is not itself a registered persona, and resolveReviewAxes never feeds
+ * it to the registry lookup. Pure — tested hermetically (testReviewAxes).
+ */
+export const PARALLEL_REVIEW_PERSONA = "parallel";
+
+/**
+ * Resolve the review forks to dispatch (R1): NO persona override → exactly
+ * ONE fork of the default adversarial persona, regardless of how many axes
+ * the shape declares. `"parallel"` (PARALLEL_REVIEW_PERSONA) → the shape's
+ * full declared axis set as parallel forks (the old default; the explicit
+ * opt-in for high-stakes/shared code), falling back to [DEFAULT_PERSONA]
+ * when none of the axes resolve. A single named persona (e.g. "adversarial"
+ * or "architecture") → exactly that one axis (unknown names fall back to
+ * the default). Axis-less shapes never reach here — resolveReviewGate
+ * disabled the review upstream. Pure — tested hermetically.
+ */
+export function resolveReviewAxes(persona: string | undefined, shape: TaskShape | undefined): Persona[] {
+	if (persona === PARALLEL_REVIEW_PERSONA) {
+		const axes = (shape ?? DEFAULT_TASK_SHAPES.code).review
+			.map((n) => getPersona(n))
+			.filter((p): p is Persona => p !== undefined);
+		return axes.length > 0 ? axes : [DEFAULT_PERSONA];
+	}
+	if (persona !== undefined) return [getPersona(persona) ?? DEFAULT_PERSONA];
+	return [DEFAULT_PERSONA];
 }
 
 // ─── Review + bounded fix loop (Phase 7) ─────────────────────────────
@@ -1377,6 +1417,7 @@ export async function executeTask(opts: ExecuteTaskOptions): Promise<TaskResult>
 			verificationTimeoutMs,
 			workerTimeoutMs: opts.workerTimeoutMs,
 			toolTimeoutMs: opts.toolTimeoutMs,
+			reviewWallTimeoutMs: opts.reviewWallTimeoutMs,
 			spec,
 			specMarkdown,
 			review: reviewGate.enabled,
@@ -2303,6 +2344,8 @@ async function executeSingle(
 		verificationTimeoutMs?: number;
 		workerTimeoutMs?: number;
 		toolTimeoutMs?: number;
+		/** Per-fork review wall (ms); absent → review.ts's 20-min default. */
+		reviewWallTimeoutMs?: number;
 		spec: Spec;
 		specMarkdown: string;
 		review?: boolean;
@@ -2327,7 +2370,7 @@ async function executeSingle(
 ): Promise<TaskResult> {
 	const {
 		taskPrompt, usePrewalk, prewalkModel, executeModel, systemPrompt, signal, onSwap, onUpdate,
-		verificationTimeoutMs, workerTimeoutMs, toolTimeoutMs, spec, specMarkdown, review, reviewModel,
+		verificationTimeoutMs, workerTimeoutMs, toolTimeoutMs, reviewWallTimeoutMs, spec, specMarkdown, review, reviewModel,
 		persona, shape, maxFixIterations, metricsDir, project, preserveSessions, budget, sandbox,
 		runId, aiAuthorName, aiAuthorEmail,
 	} = opts;
@@ -2593,18 +2636,16 @@ async function executeSingle(
 			throw new Error("review enabled but the worker did not persist a session (no sessionFile)");
 		}
 		const maxFixes = Math.max(0, maxFixIterations ?? 2);
-		// The review axes: an explicit persona (single-axis override — e.g.
-		// "adversarial") or the shape's declared axes (the code shape:
-		// standards + spec-fidelity + architecture), each run as its own
-		// parallel fork so neither pollutes the other. Findings merge,
-		// verdict = worst, requirements = worst per id. Axis-less shapes
-		// never reach here — resolveReviewGate disabled the review upstream
-		// (surveys are a single task, the worker IS the review).
-		const shapeAxes = (shape ?? DEFAULT_TASK_SHAPES.code).review;
-		const reviewAxes = persona
-			? [getPersona(persona) ?? DEFAULT_PERSONA]
-			: shapeAxes.map((n) => getPersona(n)).filter((p): p is Persona => p !== undefined);
-		const effectiveAxes = reviewAxes.length > 0 ? reviewAxes : [DEFAULT_PERSONA];
+		// The review axes (R1): no persona override → ONE default adversarial
+		// fork (fast, lean — the everyday default for routine code work);
+		// persona "parallel" (PARALLEL_REVIEW_PERSONA) → the shape's full
+		// declared axis set as parallel forks (the explicit opt-in for
+		// high-stakes/shared code); a single named persona → exactly that
+		// one axis. Findings merge, verdict = worst, requirements = worst
+		// per id. Axis-less shapes never reach here — resolveReviewGate
+		// disabled the review upstream (surveys are a single task, the
+		// worker IS the review).
+		const effectiveAxes = resolveReviewAxes(persona, shape);
 		const rModel = reviewModel ?? executeModel;
 
 		let diff = await computeDiff(cwd, baseCommit);
@@ -2639,6 +2680,7 @@ async function executeSingle(
 							deviations: worker.yield.deviations,
 							persona: p,
 							firstEventTimeoutMs: watchWindows.firstEventMs,
+							wallTimeoutMs: reviewWallTimeoutMs,
 							signal,
 							onUpdate,
 						}),

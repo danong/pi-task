@@ -320,10 +320,12 @@ export interface TaskToolParams {
 	sub_specs?: (string | SubSpecObject)[];
 	parallel?: number;
 	budget?: string;
-	/** Reviewer persona/axis override: unset → the default review axes
-	 *  (standards + spec-fidelity + architecture); a single name (e.g.
-	 *  "adversarial") overrides it. Applies only on shapes that declare
-	 *  review axes — an analysis run never forks a reviewer (single task). */
+	/** Reviewer persona/axis override: unset → the DEFAULT review — ONE
+	 *  adversarial fork (regardless of the shape's declared axes);
+	 *  "parallel" → the shape's full declared axis set as parallel forks;
+	 *  a single name (e.g. "adversarial", "architecture") selects that
+	 *  one axis. Applies only on shapes that declare review axes — an
+	 *  analysis run never forks a reviewer (single task). */
 	review?: string;
 	/** Run-pipeline shape (code | analysis | any [shapes.*] section);
 	 *  default: the tier's shape. analysis promotes the strong prewalk
@@ -395,10 +397,10 @@ export function taskToolSchema(
 		review: Type.Optional(
 			Type.String({
 				description:
-					"Reviewer persona/axis override — unset → the default review axes (standards + spec-fidelity + " +
-					"architecture, parallel forks); a single name overrides it, e.g. \"adversarial\" (the original " +
-					"single-axis reviewer). Applies only on shapes that declare review axes — an analysis run is a " +
-					"single task and never forks a reviewer.",
+					"Reviewer persona/axis override — unset → the DEFAULT review: ONE adversarial fork. \"parallel\" → " +
+					"the shape's full declared axis set (standards + spec-fidelity + architecture) as parallel forks. " +
+					"A single name (e.g. \"adversarial\" or \"architecture\") selects exactly that one axis. Applies " +
+					"only on shapes that declare review axes — an analysis run is a single task and never forks a reviewer.",
 			}),
 		),
 		shape: Type.Optional(
@@ -974,6 +976,7 @@ export default function (pi: ExtensionAPI) {
 					reviewModel: shape.reviewModel === "prewalk" ? (tierConfig.prewalkModel ?? tierConfig.reviewModel) : tierConfig.reviewModel,
 					review: reviewWillRun,
 					wallTimeoutMs: tierConfig.wallTimeoutMs,
+					reviewWallTimeoutMs: reviewWillRun ? taskConfig.defaults.reviewWallTimeoutMs : undefined,
 					goals,
 				});
 
@@ -1012,6 +1015,7 @@ export default function (pi: ExtensionAPI) {
 						workerTimeoutMs: tierConfig.wallTimeoutMs,
 						toolTimeoutMs: taskConfig.defaults.toolTimeoutMs,
 						verificationTimeoutMs: taskConfig.defaults.verificationTimeoutMs,
+						reviewWallTimeoutMs: taskConfig.defaults.reviewWallTimeoutMs,
 						// Todo #84: AI commit identity for worker commits.
 						aiAuthorName: taskConfig.defaults.aiAuthorName,
 						aiAuthorEmail: taskConfig.defaults.aiAuthorEmail,
@@ -1131,6 +1135,7 @@ export default function (pi: ExtensionAPI) {
 						workerTimeoutMs: tierConfig.wallTimeoutMs,
 						toolTimeoutMs: taskConfig.defaults.toolTimeoutMs,
 						verificationTimeoutMs: taskConfig.defaults.verificationTimeoutMs,
+						reviewWallTimeoutMs: taskConfig.defaults.reviewWallTimeoutMs,
 						// Todo #84: AI commit identity for worker commits.
 						aiAuthorName: taskConfig.defaults.aiAuthorName,
 						aiAuthorEmail: taskConfig.defaults.aiAuthorEmail,

@@ -117,8 +117,11 @@ are `[shapes.*]` sections in `config/task.toml`; the task tool's `shape`
 param overrides the tier's default, and the manifest records which shape ran.
 
 - **`code`** (default) — prewalk plans on the strong model, swap to the fast
-  execute model on the first edit, three-axis review (standards + spec
-  fidelity + architecture fidelity). Built for implementation.
+  execute model on the first edit. Default review: ONE adversarial fork
+  (fast, lean). The full three-axis parallel set (standards + spec
+  fidelity + architecture fidelity — forked only via `persona: "parallel"`)
+  is the explicit opt-in for high-stakes/shared code. Built for
+  implementation.
 - **`analysis`** — no prewalk, no swap: the STRONG model writes (the tier's
   prewalk model is promoted into the work slot). For surveys and design
   reviews, where the report IS the thinking. `/survey` dispatches
@@ -148,14 +151,13 @@ The task tool's lifecycle, roughly in order:
    on the merged tree. Unverified work never merges; a hung command dies
    mechanically (per-command timeout + wall grace), never blocking work.
 6. **Review** — at review tiers, a forked adversarial review runs on the
-   worker's commit, checked along two axes:
-   - **Standards** — repo conventions and smell baseline.
-   - **Spec fidelity** — does the change implement the originating spec?
-   - **Architecture fidelity** — does the change honor the recorded
-     architecture (CONTEXT.md vocabulary/conventions, docs/adr/ decisions,
-     the latest docs/architecture-review.md)?
-   Each axis runs as its own fork so neither pollutes the other; findings
-   merge, blockers (P0/P1) drive a bounded fix loop.
+   worker's commit. By default this is ONE adversarial fork (the persona
+   used when none is specified). The shape's full axis set (standards +
+   spec-fidelity + architecture, each as its own fork so neither pollutes
+   the other) runs only under the explicit `persona: "parallel"` opt-in;
+   findings merge, blockers (P0/P1) drive a bounded fix loop. The review
+   has its OWN wall budget (default 20 min), independent of the worker's
+   tier wall.
    The review only forks on shapes that declare review axes — an analysis
    run (`/survey`) is a single task: no nested reviewer, the spec's
    Verification commands assert the report structure, and the conversational
@@ -173,9 +175,9 @@ late aborts ("work committed, finalization incomplete") attempt finalization
 ## Quality loops
 
 - **Verification gate** — real bash, exit codes; never merge unverified.
-- **Adversarial review** — forked, persona-driven, the shape's review axes
-  (default three: standards, spec fidelity, architecture fidelity — the last
-  checks each change against the repo's recorded decisions).
+- **Adversarial review** — forked, persona-driven. The default is a
+  single adversarial reviewer; `persona: "parallel"` forks the shape's
+  full axis set (standards, spec fidelity, architecture fidelity).
 - **Survey review** — the report artifact gets adversarially validated.
 - **Metrics** — every run writes a manifest to `<agent-dir>/results/` (phase
   breakdown, tokens, cost, wall-clock latency, merge record, verification

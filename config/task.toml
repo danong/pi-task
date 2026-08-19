@@ -41,6 +41,10 @@ tool_timeout_ms = 900000
 # suite gets to finish, bounded). 900000 = 15 min (the default when
 # absent — same as tool_timeout_ms).
 verification_timeout_ms = 900000
+# Per-review-fork wall budget (ms): each forked review gets its OWN
+# wall, independent of (never subtracted from) the worker's per-tier
+# wall (wall_timeout_ms above). Default 1200000 = 20 min.
+review_wall_timeout_ms = 1200000
 # AI commit identity: task-worker commits are authored as this name/email
 # (jj reads it via a config override in the worker env; "{model}" is
 # replaced with the execute model's short name). Parallel runs build the
@@ -147,8 +151,10 @@ job_timeout_ms = 86400000
 
 [shapes.code]
 # The default pipeline: strong prewalk plans, swap to the fast execute
-# model on the first edit, the default review axes (standards +
-# spec-fidelity + architecture) on the tier's review model.
+# model on the first edit. The default review is ONE adversarial fork
+# (the persona used when none is specified); the full declared axis set
+# below (standards + spec-fidelity + architecture, parallel forks) is
+# the explicit `persona = "parallel"` opt-in for high-stakes/shared code.
 prewalk = true
 swap = true
 work_model = "execute"

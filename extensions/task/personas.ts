@@ -10,8 +10,10 @@
  * The persona supplies the reviewer's ROLE (system prompt). The spec, final
  * diff, worker summary, and deviations are injected as separate user messages
  * by the review runner; the inherited (pruned) reads/bash come from the fork.
- * The architecture axis (architecturePersona) is part of the DEFAULT review
- * axes — see DEFAULT_REVIEW_PERSONAS.
+ * The architecture axis (architecturePersona) is part of the code shape's
+ * DECLARED axes — forked only under the explicit `persona = "parallel"`
+ * opt-in (see DEFAULT_REVIEW_PERSONAS); the DEFAULT review is a single
+ * adversarial fork (DEFAULT_PERSONA).
  */
 
 /** How a persona reports its result. */
@@ -179,10 +181,13 @@ export const PERSONAS: Persona[] = [
 	architecturePersona,
 ];
 
-/** The DEFAULT review axes: the parallel review (standards +
- *  spec-fidelity + architecture), each run as its own fork so neither
- *  pollutes the other. The adversarial persona stays registered for
- *  explicit single-persona use. */
+/**
+ * The code shape's DECLARED review axes (standards + spec-fidelity +
+ * architecture). NOT the default: by default a code run forks ONE
+ * adversarial reviewer (DEFAULT_PERSONA) — the full declared set here is
+ * forked only under the explicit `persona = "parallel"` opt-in
+ * (PARALLEL_REVIEW_PERSONA in orchestrator.ts).
+ */
 export const DEFAULT_REVIEW_PERSONAS: string[] = ["standards", "spec-fidelity", "architecture"];
 
 /** The persona used when none is specified. */
