@@ -309,6 +309,57 @@ export const DEFAULT_BATCH_CONFIG: BatchLaneConfig = {
 	jobTimeoutMs: DEFAULT_BATCH_JOB_TIMEOUT_MS,
 };
 
+// ─── Scheduled jobs ([jobs.*], M4) ──────────────────────────────────
+// A scheduled job: the standalone pi-task-scheduler dispatches it when
+// due (every_ms elapsed since the last run), on the job's channel
+// (flex = a detached run; batch = a batch job). No default jobs ship —
+// the shipped config documents the format with a commented example.
+
+export interface JobConfig {
+	/** Description shown in the scheduler's plan/dry-run. */
+	description: string;
+	/** Channel the job runs on: "flex" | "batch" | "sync". */
+	channel: string;
+	/** Budget tier name (e.g. "economy") and run shape (e.g. "analysis"). */
+	tier: string;
+	shape: string;
+	/** The task spec: inline markdown, or "file:<path>" to read it at
+	 *  dispatch time. */
+	spec: string;
+	/** Dispatch interval (ms). */
+	everyMs: number;
+}
+
+export const DEFAULT_JOBS: Record<string, JobConfig> = {};
+
+/** Load [jobs.<name>] sections. A missing [jobs.*] → empty; a job
+ *  without a spec or interval warns and is skipped. */
+export function loadJobs(sections: TomlSections): Record<string, JobConfig> {
+	const out: Record<string, JobConfig> = {};
+	const parent = sections["jobs"];
+	if (parent === undefined || typeof parent !== "object" || parent !== null) return out;
+	for (const key of Object.keys(parent)) {
+		const section = subTable(sections, "jobs", key);
+		if (!section) continue;
+		const label = `[jobs.${key}]`;
+		const spec = str(section, "spec") ?? "";
+		const everyRaw = int(section, "every_ms");
+		if (spec.length === 0 || everyRaw === undefined || everyRaw <= 0) {
+			warn(`${label} requires a spec and every_ms > 0 — skipping`);
+			continue;
+		}
+		out[key] = {
+			description: str(section, "description") ?? key,
+			channel: str(section, "channel") ?? "flex",
+			tier: str(section, "tier") ?? DEFAULT_BUDGET_TIER,
+			shape: str(section, "shape") ?? "code",
+			spec,
+			everyMs: everyRaw,
+		};
+	}
+	return out;
+}
+
 // ─── AI commit identity (todo #84) ───────────────────────────────────
 
 /**
@@ -416,6 +467,8 @@ export interface TaskConfig {
 	/** Batch lane ([batch]): the async job channel's model id + polling
 	 *  budgets (M2 — consumed when a shape's channel is "batch"). */
 	batch: BatchLaneConfig;
+	/** Scheduled jobs ([jobs.*]) for the standalone scheduler. */
+	jobs: Record<string, JobConfig>;
 	sandbox: SandboxConfig;
 }
 
@@ -432,6 +485,7 @@ export const DEFAULT_TASK_CONFIG: TaskConfig = {
 	tierOrder: [...BUDGET_TIERS],
 	shapes: DEFAULT_TASK_SHAPES,
 	batch: DEFAULT_BATCH_CONFIG,
+	jobs: DEFAULT_JOBS,
 	sandbox: DEFAULT_SANDBOX_CONFIG,
 };
 
@@ -850,6 +904,7 @@ export function loadTaskConfig(configPath?: string): TaskConfig {
 		tierOrder,
 		shapes,
 		batch,
+		jobs: loadJobs(sections),
 		sandbox,
 	};
 }

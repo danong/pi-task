@@ -1,0 +1,140 @@
+/**
+ * Scheduler hermetic tests — the pure parts (isDue, state round-trip,
+ * dueJobs, spec resolution, arg parsing, the detached-run request).
+ * No spawn, no batch provider, no LLM. Registered in test.ts.
+ */
+
+import { mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { pathToFileURL } from "node:url";
+import {
+	dueJobs,
+	isDue,
+	parseSchedulerArgs,
+	readSchedulerState,
+	writeSchedulerState,
+	schedulerStatePath,
+	resolveJobSpec,
+	buildJobRequest,
+	type JobConfig,
+} from "./scheduler.ts";
+import { DEFAULT_TASK_SHAPES, DEFAULT_SANDBOX_CONFIG } from "./config.ts";
+
+function job(over: Partial<JobConfig> = {}): JobConfig {
+	return {
+		description: "test job",
+		channel: "flex",
+		tier: "full",
+		shape: "code",
+		spec: "## Goal\ng\n## Requirements\n- R1: x\n## Verification\ntrue",
+		everyMs: 60_000,
+		...over,
+	};
+}
+
+export async function runTests(): Promise<void> {
+	const errors: string[] = [];
+	const check = (cond: boolean, msg: string): void => {
+		if (!cond) errors.push(msg);
+	};
+
+	// isDue
+	{
+		const j = job();
+		check(isDue(j, undefined, 0) === true, "never run → due");
+		check(isDue(j, 1000, 61_000) === true, "everyMs elapsed → due");
+		check(isDue(j, 1000, 1001) === false, "not elapsed → not due");
+		check(isDue(job({ everyMs: 0 }), undefined, 0) === true, "zero interval → always due");
+	}
+
+	// state round-trip
+	{
+		const dir = mkdtempSync(join(tmpdir(), "pi-task-sched-"));
+		try {
+			const path = schedulerStatePath(dir);
+			check(readSchedulerState(path).length === undefined, "missing state → empty record");
+			writeSchedulerState(path, { weekly: { lastRunMs: 123, runId: "r1" } });
+			check(readSchedulerState(path).weekly?.runId === "r1", "state round-trips");
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	}
+
+	// dueJobs
+	{
+		const config = { jobs: { a: job({ everyMs: 10_000 }), b: job({ everyMs: 10_000 }) } };
+		const all = dueJobs(config, {}, 20_000);
+		check(all.length === 2, "all due when never run");
+		const one = dueJobs(config, { a: { lastRunMs: 15_000 } }, 20_000);  // 5s elapsed < 10s → a not due
+		check(one.length === 1 && one[0].name === "b", "only un-elapsed job due");
+		check(dueJobs({ jobs: {} }, {}, 0).length === 0, "no jobs → empty plan");
+	}
+
+	// resolveJobSpec: inline + file:
+	{
+		const dir = mkdtempSync(join(tmpdir(), "pi-task-spec-"));
+		try {
+			const p = join(dir, "spec.md");
+			writeFileSync(p, "## Goal\nfile\n## Requirements\n- R1: y\n## Verification\ntrue", "utf-8");
+			check(resolveJobSpec(job({ spec: "inline" })) === "inline", "inline spec returned");
+			check(resolveJobSpec(job({ spec: `file:${p}` })).includes("file"), "file: spec read");
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	}
+
+	// parseSchedulerArgs
+	{
+		check(parseSchedulerArgs(["--once"]).mode === "once", "--once");
+		check(parseSchedulerArgs(["--loop"]).mode === "loop", "--loop");
+		check(parseSchedulerArgs(["--dry-run"]).dryRun === true, "--dry-run");
+		check(parseSchedulerArgs(["--project", "x"]).project === "x", "--project value");
+		let threw = "";
+		try {
+			parseSchedulerArgs(["--bogus"]);
+		} catch (err) {
+			threw = (err as Error).message;
+		}
+		check(threw.includes("bogus"), "unknown arg throws");
+	}
+
+	// buildJobRequest: writes the detached-run request file (flex lane)
+	{
+		const dir = mkdtempSync(join(tmpdir(), "pi-task-req-"));
+		try {
+			const metricsDir = join(dir, "results");
+			const { runId, requestPath } = buildJobRequest({
+				metricsDir,
+				project: "proj",
+				spec: "## Goal\ng\n## Requirements\n- R1: x\n## Verification\ntrue",
+				tier: "full",
+				shape: "analysis",
+				shapeConfig: DEFAULT_TASK_SHAPES,
+				sandbox: DEFAULT_SANDBOX_CONFIG,
+				cwd: dir,
+			});
+			const { run_id, options } = JSON.parse(readFileSync(requestPath, "utf-8"));
+			check(run_id === runId, "request carries the run id");
+			check(options.spec && options.budget === "full", "request carries spec + tier");
+			check(options.shape.channel === "sync" && options.shape.workModel === "prewalk",
+				"request carries the resolved shape");
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	}
+
+	if (errors.length > 0) {
+		throw new Error("test-scheduler failed:\n  ✗ " + errors.join("\n  ✗ "));
+	}
+	console.log("✓ scheduler: isDue, state, dueJobs, spec resolution, args, request (M4)");
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+	runTests()
+		.then(() => process.exit(0))
+		.catch((err) => {
+			console.error(err.message ?? err);
+			process.exit(1);
+		});
+}

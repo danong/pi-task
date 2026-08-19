@@ -178,3 +178,18 @@ swap = false
 work_model = "execute"
 review_model = "review"
 review = []
+
+#
+# ─── Scheduled jobs ([jobs.*]) ───────────────────────────────────────
+# The standalone scheduler (extensions/task/scheduler.ts) dispatches a job
+# when every_ms has elapsed since its last run, on its channel (flex = a
+# detached run; batch = a batch job on the [batch] model). Uncomment to
+# enable; restart the scheduler to pick up changes.
+#
+#    [jobs.weekly-survey]
+#    description = "Weekly architecture survey"
+#    channel = "flex"          # or "batch" for the async lane
+#    tier = "full"
+#    shape = "analysis"
+#    spec = "file:/workspace/pi-task/canned/survey.md"   # or inline markdown
+#    every_ms = 604800000      # 7 days
