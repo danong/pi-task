@@ -337,7 +337,7 @@ export const DEFAULT_JOBS: Record<string, JobConfig> = {};
 export function loadJobs(sections: TomlSections): Record<string, JobConfig> {
 	const out: Record<string, JobConfig> = {};
 	const parent = sections["jobs"];
-	if (parent === undefined || typeof parent !== "object" || parent !== null) return out;
+	if (parent === undefined || typeof parent !== "object" || parent === null) return out;
 	for (const key of Object.keys(parent)) {
 		const section = subTable(sections, "jobs", key);
 		if (!section) continue;
