@@ -266,6 +266,14 @@ export async function runTests(): Promise<void> {
 		check(injectServiceTier(payload, "bogus") === payload, "invalid tier → payload unchanged");
 		check(injectServiceTier(payload, undefined) === payload, "no tier → payload unchanged");
 		check(injectServiceTier(null, "flex") === null, "non-object payload → unchanged");
+		// Model scoping: the standard-priced workhorse is exempt from the tier.
+		const gemini = { model: "openrouter/google/gemini-3.7-flash", messages: [] };
+		const deepseek = { model: "openrouter/~deepseek/deepseek-v4-flash-latest", messages: [] };
+		const excludes = ["openrouter/~deepseek/deepseek-v4-flash-latest"];
+		check((injectServiceTier(gemini, "flex", excludes) as Record<string, unknown>).service_tier === "flex",
+			"strong model gets the tier");
+		check(injectServiceTier(deepseek, "flex", excludes) === deepseek,
+			"excluded workhorse stays standard-priced");
 	}
 
 	// 14d. Flex capacity classifier + backoff schedule (exponential, bounded).

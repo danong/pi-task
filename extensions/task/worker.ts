@@ -44,6 +44,13 @@ export interface WorkerOptions {
 	 * spawnWorkerSessionResilient (exponential backoff retry).
 	 */
 	serviceTier?: string;
+	/**
+	 * Model ids EXEMPT from serviceTier (comma-joined into
+	 * PI_TASK_SERVICE_TIER_EXCLUDES): the cheap workhorse stays
+	 * standard-priced inside a flex run — the tier applies only to the
+	 * strong-model calls (prewalk). Unset → the tier applies to every call.
+	 */
+	serviceTierExcludes?: string[];
 	/** The task prompt sent to the worker. */
 	task: string;
 	/** Worker system prompt (appended to pi's default). */
@@ -832,6 +839,9 @@ export function spawnWorkerSession(opts: WorkerOptions): WorkerSession {
 			// Service tier (flex infra): the service-tier extension reads this
 			// and injects service_tier into every provider payload.
 			...(opts.serviceTier ? { PI_TASK_SERVICE_TIER: opts.serviceTier } : {}),
+			...(opts.serviceTier && opts.serviceTierExcludes?.length
+				? { PI_TASK_SERVICE_TIER_EXCLUDES: opts.serviceTierExcludes.join(",") }
+				: {}),
 		},
 	});
 

@@ -418,19 +418,25 @@ wall_timeout_ms = 1500000
 *(The sketch above is illustrative; `config/task.toml` is the source of
 truth — the drift guard pins it to the built-in defaults.)*
 
-**Async workers on OpenRouter flex (`[budget.async]`).** Batch-level
-pricing through the synchronous endpoint: the tier declares
-`service_tier = "flex"` and pairs with the `async` shape (channel
-`flex` — the 25/20-min watchdog windows tolerate flex's 1–15-min
-per-call latency; the tier wall is 120 min). The tier is a property of
-the RUN, never the model: the engine sets `PI_TASK_SERVICE_TIER` only on
-the subprocesses it spawns for a flex-tier run, and
+**Async workers (`[budget.async]`) — the efficiency doctrine.** The
+token-hungry tool loop runs on the CHEAP workhorse (DeepSeek V4 Flash,
+standard tier); the strong model (Gemini Flash) gets only the thin
+prewalk slice, priced down via OpenRouter flex (`service_tier = "flex"`
+— batch-level pricing through the synchronous endpoint). Gemini flex is
+still ~3× the workhorse's input price, so it is used sparingly: never
+for the loop, never for routine reviews (review runs on the workhorse).
+Injection is run-scoped AND model-scoped: the engine sets
+`PI_TASK_SERVICE_TIER` (+ `PI_TASK_SERVICE_TIER_EXCLUDES` naming the
+workhorse) only on subprocesses it spawns for a flex-tier run, and
 `tools/service-tier.ts` (loaded via `--extension` there) injects
-`service_tier` into every provider payload — the conversational session
-can run the same model at standard speed untouched. Flex has NO
-server-side fallback, so capacity failures get client-side exponential
-backoff (30s/60s/120s, `spawnWorkerSessionResilient`). The manifest
-records the requested tier (`config.service_tier`).
+`service_tier` into payloads whose model is not excluded — one session
+runs the flex prewalk AND the standard post-swap loop correctly, and the
+conversational session stays untouched. The tier pairs with the `async`
+shape (channel `flex` — 25/20-min watchdog windows for flex's 1–15-min
+per-call latency; 120-min wall). Flex has NO server-side fallback, so
+capacity failures get client-side exponential backoff (30s/60s/120s,
+`spawnWorkerSessionResilient`). The manifest records the requested tier
+(`config.service_tier`).
 
 **Config-driven vocabulary (Phase 11).** Every `[budget.*]` section in
 task.toml is a supported tier, in file order — adding a tier requires no

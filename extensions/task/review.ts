@@ -114,6 +114,8 @@ export interface ForkReviewOptions {
 	/** OpenRouter service tier (the run's budget tier declares it) — set →
 	 *  the reviewer subprocess injects service_tier into every call. */
 	serviceTier?: string;
+	/** Model ids exempt from the tier (the standard-priced workhorse). */
+	serviceTierExcludes?: string[];
 	signal?: AbortSignal;
 	onUpdate?: (partial: unknown) => void;
 }
@@ -299,6 +301,9 @@ export async function forkedReview(opts: ForkReviewOptions): Promise<ReviewOutco
 		env: {
 			...process.env,
 			...(opts.serviceTier ? { PI_TASK_SERVICE_TIER: opts.serviceTier } : {}),
+			...(opts.serviceTier && opts.serviceTierExcludes?.length
+				? { PI_TASK_SERVICE_TIER_EXCLUDES: opts.serviceTierExcludes.join(",") }
+				: {}),
 		},
 	});
 

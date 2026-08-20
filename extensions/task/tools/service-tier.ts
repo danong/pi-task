@@ -18,22 +18,42 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 export const SERVICE_TIER_ENV_VAR = "PI_TASK_SERVICE_TIER";
+/** Comma-separated model ids EXEMPT from the tier (the cheap workhorse
+ *  stays standard-priced even inside a flex run). */
+export const SERVICE_TIER_EXCLUDES_ENV_VAR = "PI_TASK_SERVICE_TIER_EXCLUDES";
 
 const VALID_SERVICE_TIERS = new Set(["flex", "priority"]);
 
 /**
  * Pure injection rule (hermetic-tested): a valid tier + object payload →
  * a copy carrying `service_tier`; anything else → the payload unchanged.
- * Never mutates its input.
+ * Model-scoped: a payload whose `model` is in `excludes` is left alone —
+ * a worker session runs BOTH the flex-priced strong model (prewalk) and
+ * the standard-priced workhorse (post-swap loop), and only the former
+ * gets the tier. Never mutates its input.
  */
-export function injectServiceTier(payload: unknown, tier: string | undefined): unknown {
+export function injectServiceTier(
+	payload: unknown,
+	tier: string | undefined,
+	excludes?: readonly string[],
+): unknown {
 	if (!tier || !VALID_SERVICE_TIERS.has(tier)) return payload;
 	if (typeof payload !== "object" || payload === null) return payload;
-	return { ...(payload as Record<string, unknown>), service_tier: tier };
+	const record = payload as Record<string, unknown>;
+	if (excludes && excludes.length > 0 && typeof record.model === "string" && excludes.includes(record.model)) {
+		return payload;
+	}
+	return { ...record, service_tier: tier };
 }
 
 export default function (pi: ExtensionAPI) {
 	const tier = process.env[SERVICE_TIER_ENV_VAR];
 	if (!tier) return; // not a service-tier run — leave every payload alone
-	pi.on("before_provider_request", (event: { payload: unknown }) => injectServiceTier(event.payload, tier) as never);
+	const excludes = (process.env[SERVICE_TIER_EXCLUDES_ENV_VAR] ?? "")
+		.split(",")
+		.map((m) => m.trim())
+		.filter((m) => m.length > 0);
+	pi.on("before_provider_request", (event: { payload: unknown }) =>
+		injectServiceTier(event.payload, tier, excludes) as never,
+	);
 }
