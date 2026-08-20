@@ -1846,3 +1846,26 @@ future portability path. `"none"` disables sandboxing with a warning.
   tool validates it)
 - Replacing direct editing (trivial changes bypass task() entirely)
 - Model-selected budget (the user controls spend; the model controls work)
+
+## Verification lifecycle: baseline evidence (spec-defect adjudication)
+
+Verification commands are the quality contract, but spec authors can write
+broken gates (incident class: a grep substring-matching a live symbol —
+fails identically before and after any change, and no fix worker can ever
+satisfy it). The engine adjudicates by EVIDENCE, not prompts:
+
+1. **Dispatch-time dry run** — `captureVerificationBaseline` runs every
+   verification command once on the untouched tree (zero model tokens).
+   Unambiguously broken commands (exit 127 / shell syntax errors) REJECT
+   the dispatch before any worker spawns; everything else is a recorded
+   baseline (a red baseline is TDD, not a defect).
+2. **Baseline-aware adjudication** — post-change, each failing command is
+   compared to its baseline (`classifyVerificationFailures`): identical
+   exit + output signature → suspected spec defect → the fix loop spends
+   ZERO iterations on it (all-suspect → escalate with evidence; mixed →
+   fix only the actionable failures). The manifest's verify phase records
+   `suspected_spec_defects`; the tool return + summary surface them.
+
+Worker autonomy to challenge a gate is a structured `dispute_verification`
+protocol (planned phase 2) — adjudicated by the same baseline evidence,
+never unilateral.

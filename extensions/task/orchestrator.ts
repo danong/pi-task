@@ -666,6 +666,10 @@ export interface TaskResult {
 	 *  requested review on an axis-less shape (e.g. analysis) is never
 	 *  forked, whatever was requested. */
 	reviewSkipped?: boolean;
+	/** Verification commands whose failures exactly matched their pre-change
+	 *  baseline — suspected spec defects (unsatisfiable gates the fix loop
+	 *  spent nothing on). Present only when non-empty. */
+	suspectedSpecDefects?: string[];
 	/** R2: success-with-caveat note — present when a finalization-incomplete
 	 *  abort recovered (the merge landed and the verification gate PASSED
 	 *  post-abort): names the aborted worker(s), the merged commit id, and
@@ -741,6 +745,106 @@ export async function runVerification(
 		failures,
 		timed_out: failures.some((f) => f.exitCode === 124),
 	};
+}
+
+// ─── Verification lifecycle: baseline evidence (spec-defect adjudication) ──
+//
+// A spec's verification commands can be malformed (the incident class:
+// a grep substring-matching a live symbol — fails identically before and
+// after ANY change, and no fix worker can ever satisfy it). The engine
+// adjudicates by EVIDENCE, not prompts:
+//   1. captureVerificationBaseline dry-runs every command on the untouched
+//      tree at dispatch (zero model tokens) and records exit + output
+//      signature. Broken commands (command-not-found / shell syntax
+//      errors) reject the dispatch BEFORE any worker spawns.
+//   2. Post-change, classifyVerificationFailures matches each failure
+//      against its baseline: identical (exit + signature) → spec defect
+//      suspected → the fix loop spends ZERO iterations on it.
+
+/** A dry-run baseline record for one verification command. */
+export interface VerificationBaselineEntry {
+	command: string;
+	exitCode: number;
+	/** Bounded output signature (first chars only) for exact comparison. */
+	signature: string;
+}
+
+/** Bytes of output kept in a baseline signature (head-bounded). */
+export const BASELINE_SIGNATURE_CAP = 2000;
+
+/** Pure: the bounded comparison signature of a command's output. */
+export function outputSignature(output: string, cap: number = BASELINE_SIGNATURE_CAP): string {
+	return output.length <= cap ? output : output.slice(0, cap);
+}
+
+/**
+ * Pure: is this baseline record a BROKEN command (as opposed to a
+ * legitimately-failing one)? Narrow by design — only unambiguous shell
+ * breakage rejects a dispatch; everything else is merely a red baseline
+ * (most task verifications fail before the change — that is TDD, not a
+ * defect).
+ */
+export function isBrokenVerificationCommand(entry: VerificationBaselineEntry): boolean {
+	if (entry.exitCode === 127) return true; // command not found
+	return entry.exitCode === 2 && /syntax error|parse error/i.test(entry.signature);
+}
+
+/**
+ * Dry-run every verification command on the UNTOUCHED tree (dispatch
+ * time, zero model tokens). Failing commands are expected (red baselines);
+ * BROKEN commands (isBrokenVerificationCommand) throw — the dispatch is
+ * rejected before any worker spawns and nobody pays for a malformed gate.
+ */
+export async function captureVerificationBaseline(
+	commands: string[],
+	cwd: string,
+	timeoutMs: number,
+	signal?: AbortSignal,
+): Promise<VerificationBaselineEntry[]> {
+	const baseline: VerificationBaselineEntry[] = [];
+	for (const command of commands) {
+		const result = await runCommand(command, cwd, timeoutMs, signal);
+		const entry: VerificationBaselineEntry = {
+			command,
+			exitCode: result.exitCode,
+			signature: outputSignature(result.output),
+		};
+		if (isBrokenVerificationCommand(entry)) {
+			throw new Error(
+				`verification command is broken (exit ${entry.exitCode} on the untouched tree) — fix the spec before dispatching:\n` +
+						`  ${command}\n` +
+						`  ${entry.signature.split("\n")[0]}`,
+			);
+		}
+		baseline.push(entry);
+	}
+	return baseline;
+}
+
+/**
+ * Pure: split post-change verification failures by baseline evidence. A
+ * failure whose exit code AND output signature exactly match its baseline
+ * entry is a suspected spec defect (the change made no difference — the
+ * command was unsatisfiable before the work began). Everything else is
+ * actionable fix-loop material. Failures for commands absent from the
+ * baseline are actionable (conservative).
+ */
+export function classifyVerificationFailures(
+	failures: VerificationCommandResult[],
+	baseline: VerificationBaselineEntry[],
+): { actionable: VerificationCommandResult[]; specDefectSuspected: VerificationCommandResult[] } {
+	const byCommand = new Map(baseline.map((b) => [b.command, b]));
+	const actionable: VerificationCommandResult[] = [];
+	const specDefectSuspected: VerificationCommandResult[] = [];
+	for (const failure of failures) {
+		const base = byCommand.get(failure.command);
+		if (base && base.exitCode === failure.exitCode && base.signature === outputSignature(failure.output)) {
+			specDefectSuspected.push(failure);
+		} else {
+			actionable.push(failure);
+		}
+	}
+	return { actionable, specDefectSuspected };
 }
 
 // ─── Spec aggregation (sub_specs mode, Phase 9) ──────────────────────
@@ -1050,6 +1154,8 @@ function assembleManifest(opts: {
 	totalDurationMs: number;
 	swapTurn: number | null;
 	verification: VerificationResult;
+	/** Spec-defect suspects (baseline-matched failures) for the manifest. */
+	suspectedSpecDefects?: string[];
 	review: ReviewMetricsInput | null;
 	fixLoop: { iterations: number; costUsd: number };
 	/** Whether the worker sandbox was ACTIVE for this run (R3). */
@@ -1112,6 +1218,7 @@ function assembleManifest(opts: {
 				duration_ms: opts.verification.duration_ms,
 				source: "worker-tree",
 				timed_out: opts.verification.timed_out,
+				...(opts.suspectedSpecDefects?.length ? { suspected_spec_defects: opts.suspectedSpecDefects } : {}),
 			},
 			review,
 			fixLoop: { iterations: opts.fixLoop.iterations, cost_usd: opts.fixLoop.costUsd },
@@ -1369,6 +1476,18 @@ export async function executeTask(opts: ExecuteTaskOptions): Promise<TaskResult>
 		});
 	}
 
+	// Verification lifecycle (interactive routes): dry-run the gate on the
+	// UNTOUCHED tree — zero model tokens. Broken commands throw here (the
+	// dispatch is rejected before any worker spawns); the recorded baseline
+	// lets executeSingle adjudicate spec defects by evidence instead of
+	// spending fix iterations on unsatisfiable gates.
+	const verificationBaseline = await captureVerificationBaseline(
+		spec.verification,
+		cwd,
+		opts.verificationTimeoutMs ?? DEFAULT_VERIFICATION_TIMEOUT_MS,
+		signal,
+	);
+
 	// 2c. Resolve the worker sandbox (R1): the option omitted → the built-in
 	// defaults (same shape as loadTaskConfig with no task.toml file).
 	// Availability is probed ONCE for the whole run with a real
@@ -1432,6 +1551,7 @@ export async function executeTask(opts: ExecuteTaskOptions): Promise<TaskResult>
 			reviewWallTimeoutMs: opts.reviewWallTimeoutMs,
 			serviceTier: opts.serviceTier,
 			providerOnly: opts.providerOnly,
+			verificationBaseline,
 			spec,
 			specMarkdown,
 			review: reviewGate.enabled,
@@ -2367,6 +2487,9 @@ async function executeSingle(
 		serviceTier?: string;
 		/** OpenRouter provider.only pin (flex infra). */
 		providerOnly?: string[];
+		/** Pre-change verification baseline (dispatch-time dry run) — lets the
+		 *  fix loop distinguish spec defects from real failures by evidence. */
+		verificationBaseline?: VerificationBaselineEntry[];
 		spec: Spec;
 		specMarkdown: string;
 		review?: boolean;
@@ -2395,6 +2518,12 @@ async function executeSingle(
 		persona, shape, maxFixIterations, metricsDir, project, preserveSessions, budget, sandbox,
 		runId, aiAuthorName, aiAuthorEmail,
 	} = opts;
+
+	// Verification lifecycle locals: the pre-change baseline (dispatch-time
+	// dry run) + the accumulated spec-defect suspects (failures matching the
+	// baseline exactly — recorded in the result/manifest, never fix-looped).
+	const verificationBaseline = opts.verificationBaseline ?? [];
+	const suspectedSpecDefects: string[] = [];
 
 	const workerSystemPrompt = systemPrompt ?? DEFAULT_WORKER_SYSTEM_PROMPT;
 	const workerExtensions = [CHECKLIST_EXTENSION_PATH, ...(usePrewalk ? [PREWALK_EXTENSION_PATH] : [])];
@@ -2608,6 +2737,9 @@ async function executeSingle(
 		// ── Review disabled: unchanged verify-once path (plus metrics) ──
 		if (!review) {
 			const verification = await runVerification(spec.verification, cwd, verifyTimeout, signal);
+			for (const f of classifyVerificationFailures(verification.failures, verificationBaseline).specDefectSuspected) {
+				if (!suspectedSpecDefects.includes(f.command)) suspectedSpecDefects.push(f.command);
+			}
 			// R1 diff stats: the worker's commits are baseCommit..@- (the worker
 			// leaves @ as an empty working-copy commit after its last `jj commit`).
 			const diffStat = await computeDiffStatBestEffort(cwd, baseCommit);
@@ -2628,6 +2760,7 @@ async function executeSingle(
 					totalDurationMs: Date.now() - runStartMs,
 					swapTurn,
 					verification,
+					suspectedSpecDefects: [...suspectedSpecDefects],
 					review: null,
 					fixLoop: { iterations: 0, costUsd: 0 },
 					receivedAt: opts.receivedAt,
@@ -2646,6 +2779,7 @@ async function executeSingle(
 				spec,
 				worker,
 				verification,
+				...(suspectedSpecDefects.length > 0 ? { suspectedSpecDefects: [...suspectedSpecDefects] } : {}),
 				// R1: a requested review on an axis-less shape (analysis — surveys
 				// are a single task, the worker IS the review) never forks; surface
 				// the skipped disposition instead (same contract as parallel/batch).
@@ -2687,6 +2821,20 @@ async function executeSingle(
 		while (true) {
 			// 8a. Verification (bash hard gate, zero tokens)
 			verification = await runVerification(spec.verification, cwd, verifyTimeout, signal);
+			// Baseline adjudication: failures matching the pre-change baseline
+			// (same exit + output signature) are suspected spec defects — the
+			// gate was unsatisfiable before the work began. The fix loop spends
+			// NOTHING on them: all-suspect → escalate with the evidence, mixed
+			// → fix only the actionable failures.
+			const defectSplit = classifyVerificationFailures(verification.failures, verificationBaseline);
+			for (const f of defectSplit.specDefectSuspected) {
+				if (!suspectedSpecDefects.includes(f.command)) suspectedSpecDefects.push(f.command);
+			}
+			if (!verification.passed && defectSplit.actionable.length === 0) {
+				onUpdate?.({ type: "spec_defect_suspected", commands: [...suspectedSpecDefects] });
+				decision = "escalate";
+				break;
+			}
 			// 8b. Forked adversarial review (inherits the worker's pruned context).
 			// The progress view keys its work → review transition off this event.
 			onUpdate?.({ type: "review_start" });
@@ -2739,7 +2887,7 @@ async function executeSingle(
 			if (decision !== "fix") break;
 
 			// 8d. Dispatch a fix worker for the P0/P1 blockers + failing tests
-			const fixPrompt = buildFixPrompt({ specMarkdown, failures: verification.failures, findings: blockersOf(reviewResult) });
+			const fixPrompt = buildFixPrompt({ specMarkdown, failures: defectSplit.actionable, findings: blockersOf(reviewResult) });
 			const fixSession = spawnWorkerSessionResilient({
 				cwd,
 				model: executeModel,
@@ -2801,6 +2949,7 @@ async function executeSingle(
 				totalDurationMs: Date.now() - runStartMs,
 				swapTurn,
 				verification,
+				suspectedSpecDefects: [...suspectedSpecDefects],
 				review: reviewResult ? { result: reviewResult, costUsd: reviewCostUsd, personas: effectiveAxes.map((p) => p.name) } : null,
 				fixLoop: { iterations: fixesUsed + 1, costUsd: fixesCostUsd },
 				receivedAt: opts.receivedAt,
@@ -2820,6 +2969,7 @@ async function executeSingle(
 			spec,
 			worker,
 			verification,
+			...(suspectedSpecDefects.length > 0 ? { suspectedSpecDefects: [...suspectedSpecDefects] } : {}),
 			review: reviewResult ?? undefined,
 			fixLoop: { iterations: fixesUsed + 1, fixesDispatched: fixesUsed },
 			manifest: metrics.manifest,

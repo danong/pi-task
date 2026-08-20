@@ -51,6 +51,11 @@ export interface VerifyPhaseMetrics {
 	passed: boolean;
 	commands: number;
 	duration_ms: number;
+	/** Verification commands whose failures EXACTLY matched their pre-change
+	 *  baseline (exit + output signature) — suspected spec defects: the gate
+	 *  was unsatisfiable before the work began, no fix worker can satisfy it,
+	 *  and the fix loop spent zero iterations on them. Absent when none. */
+	suspected_spec_defects?: string[];
 	/** Where verification ran: "worker-tree" (single-worker, post-yield,
 	 *  on the worker's commits) | "union-gate" (parallel, post-merge, on
 	 *  the merged tree) | "batch" (batch lane, post-apply, on the tree the

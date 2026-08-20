@@ -458,6 +458,9 @@ export interface TaskToolReturn {
 	 *  abort recovered ("worker k aborted during finalization; verified
 	 *  post-merge"). */
 	caveat?: string;
+	/** Verification commands whose failures matched the pre-change baseline
+	 *  exactly — suspected spec defects (fix the spec, not the code). */
+	suspected_spec_defects?: string[];
 	verification: { passed: boolean; failures: Array<{ command: string; exitCode: number; output: string }> };
 }
 
@@ -506,6 +509,7 @@ export function taskResultToToolReturn(result: TaskResult): TaskToolReturn {
 		...(result.conflicts !== undefined ? { conflicts: result.conflicts } : {}),
 		...(result.reviewSkipped ? { review_skipped: true } : {}),
 		...(result.caveat !== undefined ? { caveat: result.caveat } : {}),
+		...(result.suspectedSpecDefects?.length ? { suspected_spec_defects: result.suspectedSpecDefects } : {}),
 		verification: {
 			passed: result.verification.passed,
 			failures: result.verification.failures,
@@ -632,6 +636,12 @@ export function summarizeResult(result: TaskResult): string {
 	}
 	if (result.reviewSkipped) {
 		parts.push("Review requested but not run (only single-worker runs on shapes with review axes fork one).");
+	}
+	if (result.suspectedSpecDefects?.length) {
+		parts.push(
+			"Suspected spec defects (verification failures identical to the pre-change baseline — fix the SPEC, not the code): " +
+				result.suspectedSpecDefects.join(" | "),
+		);
 	}
 	// R2: a finalization-incomplete recovery reports success WITH the caveat
 	// (the worker aborted during finalization; the gate verified post-merge).

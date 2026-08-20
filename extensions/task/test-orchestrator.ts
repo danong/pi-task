@@ -25,6 +25,12 @@ import {
 	resolveReviewGate,
 	resolveReviewAxes,
 	PARALLEL_REVIEW_PERSONA,
+	outputSignature,
+	isBrokenVerificationCommand,
+	captureVerificationBaseline,
+	classifyVerificationFailures,
+	BASELINE_SIGNATURE_CAP,
+	type VerificationBaselineEntry,
 } from "./orchestrator.ts";
 import { DEFAULT_PERSONA, getPersona, type Persona } from "./personas.ts";
 import { DEFAULT_TASK_SHAPES } from "./config.ts";
@@ -562,6 +568,87 @@ function testReviewAxes(errors: string[]): void {
 	console.log("✓ resolveReviewAxes: default = one adversarial fork; 'parallel' = full axis set; named = one axis");
 }
 
+
+// ─── Verification lifecycle: baseline evidence (spec-defect adjudication) ──
+
+function testVerificationLifecycle(errors: string[]): void {
+	const check = (cond: boolean, msg: string): void => {
+		if (!cond) errors.push(msg);
+	};
+
+	// outputSignature: head-bounded.
+	check(outputSignature("short") === "short", "short output → unchanged");
+	const long = "x".repeat(BASELINE_SIGNATURE_CAP + 500);
+	check(outputSignature(long).length === BASELINE_SIGNATURE_CAP, "long output → capped");
+
+	// isBrokenVerificationCommand: narrow (only unambiguous shell breakage).
+	const entry = (exitCode: number, signature: string): VerificationBaselineEntry => ({ command: "c", exitCode, signature });
+	check(isBrokenVerificationCommand(entry(127, "not found")) === true, "exit 127 (command not found) → broken");
+	check(isBrokenVerificationCommand(entry(2, "bash: line 1: syntax error near unexpected token")) === true, "exit 2 + syntax error → broken");
+	check(isBrokenVerificationCommand(entry(2, "grep: no match")) === false, "exit 2 without syntax error → NOT broken");
+	check(isBrokenVerificationCommand(entry(1, "FAIL some test")) === false, "exit 1 (legit red) → NOT broken");
+	check(isBrokenVerificationCommand(entry(0, "")) === false, "exit 0 → NOT broken");
+
+	// classifyVerificationFailures: baseline evidence splits the failures.
+	const baseline: VerificationBaselineEntry[] = [
+		{ command: "good", exitCode: 1, signature: "old failure text" },
+		{ command: "badgrep", exitCode: 1, signature: "" },
+	];
+	const split = classifyVerificationFailures(
+		[
+			{ command: "good", exitCode: 1, output: "real failure" }, // output differs from baseline → actionable
+			{ command: "badgrep", exitCode: 1, output: "" }, // identical to baseline → spec defect
+			{ command: "unknown", exitCode: 1, output: "x" }, // not in baseline → actionable (conservative)
+		],
+		baseline,
+	);
+	check(split.specDefectSuspected.length === 1 && split.specDefectSuspected[0].command === "badgrep",
+		`baseline-identical failure → spec defect, got ${JSON.stringify(split.specDefectSuspected.map((f) => f.command))}`);
+	check(split.actionable.length === 2, `the rest are actionable, got ${split.actionable.length}`);
+	// A failure whose OUTPUT changed vs baseline is actionable (the change mattered).
+	const split2 = classifyVerificationFailures([{ command: "badgrep", exitCode: 1, output: "now it matches something" }], baseline);
+	check(split2.actionable.length === 1 && split2.specDefectSuspected.length === 0, "output changed vs baseline → actionable");
+}
+
+async function testVerificationBaselineCapture(errors: string[]): void {
+	const check = (cond: boolean, msg: string): void => {
+		if (!cond) errors.push(msg);
+	};
+	const dir = mkdtempSync(join(tmpdir(), "pi-task-vbaseline-"));
+	try {
+		// Healthy commands record a baseline (exit 0 and a legit red), no throw.
+		const baseline = await captureVerificationBaseline(
+			["test -f " + join(dir, "nope.txt"), "true"],
+			dir,
+			10_000,
+		);
+		check(baseline.length === 2, "baseline records every command");
+		check(baseline[0].exitCode === 1, `legit red recorded (test -f missing), got exit ${baseline[0].exitCode}`);
+		check(baseline[1].exitCode === 0, "green recorded");
+
+		// A broken command (exit 127) rejects the dispatch BEFORE any worker.
+		let threw = "";
+		try {
+			await captureVerificationBaseline(["definitely-not-a-real-cmd-xyz"], dir, 10_000);
+		} catch (err) {
+			threw = (err as Error).message;
+		}
+		check(threw.includes("broken") && threw.includes("definitely-not-a-real-cmd-xyz"),
+			`broken command rejects dispatch, got: ${threw.slice(0, 80)}`);
+
+		// A shell syntax error (exit 2) also rejects.
+		let threw2 = "";
+		try {
+			await captureVerificationBaseline(["if then fi (((("], dir, 10_000);
+		} catch (err) {
+			threw2 = (err as Error).message;
+		}
+		check(threw2.includes("broken"), `syntax error rejects dispatch, got: ${threw2.slice(0, 80)}`);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+}
+
 export async function runTests(): Promise<void> {
 	const errors: string[] = [];
 	console.log("── test-orchestrator: spec parse + splitSpec + aggregateSubSpecs + runVerification + fix loop ──");
@@ -576,6 +663,8 @@ export async function runTests(): Promise<void> {
 	testClassifyOverlapDiffs(errors);
 	testFinalizationIncomplete(errors);
 	testRecoveryGuide(errors);
+	testVerificationLifecycle(errors);
+	await testVerificationBaselineCapture(errors);
 
 	if (errors.length > 0) {
 		throw new Error("test-orchestrator failed:\n  ✗ " + errors.join("\n  ✗ "));
