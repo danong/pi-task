@@ -1427,6 +1427,7 @@ export async function executeTask(opts: ExecuteTaskOptions): Promise<TaskResult>
 			workerTimeoutMs: opts.workerTimeoutMs,
 			toolTimeoutMs: opts.toolTimeoutMs,
 			reviewWallTimeoutMs: opts.reviewWallTimeoutMs,
+			serviceTier: opts.serviceTier,
 			spec,
 			specMarkdown,
 			review: reviewGate.enabled,
@@ -2356,6 +2357,8 @@ async function executeSingle(
 		toolTimeoutMs?: number;
 		/** Per-fork review wall (ms); absent → review.ts's 20-min default. */
 		reviewWallTimeoutMs?: number;
+		/** OpenRouter service tier (flex infra) → worker/fix/reviewer spawns. */
+		serviceTier?: string;
 		spec: Spec;
 		specMarkdown: string;
 		review?: boolean;
@@ -2438,6 +2441,7 @@ async function executeSingle(
 		const workerStartMs = Date.now();
 		// R1: dispatched_at — the moment the worker session spawns.
 		const dispatchedAt = new Date(workerStartMs).toISOString();
+		console.error(`PROBE serviceTier=${JSON.stringify(opts.serviceTier)}`);
 		const session = spawnWorkerSessionResilient({
 			cwd,
 			model: usePrewalk ? prewalkModel! : executeModel,
