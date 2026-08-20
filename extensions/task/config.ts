@@ -117,6 +117,17 @@ export interface BudgetTierConfig {
 	 * backoff (worker.ts spawnWorkerSessionResilient). Unset → standard.
 	 */
 	serviceTier?: string;
+	/**
+	 * OpenRouter provider-routing pin for the tier's strong-model calls
+	 * (task.toml `[budget.*] provider_only`): endpoint slugs passed as
+	 * provider.only, e.g. ["google-vertex/flex"] — the tier suffix is what
+	 * opts the request into the tier (plain "google-vertex" would silently
+	 * bill standard). Applied with the same model scoping as serviceTier:
+	 * the excluded workhorse is never pinned (a mixed prewalk→swap session
+	 * runs a provider the pin doesn't serve). Unset → OpenRouter's default
+	 * routing. Batch lane unaffected (own endpoint, own request body).
+	 */
+	providerOnly?: string[];
 }
 
 // ─── Run pipeline SHAPES (the task's shape) ─────────────────────────
@@ -306,6 +317,7 @@ export const DEFAULT_BUDGET_TIERS: Record<BudgetTier, BudgetTierConfig> = {
 		reviewModel: "openrouter/~deepseek/deepseek-v4-flash-latest",
 		review: true,
 		serviceTier: "flex",
+		providerOnly: ["google-vertex/flex"],
 		shape: "async",
 		wallTimeoutMs: 120 * 60_000,
 	},
@@ -680,6 +692,18 @@ function loadTier(sections: TomlSections, tier: BudgetTier): BudgetTierConfig | 
 			warn(`${label} service_tier must be one of ${VALID_SERVICE_TIERS.join(" | ")} — using ${serviceTier ?? "standard"}`);
 		}
 	}
+	// provider_only: OpenRouter endpoint slugs for provider.only (flex
+	// pinning); absent → the fallback tier's; present-but-not-an-array or an
+	// entry that is empty/non-string → warn + fallback.
+	let providerOnly = fallback.providerOnly;
+	if (section?.["provider_only"] !== undefined) {
+		const parsed = strArray(section, "provider_only", label).filter((s) => s.trim().length > 0);
+		if (parsed.length > 0) {
+			providerOnly = parsed;
+		} else {
+			warn(`${label} provider_only must be a non-empty array of endpoint slugs — using ${providerOnly?.join(",") ?? "default routing"}`);
+		}
+	}
 	// shape: the run-pipeline shape name (a [shapes.*] section); absent →
 	// the fallback tier's; empty → warn + fallback.
 	const shapeRaw = str(section, "shape");
@@ -698,6 +722,7 @@ function loadTier(sections: TomlSections, tier: BudgetTier): BudgetTierConfig | 
 		reviewModel: model("review_model", fallback.reviewModel),
 		review: bool(section, "review") ?? fallback.review,
 		serviceTier,
+		providerOnly,
 		shape,
 		wallTimeoutMs,
 	};

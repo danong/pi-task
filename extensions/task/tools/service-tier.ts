@@ -21,6 +21,10 @@ export const SERVICE_TIER_ENV_VAR = "PI_TASK_SERVICE_TIER";
 /** Comma-separated model ids EXEMPT from the tier (the cheap workhorse
  *  stays standard-priced even inside a flex run). */
 export const SERVICE_TIER_EXCLUDES_ENV_VAR = "PI_TASK_SERVICE_TIER_EXCLUDES";
+/** Comma-separated OpenRouter endpoint slugs for provider.only (the
+ *  flex-pin — e.g. "google-vertex/flex"; the tier suffix opts into the
+ *  tier). Same model scoping as the tier itself. */
+export const SERVICE_TIER_PROVIDER_ONLY_ENV_VAR = "PI_TASK_PROVIDER_ONLY";
 
 const VALID_SERVICE_TIERS = new Set(["flex", "priority"]);
 
@@ -46,14 +50,40 @@ export function injectServiceTier(
 	return { ...record, service_tier: tier };
 }
 
+/**
+ * Pure provider-pin rule (hermetic-tested): non-empty `only` + object
+ * payload whose model is not excluded → a copy carrying
+ * provider.only + allow_fallbacks:false; anything else → unchanged. The
+ * pin travels WITH the tier: a flex request pinned to google-vertex/flex
+ * must never shed to another endpoint (billing follows the served tier).
+ */
+export function injectProviderOnly(
+	payload: unknown,
+	only: readonly string[] | undefined,
+	excludes?: readonly string[],
+): unknown {
+	if (!only || only.length === 0) return payload;
+	if (typeof payload !== "object" || payload === null) return payload;
+	const record = payload as Record<string, unknown>;
+	if (excludes && excludes.length > 0 && typeof record.model === "string" && excludes.includes(record.model)) {
+		return payload;
+	}
+	return { ...record, provider: { only: [...only], allow_fallbacks: false } };
+}
+
 export default function (pi: ExtensionAPI) {
 	const tier = process.env[SERVICE_TIER_ENV_VAR];
-	if (!tier) return; // not a service-tier run — leave every payload alone
+	const providerOnly = (process.env[SERVICE_TIER_PROVIDER_ONLY_ENV_VAR] ?? "")
+		.split(",")
+		.map((m) => m.trim())
+		.filter((m) => m.length > 0);
+	if (!tier && providerOnly.length === 0) return; // not a pinned run
 	const excludes = (process.env[SERVICE_TIER_EXCLUDES_ENV_VAR] ?? "")
 		.split(",")
 		.map((m) => m.trim())
 		.filter((m) => m.length > 0);
-	pi.on("before_provider_request", (event: { payload: unknown }) =>
-		injectServiceTier(event.payload, tier, excludes) as never,
-	);
+	pi.on("before_provider_request", (event: { payload: unknown }) => {
+		const withTier = tier ? injectServiceTier(event.payload, tier, excludes) : event.payload;
+		return injectProviderOnly(withTier, providerOnly, excludes) as never;
+	});
 }

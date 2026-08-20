@@ -1009,6 +1009,7 @@ export default function (pi: ExtensionAPI) {
 						reviewModel: tierConfig.reviewModel,
 						review: tierConfig.review,
 						serviceTier: tierConfig.serviceTier,
+						providerOnly: tierConfig.providerOnly,
 						persona: p.review,
 						maxFixIterations: taskConfig.defaults.maxFixIterations,
 						// Phase 11 (R4/R5): the same per-tier wall + per-tool budgets
@@ -1131,6 +1132,7 @@ export default function (pi: ExtensionAPI) {
 						reviewModel: tierConfig.reviewModel,
 						review: tierConfig.review,
 						serviceTier: tierConfig.serviceTier,
+						providerOnly: tierConfig.providerOnly,
 						maxFixIterations: taskConfig.defaults.maxFixIterations,
 						// Phase 11 (R4/R5): the resolved tier's worker wall + the
 						// shared per-tool-call budget (both config-driven).

@@ -439,6 +439,22 @@ extra_rw_binds = [1, 2]
 		check(cfg!.defaults.toolTimeoutMs === DEFAULT_TOOL_TIMEOUT_MS,
 			"float tool_timeout_ms falls back to the default");
 	});
+	withTempToml(`[budget.economy]\nprovider_only = ["google-vertex/flex", "openai/priority"]\n`, (path) => {
+		let cfg: TaskConfig | undefined;
+		captureWarnings(() => {
+			cfg = loadTaskConfig(path);
+		});
+		check(JSON.stringify(cfg!.tiers.economy.providerOnly) === JSON.stringify(["google-vertex/flex", "openai/priority"]),
+			"provider_only parses as endpoint slugs");
+	});
+	withTempToml(`[budget.economy]\nprovider_only = []\n`, (path) => {
+		let cfg: TaskConfig | undefined;
+		const warnings = captureWarnings(() => {
+			cfg = loadTaskConfig(path);
+		});
+		check(warnings.some((w) => w.includes("provider_only")), "empty provider_only should warn");
+		check(cfg!.tiers.economy.providerOnly === undefined, "empty provider_only falls back to default routing");
+	});
 	withTempToml(`[budget.economy]\nservice_tier = "bogus"\n`, (path) => {
 		let cfg: TaskConfig | undefined;
 		const warnings = captureWarnings(() => {

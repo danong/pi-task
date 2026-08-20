@@ -6,7 +6,7 @@
  */
 
 import { pathToFileURL } from "node:url";
-import { injectServiceTier, SERVICE_TIER_ENV_VAR } from "./tools/service-tier.ts";
+import { injectProviderOnly, injectServiceTier, SERVICE_TIER_ENV_VAR } from "./tools/service-tier.ts";
 import {
 	AGENT_SETTLED_EVENT,
 	buildAbortError,
@@ -274,6 +274,30 @@ export async function runTests(): Promise<void> {
 			"strong model gets the tier");
 		check(injectServiceTier(deepseek, "flex", excludes) === deepseek,
 			"excluded workhorse stays standard-priced");
+	}
+
+	// 14e. Provider pin (provider.only) + the mixed-flow guarantee: in one
+	// prewalk→swap session the gemini call gets tier+pin, the deepseek
+	// workhorse stays untouched (a vertex pin would break it).
+	{
+		const only = ["google-vertex/flex"];
+		const gemini = { model: "openrouter/google/gemini-3.7-flash", messages: [] };
+		const deepseek = { model: "openrouter/~deepseek/deepseek-v4-flash-latest", messages: [] };
+		const excludes = ["openrouter/~deepseek/deepseek-v4-flash-latest"];
+		const pinned = injectProviderOnly(gemini, only, excludes) as Record<string, unknown>;
+		const prov = pinned.provider as { only: string[]; allow_fallbacks: boolean };
+		check(JSON.stringify(prov.only) === JSON.stringify(only) && prov.allow_fallbacks === false,
+			"gemini payload pinned to the vertex flex endpoint, no fallbacks");
+		check(injectProviderOnly(deepseek, only, excludes) === deepseek,
+			"excluded workhorse is NOT pinned (mixed flow stays intact)");
+		check(injectProviderOnly(gemini, [], excludes) === gemini, "empty pin list → unchanged");
+		check(injectProviderOnly(null, only) === null, "non-object payload → unchanged");
+		// The full mixed-flow round: gemini gets BOTH, deepseek gets NEITHER.
+		const geminiFull = injectProviderOnly(injectServiceTier(gemini, "flex", excludes), only, excludes) as Record<string, unknown>;
+		check(geminiFull.service_tier === "flex" && (geminiFull.provider as { only: string[] }).only[0] === "google-vertex/flex",
+			"gemini prewalk call: flex tier + vertex pin together");
+		const deepseekFull = injectProviderOnly(injectServiceTier(deepseek, "flex", excludes), only, excludes);
+		check(deepseekFull === deepseek, "deepseek loop call: no tier, no pin — standard routing");
 	}
 
 	// 14d. Flex capacity classifier + backoff schedule (exponential, bounded).

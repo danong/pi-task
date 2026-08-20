@@ -116,6 +116,8 @@ export interface ForkReviewOptions {
 	serviceTier?: string;
 	/** Model ids exempt from the tier (the standard-priced workhorse). */
 	serviceTierExcludes?: string[];
+	/** OpenRouter endpoint slugs for provider.only (the flex pin). */
+	providerOnly?: string[];
 	signal?: AbortSignal;
 	onUpdate?: (partial: unknown) => void;
 }
@@ -301,8 +303,11 @@ export async function forkedReview(opts: ForkReviewOptions): Promise<ReviewOutco
 		env: {
 			...process.env,
 			...(opts.serviceTier ? { PI_TASK_SERVICE_TIER: opts.serviceTier } : {}),
-			...(opts.serviceTier && opts.serviceTierExcludes?.length
+			...(opts.serviceTierExcludes?.length
 				? { PI_TASK_SERVICE_TIER_EXCLUDES: opts.serviceTierExcludes.join(",") }
+				: {}),
+			...(opts.providerOnly?.length
+				? { PI_TASK_PROVIDER_ONLY: opts.providerOnly.join(",") }
 				: {}),
 		},
 	});

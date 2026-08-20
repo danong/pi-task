@@ -569,6 +569,9 @@ export interface ExecuteTaskOptions {
 	 *  service_tier config — "flex" | "priority"). Threaded to every worker
 	 *  and reviewer spawn; recorded in the manifest. Unset → standard. */
 	serviceTier?: string;
+	/** OpenRouter endpoint slugs for provider.only (the tier's provider_only
+	 *  config — the flex pin). Threaded with serviceTier. */
+	providerOnly?: string[];
 	/** Batch provider injection (hermetic tests inject the fake; the task
 	 *  tool never passes one). Default: OpenRouterBatchProvider (needs
 	 *  OPENROUTER_API_KEY — typed BatchError("no_api_key") when absent). */
@@ -1428,6 +1431,7 @@ export async function executeTask(opts: ExecuteTaskOptions): Promise<TaskResult>
 			toolTimeoutMs: opts.toolTimeoutMs,
 			reviewWallTimeoutMs: opts.reviewWallTimeoutMs,
 			serviceTier: opts.serviceTier,
+			providerOnly: opts.providerOnly,
 			spec,
 			specMarkdown,
 			review: reviewGate.enabled,
@@ -1545,7 +1549,8 @@ export async function executeTask(opts: ExecuteTaskOptions): Promise<TaskResult>
 			projectDir: cwd,
 			model: usePrewalk ? opts.prewalkModel! : executeModel,
 			serviceTier: opts.serviceTier,
-			serviceTierExcludes: opts.serviceTier ? [executeModel] : undefined,
+			serviceTierExcludes: opts.serviceTier || opts.providerOnly?.length ? [executeModel] : undefined,
+			providerOnly: opts.providerOnly,
 			task: promptFor(workerTasks[i]),
 			systemPrompt: systemPrompt ?? DEFAULT_WORKER_SYSTEM_PROMPT,
 			extensions: [
@@ -2360,6 +2365,8 @@ async function executeSingle(
 		reviewWallTimeoutMs?: number;
 		/** OpenRouter service tier (flex infra) → worker/fix/reviewer spawns. */
 		serviceTier?: string;
+		/** OpenRouter provider.only pin (flex infra). */
+		providerOnly?: string[];
 		spec: Spec;
 		specMarkdown: string;
 		review?: boolean;
@@ -2446,7 +2453,8 @@ async function executeSingle(
 			cwd,
 			model: usePrewalk ? prewalkModel! : executeModel,
 			serviceTier: opts.serviceTier,
-			serviceTierExcludes: opts.serviceTier ? [executeModel] : undefined,
+			serviceTierExcludes: opts.serviceTier || opts.providerOnly?.length ? [executeModel] : undefined,
+			providerOnly: opts.providerOnly,
 			noProgressTimeoutMs: channelWatchdogWindows((shape ?? DEFAULT_TASK_SHAPES.code).channel).noProgressMs,
 			task: taskPrompt,
 			systemPrompt: workerSystemPrompt,
@@ -2700,7 +2708,8 @@ async function executeSingle(
 							firstEventTimeoutMs: watchWindows.firstEventMs,
 							wallTimeoutMs: reviewWallTimeoutMs,
 							serviceTier: opts.serviceTier,
-							serviceTierExcludes: opts.serviceTier ? [executeModel] : undefined,
+							serviceTierExcludes: opts.serviceTier || opts.providerOnly?.length ? [executeModel] : undefined,
+							providerOnly: opts.providerOnly,
 							signal,
 							onUpdate,
 						}),
@@ -2735,7 +2744,8 @@ async function executeSingle(
 				cwd,
 				model: executeModel,
 				serviceTier: opts.serviceTier,
-				serviceTierExcludes: opts.serviceTier ? [executeModel] : undefined,
+				serviceTierExcludes: opts.serviceTier || opts.providerOnly?.length ? [executeModel] : undefined,
+				providerOnly: opts.providerOnly,
 				noProgressTimeoutMs: channelWatchdogWindows((shape ?? DEFAULT_TASK_SHAPES.code).channel).noProgressMs,
 				task: fixPrompt,
 				systemPrompt: workerSystemPrompt,

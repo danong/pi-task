@@ -435,8 +435,13 @@ conversational session stays untouched. The tier pairs with the `async`
 shape (channel `flex` — 25/20-min watchdog windows for flex's 1–15-min
 per-call latency; 120-min wall). Flex has NO server-side fallback, so
 capacity failures get client-side exponential backoff (30s/60s/120s,
-`spawnWorkerSessionResilient`). The manifest records the requested tier
-(`config.service_tier`).
+`spawnWorkerSessionResilient`). The tier also pins the strong-model
+calls with `provider_only = ["google-vertex/flex"]` (provider.only +
+allow_fallbacks:false, same model scoping as the tier — the workhorse
+is never pinned; OpenRouter's AI Studio flex endpoint 400s in
+practice, Vertex serves reliably). The batch lane is untouched by all
+of this — own endpoint (`/api/beta/batches`), own request body. The
+manifest records the requested tier (`config.service_tier`).
 
 **Config-driven vocabulary (Phase 11).** Every `[budget.*]` section in
 task.toml is a supported tier, in file order — adding a tier requires no

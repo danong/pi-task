@@ -112,6 +112,11 @@ review_model = "openrouter/~deepseek/deepseek-v4-flash-latest"
 review = true
 shape = "async"
 service_tier = "flex"
+# Pin the strong-model calls to the Vertex FLEX endpoint (the /flex suffix
+# opts into the tier — plain "google-vertex" would bill standard). The
+# cheap workhorse is exempt from the pin (same scoping as service_tier);
+# the batch lane is unaffected (own endpoint + request body).
+provider_only = ["google-vertex/flex"]
 wall_timeout_ms = 7200000
 
 [sandbox]

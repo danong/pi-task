@@ -51,6 +51,12 @@ export interface WorkerOptions {
 	 * strong-model calls (prewalk). Unset → the tier applies to every call.
 	 */
 	serviceTierExcludes?: string[];
+	/**
+	 * OpenRouter endpoint slugs for provider.only (the flex pin) — set →
+	 * PI_TASK_PROVIDER_ONLY env; the injection extension pins non-excluded
+	 * models to these endpoints. Unset → default routing.
+	 */
+	providerOnly?: string[];
 	/** The task prompt sent to the worker. */
 	task: string;
 	/** Worker system prompt (appended to pi's default). */
@@ -839,8 +845,11 @@ export function spawnWorkerSession(opts: WorkerOptions): WorkerSession {
 			// Service tier (flex infra): the service-tier extension reads this
 			// and injects service_tier into every provider payload.
 			...(opts.serviceTier ? { PI_TASK_SERVICE_TIER: opts.serviceTier } : {}),
-			...(opts.serviceTier && opts.serviceTierExcludes?.length
+			...(opts.serviceTierExcludes?.length
 				? { PI_TASK_SERVICE_TIER_EXCLUDES: opts.serviceTierExcludes.join(",") }
+				: {}),
+			...(opts.providerOnly?.length
+				? { PI_TASK_PROVIDER_ONLY: opts.providerOnly.join(",") }
 				: {}),
 		},
 	});
