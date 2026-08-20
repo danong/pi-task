@@ -1317,29 +1317,55 @@ export async function sleepForBackoff(ms: number, signal?: AbortSignal): Promise
 /**
  * spawnWorkerSession with exponential-backoff retry on capacity errors:
  * flex-tier runs can hit "no capacity" failures that a re-spawn after a
- * delay recovers from. Non-capacity failures propagate unchanged on the
- * FIRST attempt's semantics (no retry). The returned session is the LAST
- * attempt's — callers read sessionFile/usage from it, and the review fork
- * happens after this resolves, so it sees the final session.
+ * delay recovers from. Returns a SYNCHRONOUS facade with the exact
+ * WorkerSession contract — callers subscribe onEvent immediately after
+ * spawn (progress), so the retry must not block the handle. The facade
+ * delegates to the CURRENT attempt and re-attaches listeners on re-spawn;
+ * `result` resolves/rejects from whichever attempt settles. Non-capacity
+ * failures propagate unchanged. Abort kills the current attempt and stops
+ * the retry loop.
  */
-export async function spawnWorkerSessionResilient(
+export function spawnWorkerSessionResilient(
 	opts: WorkerOptions,
 	delaysMs: number[] = CAPACITY_BACKOFF_DELAYS_MS,
 	sleep: (ms: number, signal?: AbortSignal) => Promise<void> = sleepForBackoff,
-): Promise<WorkerSession> {
-	for (let attempt = 0; ; attempt++) {
-		const session = spawnWorkerSession(opts);
-		try {
-			await session.result;
-			return session;
-		} catch (err) {
-			const msg = err instanceof Error ? err.message : String(err);
-			if (opts.signal?.aborted || attempt >= delaysMs.length || !isRetryableCapacityError(msg)) {
-				throw err;
+): WorkerSession {
+	let current = spawnWorkerSession(opts);
+	let attempt = 0;
+	let facadeAborted = false;
+	const listeners: Array<(event: unknown) => void> = [];
+
+	const result: Promise<WorkerResult> = (async () => {
+		for (;;) {
+			try {
+				return await current.result;
+			} catch (err) {
+				const msg = err instanceof Error ? err.message : String(err);
+				if (facadeAborted || opts.signal?.aborted || attempt >= delaysMs.length || !isRetryableCapacityError(msg)) {
+					throw err;
+				}
+				opts.onUpdate?.({ type: "capacity_backoff", attempt: attempt + 1, delayMs: delaysMs[attempt], error: msg });
+				await sleep(delaysMs[attempt], opts.signal);
+				if (opts.signal?.aborted) throw err;
+				attempt++;
+				current = spawnWorkerSession(opts);
+				for (const l of listeners) current.onEvent(l);
 			}
-			opts.onUpdate?.({ type: "capacity_backoff", attempt: attempt + 1, delayMs: delaysMs[attempt], error: msg });
-			await sleep(delaysMs[attempt], opts.signal);
-			if (opts.signal?.aborted) throw err;
 		}
-	}
+	})();
+
+	return {
+		onEvent: (listener) => {
+			listeners.push(listener);
+			return current.onEvent(listener);
+		},
+		sendCommand: (command) => current.sendCommand(command),
+		request: (command) => current.request(command),
+		setModel: (model) => current.setModel(model),
+		result,
+		abort: () => {
+			facadeAborted = true;
+			current.abort();
+		},
+	};
 }
