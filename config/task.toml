@@ -67,8 +67,8 @@ wall_timeout_ms = 2700000
 [budget.full]
 # Strong exploration, fast execution + review.
 prewalk_model = "qwen-token-plan/qwen3.8-max-preview"
-execute_model = "opencode-go/deepseek-v4-flash"
-review_model = "opencode-go/deepseek-v4-flash"
+execute_model = "openrouter/~deepseek/deepseek-v4-flash-latest"
+review_model = "openrouter/~deepseek/deepseek-v4-flash-latest"
 review = true
 shape = "code"
 wall_timeout_ms = 2700000
@@ -78,9 +78,9 @@ wall_timeout_ms = 2700000
 # machinery auto-skips (zero overhead). The wall matches max/full (45
 # min): a big build under fast models needs the headroom — a 25-min wall
 # aborted real suites mid-run (the "merged unverified work" class).
-prewalk_model = "opencode-go/deepseek-v4-flash"
-execute_model = "opencode-go/deepseek-v4-flash"
-review_model = "opencode-go/deepseek-v4-flash"
+prewalk_model = "openrouter/~deepseek/deepseek-v4-flash-latest"
+execute_model = "openrouter/~deepseek/deepseek-v4-flash-latest"
+review_model = "openrouter/~deepseek/deepseek-v4-flash-latest"
 review = false
 shape = "code"
 wall_timeout_ms = 2700000
