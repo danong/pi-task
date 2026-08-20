@@ -30,8 +30,18 @@ import {
 export interface WorkerOptions {
 	/** Working directory for the worker (must be a jj repo). */
 	cwd: string;
-	/** Model identifier, e.g. "opencode-go/deepseek-v4-flash". */
+	/** Model identifier, e.g. "openrouter/~deepseek/deepseek-v4-flash-latest". */
 	model: string;
+	/**
+	 * OpenRouter service tier for this run (task.toml `[budget.*]
+	 * service_tier` — "flex" | "priority"). Set → the spawn carries
+	 * PI_TASK_SERVICE_TIER + the service-tier injection extension, so every
+	 * provider call of this subprocess requests the tier. Unset → standard
+	 * tier, extension not loaded. Flex never falls back server-side:
+	 * capacity errors surface as typed failures — see
+	 * spawnWorkerSessionResilient (exponential backoff retry).
+	 */
+	serviceTier?: string;
 	/** The task prompt sent to the worker. */
 	task: string;
 	/** Worker system prompt (appended to pi's default). */
@@ -191,6 +201,10 @@ const THIS_DIR = dirname(fileURLToPath(import.meta.url));
 const YIELD_EXTENSION_PATH = join(THIS_DIR, "tools", "yield.ts");
 /** Absolute path to the worker-side checklist extension (always loaded). */
 export const CHECKLIST_EXTENSION_PATH = join(THIS_DIR, "tools", "checklist.ts");
+/** Service-tier injection extension — loaded only when the run's tier
+ *  declares one (the extension is a no-op without the env var anyway, but
+ *  skipping the load keeps ordinary runs extension-count-stable). */
+export const SERVICE_TIER_EXTENSION_PATH = join(THIS_DIR, "tools", "service-tier.ts");
 const SIGKILL_DELAY_MS = 5000;
 
 /** Default wall-clock budget for a worker run (45 min) — mirrors the config
@@ -725,6 +739,8 @@ export function buildWorkerArgs(opts: {
 	sessionDir?: string;
 	extensions?: string[];
 	systemPromptPath?: string;
+	/** When set, load the service-tier injection extension. */
+	serviceTier?: string;
 }): string[] {
 	// --no-extensions: workers must run with ONLY the explicitly-passed
 	// extensions (yield + checklist/prewalk). Without it, pi auto-discovers
@@ -733,6 +749,7 @@ export function buildWorkerArgs(opts: {
 	// session-start map refresh per worker. Explicit --extension paths still
 	// load with discovery disabled.
 	const args: string[] = ["--mode", "rpc", "--model", opts.model, "--no-extensions", "--extension", YIELD_EXTENSION_PATH];
+	if (opts.serviceTier) args.push("--extension", SERVICE_TIER_EXTENSION_PATH);
 	for (const ext of opts.extensions ?? []) {
 		args.push("--extension", ext);
 	}
@@ -782,6 +799,7 @@ export function spawnWorkerSession(opts: WorkerOptions): WorkerSession {
 		sessionDir,
 		extensions,
 		systemPromptPath: tmpPromptPath ?? undefined,
+		serviceTier: opts.serviceTier,
 	});
 
 	const invocation = getPiInvocation(args);
@@ -816,6 +834,9 @@ export function spawnWorkerSession(opts: WorkerOptions): WorkerSession {
 			// AI commit identity (todo #84): the worker's jj reads this config
 			// for author+committer; the user's own sessions are untouched.
 			...(identityConfigPath ? { JJ_CONFIG: identityConfigPath } : {}),
+			// Service tier (flex infra): the service-tier extension reads this
+			// and injects service_tier into every provider payload.
+			...(opts.serviceTier ? { PI_TASK_SERVICE_TIER: opts.serviceTier } : {}),
 		},
 	});
 
@@ -1254,4 +1275,71 @@ export function spawnWorkerSession(opts: WorkerOptions): WorkerSession {
 export async function runWorker(opts: WorkerOptions): Promise<WorkerResult> {
 	const session = spawnWorkerSession(opts);
 	return session.result;
+}
+
+// ─── Flex capacity resilience ────────────────────────────────────────
+// OpenRouter flex processing has NO server-side fallback: capacity
+// shortages surface as typed errors, and Google's guidance is client-side
+// exponential backoff. Worker volume is low, so we build the retry in
+// rather than wait for production data (design decision 2026-08-19).
+
+/** Retry delays for capacity failures: 30s → 60s → 120s (3 retries). */
+export const CAPACITY_BACKOFF_DELAYS_MS = [30_000, 60_000, 120_000];
+
+/**
+ * Pure classifier (hermetic-tested): is a failure message a
+ * capacity/availability error worth retrying with backoff? Broad by
+ * design — flex capacity error shapes are provider-rendered strings; a
+ * false positive costs one retry, a false negative fails a recoverable
+ * run. Aborts/timeouts are NOT capacity errors (never matched: the
+ * message must name a capacity condition).
+ */
+export function isRetryableCapacityError(message: string): boolean {
+	return /capacity|overloaded|too many requests|rate.?limit|service unavailable|no (flex )?endpoint|flex.*unavailable|\b503\b|\b429\b/i.test(message);
+}
+
+/** Abort-aware sleep (shared shape with batch.ts sleepDefault). */
+export async function sleepForBackoff(ms: number, signal?: AbortSignal): Promise<void> {
+	if (signal?.aborted) return;
+	await new Promise<void>((resolve) => {
+		const t = setTimeout(() => {
+			signal?.removeEventListener("abort", onAbort);
+			resolve();
+		}, ms);
+		const onAbort = (): void => {
+			clearTimeout(t);
+			resolve();
+		};
+		signal?.addEventListener("abort", onAbort, { once: true });
+	});
+}
+
+/**
+ * spawnWorkerSession with exponential-backoff retry on capacity errors:
+ * flex-tier runs can hit "no capacity" failures that a re-spawn after a
+ * delay recovers from. Non-capacity failures propagate unchanged on the
+ * FIRST attempt's semantics (no retry). The returned session is the LAST
+ * attempt's — callers read sessionFile/usage from it, and the review fork
+ * happens after this resolves, so it sees the final session.
+ */
+export async function spawnWorkerSessionResilient(
+	opts: WorkerOptions,
+	delaysMs: number[] = CAPACITY_BACKOFF_DELAYS_MS,
+	sleep: (ms: number, signal?: AbortSignal) => Promise<void> = sleepForBackoff,
+): Promise<WorkerSession> {
+	for (let attempt = 0; ; attempt++) {
+		const session = spawnWorkerSession(opts);
+		try {
+			await session.result;
+			return session;
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			if (opts.signal?.aborted || attempt >= delaysMs.length || !isRetryableCapacityError(msg)) {
+				throw err;
+			}
+			opts.onUpdate?.({ type: "capacity_backoff", attempt: attempt + 1, delayMs: delaysMs[attempt], error: msg });
+			await sleep(delaysMs[attempt], opts.signal);
+			if (opts.signal?.aborted) throw err;
+		}
+	}
 }

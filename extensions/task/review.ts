@@ -32,6 +32,7 @@ import {
 } from "./worker.ts";
 import type { RequirementStatus, ReviewResult } from "./schemas/findings.ts";
 import { DEFAULT_PERSONA, type Persona } from "./personas.ts";
+import { SERVICE_TIER_EXTENSION_PATH } from "./worker.ts";
 
 /** Absolute path to the reviewer-side extension (report_findings + pruning). */
 export const FINDINGS_EXTENSION_PATH = join(dirname(fileURLToPath(import.meta.url)), "tools", "findings.ts");
@@ -110,6 +111,9 @@ export interface ForkReviewOptions {
 	 * {@link REVIEW_FIRST_EVENT_TIMEOUT_MS}.
 	 */
 	firstEventTimeoutMs?: number;
+	/** OpenRouter service tier (the run's budget tier declares it) — set →
+	 *  the reviewer subprocess injects service_tier into every call. */
+	serviceTier?: string;
 	signal?: AbortSignal;
 	onUpdate?: (partial: unknown) => void;
 }
@@ -284,6 +288,7 @@ export async function forkedReview(opts: ForkReviewOptions): Promise<ReviewOutco
 		// worker.ts buildWorkerArgs for why discovery must be disabled).
 		"--no-extensions",
 		"--extension", FINDINGS_EXTENSION_PATH,
+		...(opts.serviceTier ? ["--extension", SERVICE_TIER_EXTENSION_PATH] : []),
 		"--append-system-prompt", promptPath,
 	];
 	const invocation = getPiInvocation(args);
@@ -291,6 +296,10 @@ export async function forkedReview(opts: ForkReviewOptions): Promise<ReviewOutco
 		cwd: opts.cwd,
 		shell: false,
 		stdio: ["pipe", "pipe", "pipe"],
+		env: {
+			...process.env,
+			...(opts.serviceTier ? { PI_TASK_SERVICE_TIER: opts.serviceTier } : {}),
+		},
 	});
 
 	const state = createWorkerEventState();

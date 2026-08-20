@@ -6,11 +6,15 @@
  */
 
 import { pathToFileURL } from "node:url";
+import { injectServiceTier, SERVICE_TIER_ENV_VAR } from "./tools/service-tier.ts";
 import {
 	AGENT_SETTLED_EVENT,
 	buildAbortError,
 	buildWorkerArgs,
+	CAPACITY_BACKOFF_DELAYS_MS,
 	createWorkerEventState,
+	isRetryableCapacityError,
+	SERVICE_TIER_EXTENSION_PATH,
 	decideIdleAction,
 	decideNoProgressAction,
 	decideToolTimeoutAction,
@@ -239,6 +243,40 @@ export async function runTests(): Promise<void> {
 		const extIdx = args.indexOf("--extension");
 		check(extIdx !== -1 && args[extIdx + 1].endsWith("yield.ts"), `yield extension must always load, got ${args[extIdx + 1]}`);
 		check(!args.includes("--append-system-prompt"), "no prompt path → no --append-system-prompt");
+	}
+
+	// 14b. Flex infra: serviceTier loads the injection extension; unset → absent.
+	{
+		const withTier = buildWorkerArgs({ model: "prov/m", serviceTier: "flex" });
+		check(withTier.includes(SERVICE_TIER_EXTENSION_PATH),
+			"serviceTier set → the service-tier injection extension loads");
+		const without = buildWorkerArgs({ model: "prov/m" });
+		check(!without.includes(SERVICE_TIER_EXTENSION_PATH),
+			"no serviceTier → the injection extension is not loaded");
+		check(SERVICE_TIER_ENV_VAR === "PI_TASK_SERVICE_TIER", "the env var contract is the extension's");
+	}
+
+	// 14c. injectServiceTier (pure): valid tier + object → injected copy;
+	// invalid tier / non-object → unchanged; input never mutated.
+	{
+		const payload = { model: "m", messages: [] };
+		const injected = injectServiceTier(payload, "flex") as Record<string, unknown>;
+		check(injected.service_tier === "flex" && injected.model === "m" && !("service_tier" in payload),
+			"flex injected into a copy, input untouched");
+		check(injectServiceTier(payload, "bogus") === payload, "invalid tier → payload unchanged");
+		check(injectServiceTier(payload, undefined) === payload, "no tier → payload unchanged");
+		check(injectServiceTier(null, "flex") === null, "non-object payload → unchanged");
+	}
+
+	// 14d. Flex capacity classifier + backoff schedule (exponential, bounded).
+	{
+		check(isRetryableCapacityError("no flex capacity available right now"), "capacity message retryable");
+		check(isRetryableCapacityError("upstream overloaded, retry later (503)"), "overload/503 retryable");
+		check(isRetryableCapacityError("429 too many requests"), "rate limit retryable");
+		check(!isRetryableCapacityError("worker wall-clock budget exhausted"), "wall timeout NOT capacity");
+		check(!isRetryableCapacityError("aborted"), "abort NOT capacity");
+		check(JSON.stringify(CAPACITY_BACKOFF_DELAYS_MS) === JSON.stringify([30_000, 60_000, 120_000]),
+			"backoff schedule is 30s/60s/120s (3 retries)");
 	}
 
 	// 15. sessionDir → --session-dir <dir> and NO --no-session (persisted for forking)

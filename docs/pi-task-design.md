@@ -395,15 +395,15 @@ tool_timeout_ms = 900000   # per-tool-call budget, 15 min
 
 [budget.full]
 prewalk_model = "qwen-token-plan/qwen3.8-max-preview"
-execute_model = "opencode-go/deepseek-v4-flash"
-review_model = "qwen-token-plan/qwen3.8-max-preview"
+execute_model = "openrouter/~deepseek/deepseek-v4-flash-latest"
+review_model = "openrouter/~deepseek/deepseek-v4-flash-latest"
 review = true
 wall_timeout_ms = 2700000  # per-tier worker wall, 45 min
 
 [budget.economy]
-prewalk_model = "opencode-go/deepseek-v4-flash"
-execute_model = "opencode-go/deepseek-v4-flash"
-review_model = "opencode-go/deepseek-v4-flash"
+prewalk_model = "openrouter/~deepseek/deepseek-v4-flash-latest"
+execute_model = "openrouter/~deepseek/deepseek-v4-flash-latest"
+review_model = "openrouter/~deepseek/deepseek-v4-flash-latest"
 review = false
 wall_timeout_ms = 1500000  # cheaper tiers get a shorter wall, 25 min
 
@@ -414,6 +414,23 @@ review_model = "openrouter/free"
 review = false
 wall_timeout_ms = 1500000
 ```
+
+*(The sketch above is illustrative; `config/task.toml` is the source of
+truth — the drift guard pins it to the built-in defaults.)*
+
+**Async workers on OpenRouter flex (`[budget.async]`).** Batch-level
+pricing through the synchronous endpoint: the tier declares
+`service_tier = "flex"` and pairs with the `async` shape (channel
+`flex` — the 25/20-min watchdog windows tolerate flex's 1–15-min
+per-call latency; the tier wall is 120 min). The tier is a property of
+the RUN, never the model: the engine sets `PI_TASK_SERVICE_TIER` only on
+the subprocesses it spawns for a flex-tier run, and
+`tools/service-tier.ts` (loaded via `--extension` there) injects
+`service_tier` into every provider payload — the conversational session
+can run the same model at standard speed untouched. Flex has NO
+server-side fallback, so capacity failures get client-side exponential
+backoff (30s/60s/120s, `spawnWorkerSessionResilient`). The manifest
+records the requested tier (`config.service_tier`).
 
 **Config-driven vocabulary (Phase 11).** Every `[budget.*]` section in
 task.toml is a supported tier, in file order — adding a tier requires no

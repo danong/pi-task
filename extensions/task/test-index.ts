@@ -69,6 +69,7 @@ import {
 // constant (in index.ts) can't silently pass a stale test.
 import type { Finding, ReviewResult } from "./schemas/findings.ts";
 import { parseSpec } from "./schemas/spec.ts";
+import { BUDGET_TIERS } from "./config.ts";
 import { extractFileScope } from "./progress.ts";
 import { truncateGoals } from "./progress.ts";
 
@@ -155,11 +156,12 @@ function testBudgetSchemaLocking(errors: string[]): void {
 	check(locked.includes("detach"), "locked schema keeps the detach param (it is not a budget override)");
 	check(!locked.includes("budget"), "locked schema must NOT expose budget (model cannot see or override it)");
 
-	// Budget enum values are exactly the four built-in modes (default tier set).
+	// Budget enum values are exactly "auto" + the built-in tier set (derived,
+	// never a hardcoded count — new built-in tiers flow through).
 	const budgetSchema = propertyJson(taskToolSchema(false), "budget");
-	check(Array.isArray(budgetSchema.enum) && budgetSchema.enum.length === 5,
-		`budget enum should have 5 values, got ${JSON.stringify(budgetSchema.enum)}`);
-	check(JSON.stringify(budgetSchema.enum) === JSON.stringify(["auto", "max", "full", "economy", "free"]),
+	check(Array.isArray(budgetSchema.enum) && budgetSchema.enum.length === BUDGET_TIERS.length + 1,
+		`budget enum should have auto + the built-in tiers, got ${JSON.stringify(budgetSchema.enum)}`);
+	check(JSON.stringify(budgetSchema.enum) === JSON.stringify(["auto", ...BUDGET_TIERS]),
 		`budget enum values, got ${JSON.stringify(budgetSchema.enum)}`);
 
 	// Phase 11 (R2): the enum is config-driven — a NEW tier in the loaded

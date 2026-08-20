@@ -203,6 +203,9 @@ export interface BuildManifestInput {
 		/** Model channel (sync | flex | batch — M1). Optional: absent for
 		 *  direct callers that don't supply it. */
 		channel?: "sync" | "flex" | "batch";
+		/** OpenRouter service tier the run requested (flex infra): "flex" |
+		 *  "priority"; absent = standard tier. */
+		serviceTier?: string;
 		/** Run-pipeline shape name (e.g. "code" | "analysis" | "batch").
 		 *  Default: "code". */
 		shape?: string;
@@ -265,6 +268,7 @@ export function buildRunManifest(input: BuildManifestInput): RunManifest {
 			swap_trigger: input.config.swapTrigger ?? "first-edit",
 			checklist: input.config.checklist ?? true,
 			review_forked: input.config.reviewForked,
+			...(input.config.serviceTier ? { service_tier: input.config.serviceTier } : {}),
 			sandbox: input.config.sandbox ?? false,
 			channel: input.config.channel,
 			shape: input.config.shape ?? "code",

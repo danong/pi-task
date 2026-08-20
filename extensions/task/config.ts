@@ -51,7 +51,7 @@ export type BudgetTier = string;
 
 /** Built-in tier names, in order — the fallback tier set for a missing
  *  config file (and DEFAULT_TASK_CONFIG's tierOrder). */
-export const BUDGET_TIERS = ["max", "full", "economy", "free"] as const;
+export const BUDGET_TIERS = ["max", "full", "economy", "free", "async"] as const;
 
 /** A budget MODE: "auto" or any loaded tier name. (Collapses to string —
  *  the dynamic tier vocabulary is the point.) */
@@ -108,6 +108,15 @@ export interface BudgetTierConfig {
 	 * WorkerOptions.timeoutMs).
 	 */
 	wallTimeoutMs: number;
+	/**
+	 * OpenRouter service tier for runs on this tier (task.toml `[budget.*]
+	 * service_tier`): "flex" | "priority". Set → every worker/reviewer
+	 * subprocess of the run injects service_tier into its provider calls
+	 * (tools/service-tier.ts via PI_TASK_SERVICE_TIER). Flex never falls
+	 * back server-side — capacity errors are retried with exponential
+	 * backoff (worker.ts spawnWorkerSessionResilient). Unset → standard.
+	 */
+	serviceTier?: string;
 }
 
 // ─── Run pipeline SHAPES (the task's shape) ─────────────────────────
@@ -155,6 +164,18 @@ export const DEFAULT_TASK_SHAPES: Record<string, TaskShape> = {
 	 *  opt-in (PARALLEL_REVIEW_PERSONA, orchestrator.ts). */
 	code: {
 		channel: "sync",
+		prewalk: true,
+		swap: true,
+		workModel: "execute",
+		reviewModel: "review",
+		review: ["standards", "spec-fidelity", "architecture"],
+	},
+	/** Async flex workers: the standard prewalk→swap→work→review pipeline on
+	 *  the FLEX channel — the 25/20-min watchdog windows
+	 *  (channelWatchdogWindows) tolerate flex's 1-15-min-per-call latency.
+	 *  Paired with a tier declaring service_tier = "flex" ([budget.async]). */
+	async: {
+		channel: "flex",
 		prewalk: true,
 		swap: true,
 		workModel: "execute",
@@ -269,6 +290,19 @@ export const DEFAULT_BUDGET_TIERS: Record<BudgetTier, BudgetTierConfig> = {
 		review: false,
 		shape: "code",
 		wallTimeoutMs: 30 * 60_000,
+	},
+	/** Async workers on OpenRouter FLEX processing (batch-level pricing,
+	 *  synchronous endpoint, 1-15 min per call — the flex shape's 25/20-min
+	 *  watchdog windows + 120-min wall absorb it; capacity errors get
+	 *  exponential backoff). For detached runs + scheduler jobs. */
+	async: {
+		prewalkModel: null,
+		executeModel: "openrouter/google/gemini-3.7-flash",
+		reviewModel: "openrouter/google/gemini-3.7-flash",
+		review: true,
+		serviceTier: "flex",
+		shape: "async",
+		wallTimeoutMs: 120 * 60_000,
 	},
 };
 
@@ -628,6 +662,19 @@ function loadTier(sections: TomlSections, tier: BudgetTier): BudgetTierConfig | 
 	} else if (wallRaw !== undefined) {
 		wallTimeoutMs = wallRaw;
 	}
+	// service_tier: "flex" | "priority" (OpenRouter service tiers); absent
+	// → the fallback tier's (built-ins: none); invalid → warn + fallback.
+	const VALID_SERVICE_TIERS = ["flex", "priority"] as const;
+	const tierRaw = str(section, "service_tier");
+	let serviceTier = fallback.serviceTier;
+	if (tierRaw !== undefined) {
+		const value = tierRaw.trim();
+		if ((VALID_SERVICE_TIERS as readonly string[]).includes(value)) {
+			serviceTier = value;
+		} else {
+			warn(`${label} service_tier must be one of ${VALID_SERVICE_TIERS.join(" | ")} — using ${serviceTier ?? "standard"}`);
+		}
+	}
 	// shape: the run-pipeline shape name (a [shapes.*] section); absent →
 	// the fallback tier's; empty → warn + fallback.
 	const shapeRaw = str(section, "shape");
@@ -645,6 +692,7 @@ function loadTier(sections: TomlSections, tier: BudgetTier): BudgetTierConfig | 
 		executeModel,
 		reviewModel: model("review_model", fallback.reviewModel),
 		review: bool(section, "review") ?? fallback.review,
+		serviceTier,
 		shape,
 		wallTimeoutMs,
 	};

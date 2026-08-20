@@ -32,6 +32,7 @@ import {
 	CHECKLIST_EXTENSION_PATH,
 	DEFAULT_WORKER_SYSTEM_PROMPT,
 	spawnWorkerSession,
+	spawnWorkerSessionResilient,
 	type WorkerFailureDiagnostics,
 	type WorkerResult,
 } from "./worker.ts";
@@ -564,6 +565,10 @@ export interface ExecuteTaskOptions {
 	 *  [batch] (the shipped defaults when no task.toml). Only consulted on
 	 *  the batch channel (shape.channel === "batch"). */
 	batch?: BatchLaneConfig;
+	/** OpenRouter service tier for this run's subprocesses (the tier's
+	 *  service_tier config — "flex" | "priority"). Threaded to every worker
+	 *  and reviewer spawn; recorded in the manifest. Unset → standard. */
+	serviceTier?: string;
 	/** Batch provider injection (hermetic tests inject the fake; the task
 	 *  tool never passes one). Default: OpenRouterBatchProvider (needs
 	 *  OPENROUTER_API_KEY — typed BatchError("no_api_key") when absent). */
@@ -1035,6 +1040,8 @@ function assembleManifest(opts: {
 	shape: string;
 	reviewForked: boolean;
 	budget?: string;
+	/** OpenRouter service tier the run requested (flex infra). */
+	serviceTier?: string;
 	worker: WorkerResult;
 	workerDurationMs: number;
 	totalDurationMs: number;
@@ -1091,6 +1098,7 @@ function assembleManifest(opts: {
 			channel: opts.shape?.channel ?? "sync",
 			budget: opts.budget,
 			sandbox: opts.sandbox,
+			serviceTier: opts.serviceTier,
 		},
 		phases: {
 			prewalk: split.prewalk,
@@ -1223,6 +1231,7 @@ function finalizeParallelMetrics(opts: {
 			reviewForked: false,
 			budget: opts.budget,
 			sandbox: opts.sandbox,
+			serviceTier: opts.serviceTier,
 		},
 		phases: {
 			prewalk: null,
@@ -1526,7 +1535,7 @@ export async function executeTask(opts: ExecuteTaskOptions): Promise<TaskResult>
 	// finalizeParallelMetrics).
 	const dispatchedAt = new Date().toISOString();
 	const sessions = workspaces.map((ws, i) =>
-		spawnWorkerSession({
+		spawnWorkerSessionResilient({
 			cwd: ws.dir,
 			noProgressTimeoutMs: channelWatchdogWindows((shape ?? DEFAULT_TASK_SHAPES.code).channel).noProgressMs,
 			// Todo #89: the workspace differs from the project root — the
@@ -1534,6 +1543,7 @@ export async function executeTask(opts: ExecuteTaskOptions): Promise<TaskResult>
 			// fail with EROFS.
 			projectDir: cwd,
 			model: usePrewalk ? opts.prewalkModel! : executeModel,
+			serviceTier: opts.serviceTier,
 			task: promptFor(workerTasks[i]),
 			systemPrompt: systemPrompt ?? DEFAULT_WORKER_SYSTEM_PROMPT,
 			extensions: [
@@ -2428,9 +2438,10 @@ async function executeSingle(
 		const workerStartMs = Date.now();
 		// R1: dispatched_at — the moment the worker session spawns.
 		const dispatchedAt = new Date(workerStartMs).toISOString();
-		const session = spawnWorkerSession({
+		const session = spawnWorkerSessionResilient({
 			cwd,
 			model: usePrewalk ? prewalkModel! : executeModel,
+			serviceTier: opts.serviceTier,
 			noProgressTimeoutMs: channelWatchdogWindows((shape ?? DEFAULT_TASK_SHAPES.code).channel).noProgressMs,
 			task: taskPrompt,
 			systemPrompt: workerSystemPrompt,
@@ -2527,6 +2538,7 @@ async function executeSingle(
 							reviewForked: false,
 				shape: shape?.name ?? "code",
 							budget,
+							serviceTier: opts.serviceTier,
 							sandbox: sandbox.active,
 							worker, workerDurationMs: Date.now() - workerStartMs,
 							totalDurationMs: Date.now() - runStartMs,
@@ -2597,6 +2609,7 @@ async function executeSingle(
 					reviewForked: false,
 				shape: shape?.name ?? "code",
 					budget,
+					serviceTier: opts.serviceTier,
 					sandbox: sandbox.active,
 					worker, workerDurationMs,
 					totalDurationMs: Date.now() - runStartMs,
@@ -2681,6 +2694,7 @@ async function executeSingle(
 							persona: p,
 							firstEventTimeoutMs: watchWindows.firstEventMs,
 							wallTimeoutMs: reviewWallTimeoutMs,
+							serviceTier: opts.serviceTier,
 							signal,
 							onUpdate,
 						}),
@@ -2711,9 +2725,10 @@ async function executeSingle(
 
 			// 8d. Dispatch a fix worker for the P0/P1 blockers + failing tests
 			const fixPrompt = buildFixPrompt({ specMarkdown, failures: verification.failures, findings: blockersOf(reviewResult) });
-			const fixSession = spawnWorkerSession({
+			const fixSession = spawnWorkerSessionResilient({
 				cwd,
 				model: executeModel,
+				serviceTier: opts.serviceTier,
 				noProgressTimeoutMs: channelWatchdogWindows((shape ?? DEFAULT_TASK_SHAPES.code).channel).noProgressMs,
 				task: fixPrompt,
 				systemPrompt: workerSystemPrompt,
@@ -2763,6 +2778,7 @@ async function executeSingle(
 				reviewForked: true,
 				shape: shape?.name ?? "code",
 				budget,
+				serviceTier: opts.serviceTier,
 				sandbox: sandbox.active,
 				worker, workerDurationMs,
 				totalDurationMs: Date.now() - runStartMs,

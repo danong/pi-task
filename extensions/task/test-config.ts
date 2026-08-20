@@ -93,8 +93,11 @@ function testMissingFile(errors: string[]): void {
 		`the review wall default must stay 20 minutes, got ${DEFAULT_REVIEW_WALL_TIMEOUT_MS}`);
 	check(cfg!.defaults.aiAuthorName === "Pi ({model})" && cfg!.defaults.aiAuthorEmail === "noreply@danong.dev",
 		`missing file defaults should carry the AI commit identity, got ${cfg!.defaults.aiAuthorName} <${cfg!.defaults.aiAuthorEmail}>`);
-	check(JSON.stringify(cfg!.tierOrder) === JSON.stringify(["max", "full", "economy", "free"]),
+	check(JSON.stringify(cfg!.tierOrder) === JSON.stringify(["max", "full", "economy", "free", "async"]),
 		`missing file defaults should carry the built-in tier order, got ${JSON.stringify(cfg!.tierOrder)}`);
+	check(cfg!.tiers.async.serviceTier === "flex" && cfg!.tiers.async.shape === "async"
+		&& cfg!.tiers.async.executeModel === "openrouter/google/gemini-3.7-flash",
+		"async tier: flex service tier + async shape + gemini flash");
 	check(cfg!.tiers.economy.wallTimeoutMs === 45 * 60_000,
 		`economy's built-in wall should be 45 min (big builds need headroom), got ${cfg!.tiers.economy.wallTimeoutMs}`);
 	check(cfg!.tiers.free.wallTimeoutMs === 30 * 60_000,
@@ -206,6 +209,7 @@ execute_model = "provider/max"
 [budget.fast]
 execute_model = "provider/fast"
 wall_timeout_ms = 600000
+service_tier = "flex"
 `,
 		(path) => {
 			let cfg: TaskConfig | undefined;
@@ -224,6 +228,8 @@ wall_timeout_ms = 600000
 			// The new tier loads with its overrides.
 			check(cfg!.tiers.turbo.executeModel === "provider/turbo", "turbo.executeModel override");
 			check(cfg!.tiers.turbo.review === false, "turbo.review override");
+			check(cfg!.tiers.fast.serviceTier === "flex", "fast.service_tier parses (flex infra)");
+			check(cfg!.tiers.turbo.serviceTier === undefined, "absent service_tier → standard tier");
 			// Custom-tier per-key fallback: the DEFAULT tier's built-in
 			// template (models + 45-min wall) when keys are absent.
 			check(cfg!.tiers.turbo.prewalkModel === DEFAULT_BUDGET_TIERS.full.prewalkModel,
@@ -260,7 +266,7 @@ budget = "economy"
 		});
 		check(JSON.stringify(cfg!.tiers) === JSON.stringify(DEFAULT_BUDGET_TIERS),
 			"no [budget.*] sections → built-in tier set");
-		check(JSON.stringify(cfg!.tierOrder) === JSON.stringify(["max", "full", "economy", "free"]),
+		check(JSON.stringify(cfg!.tierOrder) === JSON.stringify(["max", "full", "economy", "free", "async"]),
 			"no [budget.*] sections → built-in tier order");
 		check(cfg!.defaults.budget === "economy", "economy is a built-in tier → valid defaults.budget");
 		check(warnings.length === 0, `no-budget-sections file should be silent, got ${JSON.stringify(warnings)}`);
@@ -431,6 +437,15 @@ extra_rw_binds = [1, 2]
 		check(cfg!.defaults.toolTimeoutMs === DEFAULT_TOOL_TIMEOUT_MS,
 			"float tool_timeout_ms falls back to the default");
 	});
+	withTempToml(`[budget.economy]\nservice_tier = "bogus"\n`, (path) => {
+		let cfg: TaskConfig | undefined;
+		const warnings = captureWarnings(() => {
+			cfg = loadTaskConfig(path);
+		});
+		check(warnings.some((w) => w.includes("service_tier")), "invalid service_tier should warn");
+		check(cfg!.tiers.economy.serviceTier === undefined,
+			"invalid service_tier falls back to the tier's built-in (standard)");
+	});
 	withTempToml(`[budget.economy]\nwall_timeout_ms = "fast"\n`, (path) => {
 		let cfg: TaskConfig | undefined;
 		captureWarnings(() => {
@@ -542,7 +557,7 @@ function testShapes(errors: string[]): void {
 	// Built-in shapes: code (the current pipeline) + analysis (strong
 	// writer, no swap, no review axes), both with a working review contract
 	// (analysis never forks — the shape declares no axes).
-	check(JSON.stringify(Object.keys(DEFAULT_TASK_SHAPES)) === JSON.stringify(["code", "analysis", "batch"]),
+	check(JSON.stringify(Object.keys(DEFAULT_TASK_SHAPES)) === JSON.stringify(["code", "async", "analysis", "batch"]),
 		`built-in shapes, got ${JSON.stringify(Object.keys(DEFAULT_TASK_SHAPES))}`);
 	check(DEFAULT_TASK_SHAPES.code.prewalk && DEFAULT_TASK_SHAPES.code.swap && DEFAULT_TASK_SHAPES.code.workModel === "execute",
 		"code shape: prewalk + swap + execute writer");
@@ -552,7 +567,9 @@ function testShapes(errors: string[]): void {
 		"analysis shape: no prewalk/swap, strong writer, no review axes (single task)");
 	// Channel: default sync; flex/batch parse; the watchdog calibration.
 	check(DEFAULT_TASK_SHAPES.code.channel === "sync" && DEFAULT_TASK_SHAPES.analysis.channel === "sync",
-		"built-in shapes default to the sync channel");
+		"built-in code/analysis shapes default to the sync channel");
+	check(DEFAULT_TASK_SHAPES.async.channel === "flex" && DEFAULT_TASK_SHAPES.async.prewalk && DEFAULT_TASK_SHAPES.async.swap,
+		"async shape: flex channel, standard pipeline");
 	// Batch shape (M2): the async job lane — no prewalk/swap, no review axes.
 	check(DEFAULT_TASK_SHAPES.batch.channel === "batch"
 		&& !DEFAULT_TASK_SHAPES.batch.prewalk && !DEFAULT_TASK_SHAPES.batch.swap

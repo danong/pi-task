@@ -93,6 +93,9 @@ export interface DetachedRunOptions {
 	reviewModel?: string;
 	review?: boolean;
 	persona?: string;
+	/** OpenRouter service tier the tier declares (flex infra) — the child
+	 *  threads it to every worker/reviewer spawn. */
+	serviceTier?: string;
 	shape?: TaskShape;
 	maxFixIterations?: number;
 	workerTimeoutMs?: number;

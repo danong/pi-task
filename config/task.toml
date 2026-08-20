@@ -96,6 +96,22 @@ review = false
 shape = "code"
 wall_timeout_ms = 1800000
 
+[budget.async]
+# Async workers on OpenRouter FLEX processing (batch-level pricing,
+# synchronous endpoint, 1-15 min per call). For detached runs + scheduler
+# jobs. service_tier = "flex" → every worker/reviewer subprocess injects
+# service_tier into its provider calls; flex has NO server-side fallback,
+# so capacity errors get exponential backoff (30s/60s/120s) in the engine.
+# prewalk_model == execute_model (no prewalk). 120-min wall absorbs the
+# flex latency across a full task.
+prewalk_model = "openrouter/google/gemini-3.7-flash"
+execute_model = "openrouter/google/gemini-3.7-flash"
+review_model = "openrouter/google/gemini-3.7-flash"
+review = true
+shape = "async"
+service_tier = "flex"
+wall_timeout_ms = 7200000
+
 [sandbox]
 # Worker bwrap sandbox policy (docs/pi-task-design.md → Worker Sandbox).
 # The agent dir (~/.pi/agent) is bound READ-ONLY except for pi's own
@@ -155,6 +171,18 @@ job_timeout_ms = 86400000
 # (the persona used when none is specified); the full declared axis set
 # below (standards + spec-fidelity + architecture, parallel forks) is
 # the explicit `persona = "parallel"` opt-in for high-stakes/shared code.
+prewalk = true
+swap = true
+work_model = "execute"
+review_model = "review"
+review = ["standards", "spec-fidelity", "architecture"]
+
+[shapes.async]
+# Async flex workers: the standard prewalk→swap→work→review pipeline on
+# the FLEX channel — channelWatchdogWindows gives it the 25/20-min
+# watchdog windows that tolerate flex's 1-15-min-per-call latency. Pair
+# with a tier declaring service_tier = "flex" ([budget.async]).
+channel = "flex"
 prewalk = true
 swap = true
 work_model = "execute"
