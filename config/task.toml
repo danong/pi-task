@@ -97,16 +97,18 @@ shape = "code"
 wall_timeout_ms = 1800000
 
 [budget.async]
-# Async workers on OpenRouter FLEX processing (batch-level pricing,
-# synchronous endpoint, 1-15 min per call). For detached runs + scheduler
-# jobs. service_tier = "flex" → every worker/reviewer subprocess injects
-# service_tier into its provider calls; flex has NO server-side fallback,
-# so capacity errors get exponential backoff (30s/60s/120s) in the engine.
-# prewalk_model == execute_model (no prewalk). 120-min wall absorbs the
-# flex latency across a full task.
+# Async workers (detached runs + scheduler jobs) on the efficiency
+# doctrine: the token-hungry tool loop runs on the CHEAP workhorse
+# (DeepSeek V4 Flash, standard tier); the strong model (Gemini Flash) gets
+# only the thin prewalk slice, priced down via OpenRouter FLEX (batch-level
+# pricing, synchronous endpoint, 1-15 min per call; capacity errors get
+# exponential backoff 30s/60s/120s in the engine — flex has NO server-side
+# fallback). Gemini flex is still ~3x the workhorse's input price, so it
+# is used sparingly: never for the loop, never for routine reviews (review
+# runs on the workhorse). 120-min wall absorbs flex latency across a task.
 prewalk_model = "openrouter/google/gemini-3.7-flash"
-execute_model = "openrouter/google/gemini-3.7-flash"
-review_model = "openrouter/google/gemini-3.7-flash"
+execute_model = "openrouter/~deepseek/deepseek-v4-flash-latest"
+review_model = "openrouter/~deepseek/deepseek-v4-flash-latest"
 review = true
 shape = "async"
 service_tier = "flex"

@@ -96,8 +96,10 @@ function testMissingFile(errors: string[]): void {
 	check(JSON.stringify(cfg!.tierOrder) === JSON.stringify(["max", "full", "economy", "free", "async"]),
 		`missing file defaults should carry the built-in tier order, got ${JSON.stringify(cfg!.tierOrder)}`);
 	check(cfg!.tiers.async.serviceTier === "flex" && cfg!.tiers.async.shape === "async"
-		&& cfg!.tiers.async.executeModel === "openrouter/google/gemini-3.7-flash",
-		"async tier: flex service tier + async shape + gemini flash");
+		&& cfg!.tiers.async.prewalkModel === "openrouter/google/gemini-3.7-flash"
+		&& cfg!.tiers.async.executeModel === "openrouter/~deepseek/deepseek-v4-flash-latest"
+		&& cfg!.tiers.async.reviewModel === "openrouter/~deepseek/deepseek-v4-flash-latest",
+		"async tier: flex for the gemini prewalk slice only; the cheap deepseek workhorse runs the loop + review");
 	check(cfg!.tiers.economy.wallTimeoutMs === 45 * 60_000,
 		`economy's built-in wall should be 45 min (big builds need headroom), got ${cfg!.tiers.economy.wallTimeoutMs}`);
 	check(cfg!.tiers.free.wallTimeoutMs === 30 * 60_000,

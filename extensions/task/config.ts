@@ -291,14 +291,19 @@ export const DEFAULT_BUDGET_TIERS: Record<BudgetTier, BudgetTierConfig> = {
 		shape: "code",
 		wallTimeoutMs: 30 * 60_000,
 	},
-	/** Async workers on OpenRouter FLEX processing (batch-level pricing,
-	 *  synchronous endpoint, 1-15 min per call — the flex shape's 25/20-min
+	/** Async workers (detached runs + scheduler jobs): the efficiency
+	 *  doctrine — the token-hungry tool loop runs on the CHEAP workhorse
+	 *  (DeepSeek V4 Flash, standard tier), the strong model (Gemini Flash)
+	 *  gets only the thin prewalk slice, priced down via OpenRouter FLEX
+	 *  (batch-level pricing, 1-15 min per call — the async shape's 25/20-min
 	 *  watchdog windows + 120-min wall absorb it; capacity errors get
-	 *  exponential backoff). For detached runs + scheduler jobs. */
+	 *  exponential backoff). Gemini flex is still ~3x the workhorse's input
+	 *  price, so it is used sparingly: never for the loop, never for
+	 *  routine reviews. */
 	async: {
-		prewalkModel: null,
-		executeModel: "openrouter/google/gemini-3.7-flash",
-		reviewModel: "openrouter/google/gemini-3.7-flash",
+		prewalkModel: "openrouter/google/gemini-3.7-flash",
+		executeModel: "openrouter/~deepseek/deepseek-v4-flash-latest",
+		reviewModel: "openrouter/~deepseek/deepseek-v4-flash-latest",
 		review: true,
 		serviceTier: "flex",
 		shape: "async",
