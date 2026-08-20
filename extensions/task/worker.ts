@@ -219,6 +219,9 @@ export const CHECKLIST_EXTENSION_PATH = join(THIS_DIR, "tools", "checklist.ts");
 /** Tool guard (Phase 2): bash timeout cap + root-scoped search block.
  *  Enforcement for EVERY worker/reviewer, whatever its prompt says. */
 export const TOOL_GUARD_EXTENSION_PATH = join(THIS_DIR, "tools", "tool-guard.ts");
+/** dispute_verification: the worker's structured challenge against a
+ *  defective verification command (engine-adjudicated, never unilateral). */
+export const DISPUTE_EXTENSION_PATH = join(THIS_DIR, "tools", "dispute.ts");
 /** Service-tier injection extension — loaded only when the run's tier
  *  declares one (the extension is a no-op without the env var anyway, but
  *  skipping the load keeps ordinary runs extension-count-stable). */
@@ -759,7 +762,7 @@ export function buildWorkerArgs(opts: {
 	// which would register the recursive `task` tool in workers and fire the
 	// session-start map refresh per worker. Explicit --extension paths still
 	// load with discovery disabled.
-	const args: string[] = ["--mode", "rpc", "--model", opts.model, "--no-extensions", "--extension", YIELD_EXTENSION_PATH, "--extension", TOOL_GUARD_EXTENSION_PATH];
+	const args: string[] = ["--mode", "rpc", "--model", opts.model, "--no-extensions", "--extension", YIELD_EXTENSION_PATH, "--extension", TOOL_GUARD_EXTENSION_PATH, "--extension", DISPUTE_EXTENSION_PATH];
 	if (opts.serviceTier) args.push("--extension", SERVICE_TIER_EXTENSION_PATH);
 	for (const ext of opts.extensions ?? []) {
 		args.push("--extension", ext);

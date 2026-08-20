@@ -56,6 +56,10 @@ export interface VerifyPhaseMetrics {
 	 *  was unsatisfiable before the work began, no fix worker can satisfy it,
 	 *  and the fix loop spent zero iterations on them. Absent when none. */
 	suspected_spec_defects?: string[];
+	/** Adjudicated worker disputes: upheld commands were excluded from the
+	 *  gate by baseline evidence; rejected ones are recorded for the spec
+	 *  author. Absent when no disputes were made. */
+	disputes?: { upheld: string[]; rejected: Array<{ command: string; reason: string }> };
 	/** Where verification ran: "worker-tree" (single-worker, post-yield,
 	 *  on the worker's commits) | "union-gate" (parallel, post-merge, on
 	 *  the merged tree) | "batch" (batch lane, post-apply, on the tree the

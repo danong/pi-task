@@ -24,6 +24,18 @@ export const YieldSchema = Type.Object({
 	deviations: Type.Array(Type.String(), {
 		description: "Any deviations from the spec (empty array if none)",
 	}),
+	disputes: Type.Optional(
+		Type.Array(
+			Type.Object({
+				command: Type.String(),
+				reason: Type.String(),
+			}),
+		),
+		{
+			description:
+				"Verification commands disputed via dispute_verification (the engine merges tool-recorded disputes in automatically; omit unless you also dispute inline)",
+		},
+	),
 });
 
 export type YieldPayload = Static<typeof YieldSchema>;

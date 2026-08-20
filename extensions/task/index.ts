@@ -461,6 +461,9 @@ export interface TaskToolReturn {
 	/** Verification commands whose failures matched the pre-change baseline
 	 *  exactly — suspected spec defects (fix the spec, not the code). */
 	suspected_spec_defects?: string[];
+	/** Adjudicated worker disputes: upheld commands excluded from the gate;
+	 *  rejected ones recorded for the spec author. */
+	disputes?: { upheld: string[]; rejected: Array<{ command: string; reason: string }> };
 	verification: { passed: boolean; failures: Array<{ command: string; exitCode: number; output: string }> };
 }
 
@@ -510,6 +513,9 @@ export function taskResultToToolReturn(result: TaskResult): TaskToolReturn {
 		...(result.reviewSkipped ? { review_skipped: true } : {}),
 		...(result.caveat !== undefined ? { caveat: result.caveat } : {}),
 		...(result.suspectedSpecDefects?.length ? { suspected_spec_defects: result.suspectedSpecDefects } : {}),
+		...(result.disputes && (result.disputes.upheld.length > 0 || result.disputes.rejected.length > 0)
+			? { disputes: result.disputes }
+			: {}),
 		verification: {
 			passed: result.verification.passed,
 			failures: result.verification.failures,
@@ -641,6 +647,15 @@ export function summarizeResult(result: TaskResult): string {
 		parts.push(
 			"Suspected spec defects (verification failures identical to the pre-change baseline — fix the SPEC, not the code): " +
 				result.suspectedSpecDefects.join(" | "),
+		);
+	}
+	if (result.disputes && (result.disputes.upheld.length > 0 || result.disputes.rejected.length > 0)) {
+		const up = result.disputes.upheld.length;
+		const down = result.disputes.rejected.length;
+		parts.push(
+			`Worker disputes adjudicated by baseline evidence: ${up} upheld (excluded from the gate)` +
+				(down > 0 ? `, ${down} rejected (recorded in the manifest for the spec author)` : "") +
+				".",
 		);
 	}
 	// R2: a finalization-incomplete recovery reports success WITH the caveat

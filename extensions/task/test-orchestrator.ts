@@ -31,6 +31,7 @@ import {
 	isBrokenVerificationCommand,
 	captureVerificationBaseline,
 	classifyVerificationFailures,
+	adjudicateDisputes,
 	BASELINE_SIGNATURE_CAP,
 	type VerificationBaselineEntry,
 } from "./orchestrator.ts";
@@ -651,6 +652,36 @@ async function testVerificationBaselineCapture(errors: string[]): void {
 	}
 }
 
+// ─── dispute_verification adjudication (never unilateral) ────────────
+
+function testDisputeAdjudication(errors: string[]): void {
+	const check = (cond: boolean, msg: string): void => {
+		if (!cond) errors.push(msg);
+	};
+	const baseline: VerificationBaselineEntry[] = [
+		{ command: "badgrep", exitCode: 1, signature: "" },
+		{ command: "flaky", exitCode: 1, signature: "attempt A output" },
+	];
+	const failures = [
+		{ command: "badgrep", exitCode: 1, output: "" }, // baseline-identical
+		{ command: "flaky", exitCode: 1, output: "attempt B output" }, // differs from baseline
+	];
+	const adjudicated = adjudicateDisputes(
+		[
+			{ command: "badgrep", reason: "pattern substring-matches a live symbol" },
+			{ command: "flaky", reason: "I think it is wrong" },
+			{ command: "passing", reason: "disliked" }, // not even failing
+		],
+		failures,
+		baseline,
+	);
+	check(JSON.stringify(adjudicated.upheld) === JSON.stringify(["badgrep"]),
+		`only the baseline-identical dispute is upheld, got ${JSON.stringify(adjudicated.upheld)}`);
+	check(adjudicated.rejected.length === 2 && adjudicated.rejected.some((d) => d.command === "flaky"),
+		`differs-from-baseline and non-failing disputes are rejected, got ${JSON.stringify(adjudicated.rejected.map((d) => d.command))}`);
+	check(adjudicateDisputes([], failures, baseline).upheld.length === 0, "no disputes → nothing upheld");
+}
+
 // ─── Turn budget (Phase 3): bounded autonomy ─────────────────────────
 
 function testTurnBudget(errors: string[]): void {
@@ -689,6 +720,7 @@ export async function runTests(): Promise<void> {
 	testRecoveryGuide(errors);
 	testVerificationLifecycle(errors);
 	await testVerificationBaselineCapture(errors);
+	testDisputeAdjudication(errors);
 	testTurnBudget(errors);
 
 	if (errors.length > 0) {

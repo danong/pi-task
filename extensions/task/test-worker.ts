@@ -7,6 +7,8 @@
 
 import { pathToFileURL } from "node:url";
 import { injectProviderOnly, injectServiceTier, SERVICE_TIER_ENV_VAR } from "./tools/service-tier.ts";
+import { mergeDisputes } from "./tools/yield.ts";
+import { recordDispute, takeRecordedDisputes } from "./tools/dispute.ts";
 import {
 	AGENT_SETTLED_EVENT,
 	buildAbortError,
@@ -244,6 +246,8 @@ export async function runTests(): Promise<void> {
 		check(extIdx !== -1 && args[extIdx + 1].endsWith("yield.ts"), `yield extension must always load, got ${args[extIdx + 1]}`);
 		check(args.some((a, i) => a === "--extension" && (args[i + 1] ?? "").endsWith("tool-guard.ts")),
 			"the tool guard loads on every worker (Phase 2 enforcement)");
+		check(args.some((a, i) => a === "--extension" && (args[i + 1] ?? "").endsWith("dispute.ts")),
+			"the dispute tool loads on every worker (structured gate challenges)");
 		check(!args.includes("--append-system-prompt"), "no prompt path → no --append-system-prompt");
 	}
 
@@ -302,6 +306,20 @@ export async function runTests(): Promise<void> {
 		check(deepseekFull === deepseek, "deepseek loop call: no tier, no pin — standard routing");
 	}
 
+	// 14f. dispute collector + yield merge (structured gate challenges).
+	{
+		recordDispute({ command: "cmd-a", reason: "r1" });
+		recordDispute({ command: "cmd-a", reason: "r1-dup" }); // deduped by command
+		recordDispute({ command: "cmd-b", reason: "r2" });
+		const drained = takeRecordedDisputes();
+		check(drained.length === 2 && takeRecordedDisputes().length === 0,
+			`collector dedupes by command and drains once, got ${drained.length}`);
+		const merged = mergeDisputes(drained, [{ command: "cmd-b", reason: "inline-dup" }, { command: "cmd-c", reason: "r3" }]);
+		check(JSON.stringify(merged.map((d) => d.command)) === JSON.stringify(["cmd-a", "cmd-b", "cmd-c"]),
+			`yield merge dedupes inline disputes with recorded ones, got ${JSON.stringify(merged.map((d) => d.command))}`);
+		check(mergeDisputes([], undefined).length === 0, "no disputes → empty");
+	}
+
 	// 14d. Flex capacity classifier + backoff schedule (exponential, bounded).
 	{
 		check(isRetryableCapacityError("no flex capacity available right now"), "capacity message retryable");
@@ -328,8 +346,8 @@ export async function runTests(): Promise<void> {
 			systemPromptPath: "/p/prompt.md",
 		});
 		check(args.includes("/a/checklist.ts") && args.includes("/b/prewalk.ts"), "extra extensions should be forwarded");
-		check(args.filter((a) => a === "--extension").length === 4,
-			"yield + tool guard (always-on) + 2 extra extensions = 4 --extension flags");
+		check(args.filter((a) => a === "--extension").length === 5,
+			"yield + tool guard + dispute tool (always-on) + 2 extra extensions = 5 --extension flags");
 		check(
 			args.includes("--append-system-prompt") && args[args.indexOf("--append-system-prompt") + 1] === "/p/prompt.md",
 			"system prompt path should be forwarded",

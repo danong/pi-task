@@ -1866,9 +1866,16 @@ satisfy it). The engine adjudicates by EVIDENCE, not prompts:
    fix only the actionable failures). The manifest's verify phase records
    `suspected_spec_defects`; the tool return + summary surface them.
 
-Worker autonomy to challenge a gate is a structured `dispute_verification`
-protocol (planned phase 2) — adjudicated by the same baseline evidence,
-never unilateral.
+**Worker disputes (`dispute_verification` tool).** A worker that believes
+a verification command is defective calls `dispute_verification` (loaded
+on every worker) instead of hacking code to satisfy a bad gate. The
+ENGINE adjudicates each dispute by evidence at verification time
+(`adjudicateDisputes`): upheld only when the command's current failure
+matches its pre-change baseline exactly — then excluded from the gate;
+anything else is rejected and recorded in the manifest for the spec
+author. Disputes never override the gate unilaterally; fix workers
+contribute disputes too. Baseline wiring covers the single-worker,
+parallel (post-merge), and batch (post-apply) lanes.
 
 ## Worker enforcement layers (Phases 2–3)
 

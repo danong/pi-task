@@ -12,6 +12,19 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { YieldSchema } from "../schemas/yield.ts";
+import { takeRecordedDisputes, type RecordedDispute } from "./dispute.ts";
+
+/** Pure: tool-recorded disputes + inline yield disputes, deduped by command. */
+export function mergeDisputes(
+	recordedDisputes: RecordedDispute[],
+	inline: Array<{ command: string; reason: string }> | undefined,
+): Array<{ command: string; reason: string }> {
+	const merged: Array<{ command: string; reason: string }> = [...recordedDisputes];
+	for (const d of inline ?? []) {
+		if (!merged.some((m) => m.command === d.command)) merged.push(d);
+	}
+	return merged;
+}
 
 /** Contract enforcement: files_changed is repo-relative, whatever the model reports. */
 function toRepoRelative(cwd: string, p: string): string {
@@ -37,6 +50,9 @@ export default function (pi: ExtensionAPI) {
 				details: {
 					...params,
 					files_changed: params.files_changed.map((p) => toRepoRelative(ctx.cwd, p)),
+					// Disputes recorded via dispute_verification travel with the
+					// yield automatically (deduped with any inline params.disputes).
+					disputes: mergeDisputes(takeRecordedDisputes(), params.disputes),
 				},
 				terminate: true,
 			};

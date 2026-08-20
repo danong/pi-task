@@ -673,6 +673,10 @@ export interface TaskResult {
 	 *  baseline — suspected spec defects (unsatisfiable gates the fix loop
 	 *  spent nothing on). Present only when non-empty. */
 	suspectedSpecDefects?: string[];
+	/** Adjudicated worker disputes (Phase 2 of the verification lifecycle):
+	 *  upheld = excluded from the gate by baseline evidence; rejected =
+	 *  recorded for the spec author. Present only when disputes were made. */
+	disputes?: { upheld: string[]; rejected: VerificationDispute[] };
 	/** R2: success-with-caveat note — present when a finalization-incomplete
 	 *  abort recovered (the merge landed and the verification gate PASSED
 	 *  post-abort): names the aborted worker(s), the merged commit id, and
@@ -848,6 +852,38 @@ export function classifyVerificationFailures(
 		}
 	}
 	return { actionable, specDefectSuspected };
+}
+
+/** A worker's structured challenge against a verification command. */
+export interface VerificationDispute {
+	command: string;
+	reason: string;
+}
+
+/**
+ * Pure: adjudicate worker disputes by EVIDENCE — a dispute is upheld only
+ * when the command's current failure matches its pre-change baseline
+ * exactly (the same shape classifyVerificationFailures flags as a spec
+ * defect). Anything else — a different failure, or a command that passed
+ * — is rejected and recorded. Disputes never override the gate
+ * unilaterally; upheld ones join the suspect list (excluded from the fix
+ * loop), rejected ones travel to the manifest for the spec author.
+ */
+export function adjudicateDisputes(
+	disputes: VerificationDispute[],
+	failures: VerificationCommandResult[],
+	baseline: VerificationBaselineEntry[],
+): { upheld: string[]; rejected: VerificationDispute[] } {
+	const suspected = new Set(
+		classifyVerificationFailures(failures, baseline).specDefectSuspected.map((f) => f.command),
+	);
+	const upheld: string[] = [];
+	const rejected: VerificationDispute[] = [];
+	for (const dispute of disputes) {
+		if (suspected.has(dispute.command)) upheld.push(dispute.command);
+		else rejected.push(dispute);
+	}
+	return { upheld, rejected };
 }
 
 // ─── Turn budget (Phase 3): bounded autonomy ─────────────────────────
@@ -1187,6 +1223,8 @@ function assembleManifest(opts: {
 	verification: VerificationResult;
 	/** Spec-defect suspects (baseline-matched failures) for the manifest. */
 	suspectedSpecDefects?: string[];
+	/** Adjudicated worker disputes for the manifest. */
+	disputes?: { upheld: string[]; rejected: VerificationDispute[] };
 	review: ReviewMetricsInput | null;
 	fixLoop: { iterations: number; costUsd: number };
 	/** Whether the worker sandbox was ACTIVE for this run (R3). */
@@ -1250,6 +1288,9 @@ function assembleManifest(opts: {
 				source: "worker-tree",
 				timed_out: opts.verification.timed_out,
 				...(opts.suspectedSpecDefects?.length ? { suspected_spec_defects: opts.suspectedSpecDefects } : {}),
+				...(opts.disputes && (opts.disputes.upheld.length > 0 || opts.disputes.rejected.length > 0)
+					? { disputes: opts.disputes }
+					: {}),
 			},
 			review,
 			fixLoop: { iterations: opts.fixLoop.iterations, cost_usd: opts.fixLoop.costUsd },
@@ -1359,6 +1400,8 @@ function finalizeParallelMetrics(opts: {
 	/** R1/R4/R5 parallel-merge record (atomic combine + union ladder +
 	 *  overlap classification) — written into the manifest. */
 	merge?: MergeMetrics;
+	/** Spec-defect suspects (baseline-matched failures on the merged tree). */
+	suspectedSpecDefects?: string[];
 }): { manifest: RunManifest; manifestPath?: string } {
 	const project = opts.project ?? deriveProjectName(opts.cwd);
 	const manifest = buildRunManifest({
@@ -1383,6 +1426,7 @@ function finalizeParallelMetrics(opts: {
 				duration_ms: opts.verification.duration_ms,
 				source: "union-gate",
 				timed_out: opts.verification.timed_out,
+				...(opts.suspectedSpecDefects?.length ? { suspected_spec_defects: opts.suspectedSpecDefects } : {}),
 			},
 			review: null,
 			fixLoop: { iterations: 0, cost_usd: 0 },
@@ -1774,6 +1818,7 @@ export async function executeTask(opts: ExecuteTaskOptions): Promise<TaskResult>
 	// runs INSIDE the try so a finalization-incomplete gate failure can
 	// preserve the workspaces.
 	let verification!: VerificationResult;
+	const parallelSuspects: string[] = [];
 	// R1/R4/R5: merge metrics for the aggregate manifest (atomic combine,
 	// union resolution, overlap classification).
 	const mergeMetrics: MergeMetrics = {
@@ -2014,6 +2059,12 @@ export async function executeTask(opts: ExecuteTaskOptions): Promise<TaskResult>
 				verificationTimeoutMs ?? DEFAULT_VERIFICATION_TIMEOUT_MS,
 				signal,
 			);
+			// Baseline adjudication on the merged tree: failures identical to
+			// the pre-change baseline are suspected spec defects — recorded in
+			// the manifest/result (the parallel path has no fix loop).
+			for (const f of classifyVerificationFailures(verification.failures, verificationBaseline).specDefectSuspected) {
+				if (!parallelSuspects.includes(f.command)) parallelSuspects.push(f.command);
+			}
 		}
 		if (mergeMetrics.conflicts.length === 0 && !verification.passed && finalizationIncompleteIndexes.length > 0) {
 			// R2: the gate FAILS a finalization-incomplete recovery → the
@@ -2111,6 +2162,7 @@ export async function executeTask(opts: ExecuteTaskOptions): Promise<TaskResult>
 		? await filesChangedBetweenBestEffort(cwd, taskBaseCommitId, baseCommitId)
 		: results.flatMap((r) => r.yield.files_changed);
 	const metrics = finalizeParallelMetrics({
+		suspectedSpecDefects: parallelSuspects,
 		cwd,
 		project: opts.project,
 		metricsDir: opts.metricsDir,
@@ -2165,6 +2217,7 @@ export async function executeTask(opts: ExecuteTaskOptions): Promise<TaskResult>
 		workers: results,
 		conflicts,
 		verification,
+		...(parallelSuspects.length > 0 ? { suspectedSpecDefects: [...parallelSuspects] } : {}),
 		...(caveat ? { caveat } : {}),
 		// R7: a requested review is single-worker only — surface that it was
 		// skipped (todo #73: no console.warn; the plan line and this flag
@@ -2267,6 +2320,12 @@ async function executeBatchLane(
 	// AI base is empty — diffing from it or from @- is equivalent).
 	const baseCommit = await headCommitId(cwd);
 
+	// Verification lifecycle: the pre-apply baseline (the tree is clean
+	// here — cleanness asserted at the run's head). Baseline-identical
+	// post-apply failures are recorded as suspected spec defects.
+	const batchBaseline = await captureVerificationBaseline(spec.verification, cwd, verifyTimeout, signal);
+	const batchSuspects: string[] = [];
+
 	try {
 		// 1. The lane: submit → poll → collect → validate (typed failures;
 		// job state persisted to the metrics dir at every transition).
@@ -2341,6 +2400,9 @@ async function executeBatchLane(
 
 		// 4. Verification (bash hard gate, zero tokens) on the applied tree.
 		const verification = await runVerification(spec.verification, cwd, verifyTimeout, signal);
+		for (const f of classifyVerificationFailures(verification.failures, batchBaseline).specDefectSuspected) {
+			if (!batchSuspects.includes(f.command)) batchSuspects.push(f.command);
+		}
 
 		// 5. Metrics: ONE RunManifest — phases.execute is the lane's
 		// aggregate usage (turns = items, edits = applied files, duration =
@@ -2380,6 +2442,7 @@ async function executeBatchLane(
 					duration_ms: verification.duration_ms,
 					source: "batch",
 					timed_out: verification.timed_out,
+					...(batchSuspects.length > 0 ? { suspected_spec_defects: batchSuspects } : {}),
 				},
 				review: null,
 				fixLoop: { iterations: 0, cost_usd: 0 },
@@ -2436,6 +2499,7 @@ async function executeBatchLane(
 			// was skipped (todo #73: no console output; the flag carries it).
 			...(reviewRequested ? { reviewSkipped: true } : {}),
 			batch: { jobId: lane.jobId, model: batchCfg.model, items: lane.items.length },
+			...(batchSuspects.length > 0 ? { suspectedSpecDefects: [...batchSuspects] } : {}),
 			manifest,
 			manifestPath,
 			durationMs: Date.now() - runStartMs,
@@ -2558,6 +2622,7 @@ async function executeSingle(
 	// baseline exactly — recorded in the result/manifest, never fix-looped).
 	const verificationBaseline = opts.verificationBaseline ?? [];
 	const suspectedSpecDefects: string[] = [];
+	let lastAdjudication: { upheld: string[]; rejected: VerificationDispute[] } = { upheld: [], rejected: [] };
 
 	const workerSystemPrompt = systemPrompt ?? DEFAULT_WORKER_SYSTEM_PROMPT;
 	const workerExtensions = [CHECKLIST_EXTENSION_PATH, ...(usePrewalk ? [PREWALK_EXTENSION_PATH] : [])];
@@ -2797,11 +2862,19 @@ async function executeSingle(
 		}
 		const workerDurationMs = Date.now() - workerStartMs;
 
+		// Worker disputes travel with the yield; fix workers may add more.
+		const disputes: VerificationDispute[] = [...(worker.yield.disputes ?? [])];
+
 		// ── Review disabled: unchanged verify-once path (plus metrics) ──
 		if (!review) {
 			const verification = await runVerification(spec.verification, cwd, verifyTimeout, signal);
-			for (const f of classifyVerificationFailures(verification.failures, verificationBaseline).specDefectSuspected) {
+			const defectSplit0 = classifyVerificationFailures(verification.failures, verificationBaseline);
+			lastAdjudication = adjudicateDisputes(disputes, verification.failures, verificationBaseline);
+			for (const f of defectSplit0.specDefectSuspected) {
 				if (!suspectedSpecDefects.includes(f.command)) suspectedSpecDefects.push(f.command);
+			}
+			for (const c of lastAdjudication.upheld) {
+				if (!suspectedSpecDefects.includes(c)) suspectedSpecDefects.push(c);
 			}
 			// R1 diff stats: the worker's commits are baseCommit..@- (the worker
 			// leaves @ as an empty working-copy commit after its last `jj commit`).
@@ -2824,6 +2897,7 @@ async function executeSingle(
 					swapTurn,
 					verification,
 					suspectedSpecDefects: [...suspectedSpecDefects],
+					disputes: lastAdjudication,
 					review: null,
 					fixLoop: { iterations: 0, costUsd: 0 },
 					receivedAt: opts.receivedAt,
@@ -2843,6 +2917,7 @@ async function executeSingle(
 				worker,
 				verification,
 				...(suspectedSpecDefects.length > 0 ? { suspectedSpecDefects: [...suspectedSpecDefects] } : {}),
+				...(lastAdjudication.upheld.length > 0 || lastAdjudication.rejected.length > 0 ? { disputes: lastAdjudication } : {}),
 				// R1: a requested review on an axis-less shape (analysis — surveys
 				// are a single task, the worker IS the review) never forks; surface
 				// the skipped disposition instead (same contract as parallel/batch).
@@ -2890,10 +2965,17 @@ async function executeSingle(
 			// NOTHING on them: all-suspect → escalate with the evidence, mixed
 			// → fix only the actionable failures.
 			const defectSplit = classifyVerificationFailures(verification.failures, verificationBaseline);
+			// Worker disputes (yield + fix workers): adjudicated by evidence —
+			// upheld only on a baseline-identical failure. Never unilateral.
+			lastAdjudication = adjudicateDisputes(disputes, verification.failures, verificationBaseline);
 			for (const f of defectSplit.specDefectSuspected) {
 				if (!suspectedSpecDefects.includes(f.command)) suspectedSpecDefects.push(f.command);
 			}
-			if (!verification.passed && defectSplit.actionable.length === 0) {
+			for (const c of lastAdjudication.upheld) {
+				if (!suspectedSpecDefects.includes(c)) suspectedSpecDefects.push(c);
+			}
+			const actionableFailures = defectSplit.actionable.filter((f) => !lastAdjudication.upheld.includes(f.command));
+			if (!verification.passed && actionableFailures.length === 0) {
 				onUpdate?.({ type: "spec_defect_suspected", commands: [...suspectedSpecDefects] });
 				decision = "escalate";
 				break;
@@ -2950,7 +3032,7 @@ async function executeSingle(
 			if (decision !== "fix") break;
 
 			// 8d. Dispatch a fix worker for the P0/P1 blockers + failing tests
-			const fixPrompt = buildFixPrompt({ specMarkdown, failures: defectSplit.actionable, findings: blockersOf(reviewResult) });
+			const fixPrompt = buildFixPrompt({ specMarkdown, failures: actionableFailures, findings: blockersOf(reviewResult) });
 			const fixSession = spawnWorkerSessionResilient({
 				cwd,
 				model: executeModel,
@@ -2984,6 +3066,7 @@ async function executeSingle(
 					throw err;
 				});
 			fixesUsed++;
+			disputes.push(...(fixResult.yield.disputes ?? []));
 			fixesCostUsd += fixResult.usage.cost_usd;
 			commits.push(...fixResult.yield.commit_ids);
 			files.push(...fixResult.yield.files_changed);
@@ -3013,6 +3096,7 @@ async function executeSingle(
 				swapTurn,
 				verification,
 				suspectedSpecDefects: [...suspectedSpecDefects],
+				disputes: lastAdjudication,
 				review: reviewResult ? { result: reviewResult, costUsd: reviewCostUsd, personas: effectiveAxes.map((p) => p.name) } : null,
 				fixLoop: { iterations: fixesUsed + 1, costUsd: fixesCostUsd },
 				receivedAt: opts.receivedAt,
@@ -3033,6 +3117,7 @@ async function executeSingle(
 			worker,
 			verification,
 			...(suspectedSpecDefects.length > 0 ? { suspectedSpecDefects: [...suspectedSpecDefects] } : {}),
+			...(lastAdjudication.upheld.length > 0 || lastAdjudication.rejected.length > 0 ? { disputes: lastAdjudication } : {}),
 			review: reviewResult ?? undefined,
 			fixLoop: { iterations: fixesUsed + 1, fixesDispatched: fixesUsed },
 			manifest: metrics.manifest,
