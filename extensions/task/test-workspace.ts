@@ -53,7 +53,6 @@ import {
 	DEFAULT_JJ_TIMEOUT_MS,
 	detectChangeConflicts,
 	execJj,
-	mergeWorkspace,
 	mergeWorkspacesAtomic,
 	parseSummaryChanges,
 	removeWorkspace,
@@ -146,10 +145,10 @@ async function testMechanics(errors: string[]): Promise<void> {
 		writeFileSync(join(ws2, "b.txt"), "three\n", "utf-8");
 		jj(["commit", "-m", "mech ws2 c1"], ws2);
 
-		const out1 = await mergeWorkspace(testDir, "mech-1", baseChange);
-		check(out1.conflicts.length === 0, `ws1 merge should be clean, got ${JSON.stringify(out1.conflicts)}`);
-		const out2 = await mergeWorkspace(testDir, "mech-2", baseChange);
-		check(out2.conflicts.length === 0, `ws2 merge should be clean, got ${JSON.stringify(out2.conflicts)}`);
+		const out = await mergeWorkspacesAtomic(testDir, ["mech-1", "mech-2"], baseChange);
+		check(out.conflicts.length === 0, `merge should be clean, got ${JSON.stringify(out.conflicts)}`);
+		check(out.commit_id.length > 0 && out.files_changed === 3,
+			`merge outcome should carry the merged commit + file count (3 files), got ${out.commit_id} / ${out.files_changed}`);
 
 		// All three files land in the main working copy (empty @ on the merged base)
 		for (const f of ["a.txt", "a2.txt", "b.txt"]) {
@@ -189,12 +188,9 @@ async function testFinalStateConflicts(errors: string[]): Promise<void> {
 		writeFileSync(join(c2, "shared.txt"), "a\nB\nc\n", "utf-8");
 		jj(["commit", "-m", "final c2"], c2);
 
-		// Per-squash detection (the OLD union source) reports the conflict...
-		const out1 = await mergeWorkspace(testDir, "final-1", baseChange);
-		check(out1.conflicts.length === 0, `first merge should be clean, got ${JSON.stringify(out1.conflicts)}`);
-		const out2 = await mergeWorkspace(testDir, "final-2", baseChange);
-		check(out2.conflicts.length === 1 && out2.conflicts[0] === "shared.txt",
-			`per-squash detection should report shared.txt, got ${JSON.stringify(out2.conflicts)}`);
+		const out = await mergeWorkspacesAtomic(testDir, ["final-1", "final-2"], baseChange);
+		check(out.conflicts.length === 1 && out.conflicts[0] === "shared.txt",
+			`atomic merge should report shared.txt, got ${JSON.stringify(out.conflicts)}`);
 
 		// ...but the conflict is then RESOLVED (markers edited in the main
 		// working copy, squashed into the base). The FINAL-state check must
@@ -236,8 +232,7 @@ async function testPostSquashCommitIds(errors: string[]): Promise<void> {
 		const ws1Commit = jj(["log", "-r", "@-", "-T", "commit_id", "--no-graph"], w1).trim();
 		const ws2Commit = jj(["log", "-r", "@-", "-T", "commit_id", "--no-graph"], w2).trim();
 
-		await mergeWorkspace(testDir, "cid-1", baseChange);
-		await mergeWorkspace(testDir, "cid-2", baseChange);
+		await mergeWorkspacesAtomic(testDir, ["cid-1", "cid-2"], baseChange);
 
 		// R5: the base change's commit id resolved AFTER the last squash is
 		// the surviving commit — the workers' pre-squash commits were
@@ -423,11 +418,9 @@ async function testConflict(errors: string[]): Promise<void> {
 		writeFileSync(join(c2, "shared.txt"), "line1\nCHANGED\nline3\n", "utf-8");
 		jj(["commit", "-m", "conf c2"], c2);
 
-		const out1 = await mergeWorkspace(testDir, "conf-1", baseChange);
-		check(out1.conflicts.length === 0, `first merge should be clean, got ${JSON.stringify(out1.conflicts)}`);
-		const out2 = await mergeWorkspace(testDir, "conf-2", baseChange);
-		check(out2.conflicts.length === 1 && out2.conflicts[0] === "shared.txt",
-			`expected conflict on shared.txt, got ${JSON.stringify(out2.conflicts)}`);
+		const out = await mergeWorkspacesAtomic(testDir, ["conf-1", "conf-2"], baseChange);
+		check(out.conflicts.length === 1 && out.conflicts[0] === "shared.txt",
+			`expected conflict on shared.txt, got ${JSON.stringify(out.conflicts)}`);
 
 		// Conflict markers are visible in the main working copy
 		const content = readFileSync(join(testDir, "shared.txt"), "utf-8");
@@ -461,19 +454,19 @@ async function testReResolvedSquashTargets(errors: string[]): Promise<void> {
 		jj(["commit", "-m", "rer w2"], w2);
 
 		// Merge w1 — rewrites the base in place (same change id, NEW commit id).
-		await mergeWorkspace(testDir, "rer-1", baseChange);
+		await mergeWorkspacesAtomic(testDir, ["rer-1"], baseChange);
 
 		// A FOREIGN session (concurrent task run / user) rewrites the base
-		// AGAIN between the merges. The second mergeWorkspace's internal
+		// AGAIN between the merges. The second mergeWorkspacesAtomic's internal
 		// re-resolution must pick the CURRENT commit id — squashing into the
 		// pre-rewrite id is todo #71's corruption mode.
 		const foreign = await createWorkspace(testDir, "rer-f");
 		writeFileSync(join(foreign, "foreign.txt"), "foreign\n", "utf-8");
 		jj(["commit", "-m", "rer foreign"], foreign);
-		await mergeWorkspace(testDir, "rer-f", baseChange);
+		await mergeWorkspacesAtomic(testDir, ["rer-f"], baseChange);
 
 		// The second worker merge must land its changes in the CURRENT base.
-		await mergeWorkspace(testDir, "rer-2", baseChange);
+		await mergeWorkspacesAtomic(testDir, ["rer-2"], baseChange);
 
 		// Provable integration: every workspace + the main working copy sit
 		// on the current base, and the final base holds EVERY change.
@@ -540,7 +533,7 @@ async function testMergeIntegrityGate(errors: string[]): Promise<void> {
 		// Merge ONLY w1 — w2's work is still outside the base. The gate must
 		// fail loudly, naming the unmerged workspace, instead of letting
 		// verification pass trivially on a tree without the integrated work.
-		await mergeWorkspace(testDir, "gate-1", baseChange);
+		await mergeWorkspacesAtomic(testDir, ["gate-1"], baseChange);
 		try {
 			await assertMerged(testDir, ["gate-1", "gate-2"], baseChange, { expectedFiles: ["a.txt", "b.txt"] });
 			errors.push("assertMerged should fail when a workspace was never merged");
@@ -551,7 +544,7 @@ async function testMergeIntegrityGate(errors: string[]): Promise<void> {
 		}
 
 		// Merge w2 properly — the gate now passes.
-		await mergeWorkspace(testDir, "gate-2", baseChange);
+		await mergeWorkspacesAtomic(testDir, ["gate-2"], baseChange);
 		await assertMerged(testDir, ["gate-1", "gate-2"], baseChange, { expectedFiles: ["a.txt", "b.txt"] });
 		check(existsSync(join(testDir, "a.txt")) && existsSync(join(testDir, "b.txt")),
 			"both workers' files should be in the merged tree");
@@ -583,7 +576,7 @@ async function testStaleTargetSurfaced(errors: string[]): Promise<void> {
 		jj(["commit", "-m", "stale w2"], w2);
 
 		// Merge w1 legitimately (base rewritten: pre-rewrite id -> new id).
-		await mergeWorkspace(testDir, "stale-1", baseChange);
+		await mergeWorkspacesAtomic(testDir, ["stale-1"], baseChange);
 
 		// Reproduce todo #71's corruption: a merge that squashes into the
 		// STALE pre-rewrite base id (the resolution raced a concurrent base

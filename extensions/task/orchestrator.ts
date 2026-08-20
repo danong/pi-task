@@ -2441,7 +2441,6 @@ async function executeSingle(
 		const workerStartMs = Date.now();
 		// R1: dispatched_at — the moment the worker session spawns.
 		const dispatchedAt = new Date(workerStartMs).toISOString();
-		console.error(`PROBE serviceTier=${JSON.stringify(opts.serviceTier)}`);
 		const session = spawnWorkerSessionResilient({
 			cwd,
 			model: usePrewalk ? prewalkModel! : executeModel,

@@ -265,7 +265,7 @@ export async function taskBaseChangeId(projectDir: string): Promise<string> {
  * var — verified: author+committer follow the identity while the user's
  * revset aliases survive).
  *
- * Returns the new commit's CHANGE id (the base for mergeWorkspace).
+ * Returns the new commit's CHANGE id (the base for mergeWorkspacesAtomic).
  *
  * @param identityFile path to a jj config with the AI identity.
  * @param goal the spec's Goal line — the merged commit's description.
@@ -580,56 +580,6 @@ export async function conflictHunks(
 		}
 	}
 	return hunks;
-}
-
-/**
- * Merge a workspace's commits into the task base.
- *
- * @param into the base's CHANGE id (see taskBaseChangeId) — stable across
- *   `jj squash --into` rewrites of the base itself.
- *
- * After the squash, verifies the provable-integration invariant: the
- * workspace's @ must now sit on the CURRENT base with zero remaining diff
- * (every worker commit was consumed). A squash that targeted a stale/
- * pre-rewrite base (resolved, then a concurrent session rewrote the base
- * before the squash landed — todo #71) leaves the worker's changes outside
- * the current base and fails here instead of reporting a green run whose
- * visible tree lacks the work.
- */
-export async function mergeWorkspace(
-	projectDir: string,
-	name: string,
-	into: string,
-): Promise<MergeOutcome> {
-	const baseCommit = await resolveCommitId(projectDir, into);
-	const wsAt = await workspaceCommitId(projectDir, name);
-
-	// `base..ws-@` = every commit the worker made on top of the base
-	// (multi-commit ranges work; the workspace root is included but empty).
-	// Squashing into the CURRENT base commit id moves the diffs in and
-	// abandons the worker commits.
-	const squash = await execJj(
-		["squash", "--from", `${baseCommit}..${wsAt}`, "--into", baseCommit],
-		projectDir,
-	);
-	if (squash.code !== 0) {
-		throw new Error(
-			`jj squash workspace "${name}" failed (${squash.code}): ${squash.stderr.trim()}`,
-		);
-	}
-
-	// Provable-integration check: the squash consumed EVERY worker commit.
-	// A consumed workspace @ is DIFF-EMPTY vs its own parent — whether jj
-	// auto-rebased it onto the rewritten base or left it on the old one
-	// (diffing against the rewritten base would show every merged file as
-	// a deletion on a stub left behind — the false-alarm class).
-	await assertWorkspacesConsumed(projectDir, [name]);
-
-	// Conflicts land in the base commit without failing the squash; the
-	// base was rewritten, so resolve its current commit id before checking.
-	const newBase = await resolveCommitId(projectDir, into);
-	const conflicts = await detectConflicts(projectDir, newBase);
-	return { conflicts };
 }
 
 /** List unresolved conflict paths in a commit. `jj resolve --list -r`:
