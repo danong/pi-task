@@ -36,6 +36,7 @@ import { runTests as runSandboxTests } from "./test-sandbox.ts";
 import { runTests as runRepoMapTests } from "./test-repo-map.ts";
 import { runTests as runIndexTests } from "./test-index.ts";
 import { runTests as runSchedulerTests } from "./test-scheduler.ts";
+import { runTests as runToolGuardTests } from "./test-tool-guard.ts";
 import { runTests as runRunnerTests } from "./test-runner.ts";
 import { runTests as runBenchRegressionTests } from "./test-bench-regression.ts";
 
@@ -58,6 +59,7 @@ const SUITES: Array<{ name: string; run: () => Promise<void> }> = [
 	{ name: "repo-map", run: runRepoMapTests },
 	{ name: "index", run: runIndexTests },
 	{ name: "scheduler", run: runSchedulerTests },
+	{ name: "tool-guard", run: runToolGuardTests },
 	{ name: "runner", run: runRunnerTests },
 	{ name: "bench-regression", run: runBenchRegressionTests },
 ];

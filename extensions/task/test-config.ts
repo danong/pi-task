@@ -23,6 +23,7 @@ import {
 	DEFAULT_TOOL_TIMEOUT_MS,
 	DEFAULT_VERIFICATION_TIMEOUT_MS,
 	DEFAULT_REVIEW_WALL_TIMEOUT_MS,
+	DEFAULT_TURN_BUDGET,
 	DEFAULT_TASK_SHAPES,
 	DEFAULT_BATCH_CONFIG,
 	DEFAULT_BATCH_MODEL,
@@ -446,6 +447,22 @@ extra_rw_binds = [1, 2]
 		});
 		check(JSON.stringify(cfg!.tiers.economy.providerOnly) === JSON.stringify(["google-vertex/flex", "openai/priority"]),
 			"provider_only parses as endpoint slugs");
+	});
+	withTempToml(`[budget.economy]\nturn_budget = 25\n`, (path) => {
+		let cfg: TaskConfig | undefined;
+		captureWarnings(() => {
+			cfg = loadTaskConfig(path);
+		});
+		check(cfg!.tiers.economy.turnBudget === 25, `turn_budget override, got ${cfg!.tiers.economy.turnBudget}`);
+	});
+	withTempToml(`[budget.economy]\nturn_budget = -5\n`, (path) => {
+		let cfg: TaskConfig | undefined;
+		const warnings = captureWarnings(() => {
+			cfg = loadTaskConfig(path);
+		});
+		check(warnings.some((w) => w.includes("turn_budget")), "invalid turn_budget should warn");
+		check(cfg!.tiers.economy.turnBudget === DEFAULT_TURN_BUDGET,
+			`invalid turn_budget falls back to the default, got ${cfg!.tiers.economy.turnBudget}`);
 	});
 	withTempToml(`[budget.economy]\nprovider_only = []\n`, (path) => {
 		let cfg: TaskConfig | undefined;

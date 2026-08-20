@@ -569,6 +569,9 @@ export interface ExecuteTaskOptions {
 	 *  service_tier config — "flex" | "priority"). Threaded to every worker
 	 *  and reviewer spawn; recorded in the manifest. Unset → standard. */
 	serviceTier?: string;
+	/** Turn budget for the main worker (the tier's turn_budget — Phase 3):
+	 *  convergence nudge at 70%, typed abort at 100%. Unset → unbounded. */
+	turnBudget?: number;
 	/** OpenRouter endpoint slugs for provider.only (the tier's provider_only
 	 *  config — the flex pin). Threaded with serviceTier. */
 	providerOnly?: string[];
@@ -845,6 +848,34 @@ export function classifyVerificationFailures(
 		}
 	}
 	return { actionable, specDefectSuspected };
+}
+
+// ─── Turn budget (Phase 3): bounded autonomy ─────────────────────────
+//
+// Prompt discipline does not scale (it would apply to no other pi agent
+// using pi-task), so the bound is mechanical: at 70% of the tier's
+// turn_budget the engine injects a convergence prompt; at 100% it aborts
+// the session with a typed error.
+
+/** Pure: the turn-budget decision for the just-ended turn. */
+export function decideTurnBudgetAction(
+	turns: number,
+	budget: number | undefined,
+	nudged: boolean,
+): "none" | "nudge" | "abort" {
+	if (!budget || budget <= 0) return "none";
+	if (turns >= budget) return "abort";
+	if (!nudged && turns >= Math.ceil(budget * 0.7)) return "nudge";
+	return "none";
+}
+
+/** The convergence prompt injected at the soft threshold. */
+export function turnBudgetNudgeMessage(turns: number, budget: number): string {
+	return (
+		`TURN BUDGET: ${turns}/${budget} turns used. Converge now: finish with the fewest possible ` +
+		`tool calls (batch independent calls, never repeat a command), run verification once, and ` +
+		`call yield(). If verification cannot pass, yield and report why.`
+	);
 }
 
 // ─── Spec aggregation (sub_specs mode, Phase 9) ──────────────────────
@@ -1552,6 +1583,7 @@ export async function executeTask(opts: ExecuteTaskOptions): Promise<TaskResult>
 			serviceTier: opts.serviceTier,
 			providerOnly: opts.providerOnly,
 			verificationBaseline,
+			turnBudget: opts.turnBudget,
 			spec,
 			specMarkdown,
 			review: reviewGate.enabled,
@@ -2490,6 +2522,8 @@ async function executeSingle(
 		/** Pre-change verification baseline (dispatch-time dry run) — lets the
 		 *  fix loop distinguish spec defects from real failures by evidence. */
 		verificationBaseline?: VerificationBaselineEntry[];
+		/** Turn budget (the tier's turn_budget) — nudge at 70%, abort at 100%. */
+		turnBudget?: number;
 		spec: Spec;
 		specMarkdown: string;
 		review?: boolean;
@@ -2609,6 +2643,29 @@ async function executeSingle(
 			onChecklist: (c) => onUpdate?.({ type: "checklist", done: c.done, total: c.total }),
 		});
 
+		// Turn budget (Phase 3): bounded autonomy, enforced mechanically. At
+		// 70% of the tier's budget the engine injects a convergence prompt; at
+		// 100% it aborts the session (typed turn-budget error below). Fix
+		// workers are exempt (already bounded by maxFixIterations).
+		const turnBudgetState = { turns: 0, nudged: false, exhausted: false };
+		if (opts.turnBudget && opts.turnBudget > 0) {
+			session.onEvent((event) => {
+				const ev = event as { type?: string; message?: { role?: string } };
+				if (ev.type !== "message_end" || ev.message?.role !== "assistant") return;
+				turnBudgetState.turns++;
+				const action = decideTurnBudgetAction(turnBudgetState.turns, opts.turnBudget, turnBudgetState.nudged);
+				if (action === "nudge") {
+					turnBudgetState.nudged = true;
+					session.sendCommand({ type: "prompt", message: turnBudgetNudgeMessage(turnBudgetState.turns, opts.turnBudget!) });
+					onUpdate?.({ type: "turn_budget_nudge", turns: turnBudgetState.turns, budget: opts.turnBudget });
+				} else if (action === "abort" && !turnBudgetState.exhausted) {
+					turnBudgetState.exhausted = true;
+					onUpdate?.({ type: "turn_budget_exhausted", turns: turnBudgetState.turns, budget: opts.turnBudget });
+					session.abort();
+				}
+			});
+		}
+
 		// 5. Attach prewalk swap listener (no-op when auto-skipped). A failed
 		// set_model swap (R6) aborts the worker and is surfaced as the run's
 		// error below — instead of the silent "continue on the expensive
@@ -2630,6 +2687,12 @@ async function executeSingle(
 		try {
 			worker = await session.result;
 		} catch (err) {
+			if (turnBudgetState.exhausted) {
+				throw new Error(
+					`turn budget exhausted: the worker used the tier's full ${opts.turnBudget}-turn budget without yielding — ` +
+						`the run was aborted to stop the spend. Any commits the worker made remain in the tree.`,
+				);
+			}
 			if (swapError) throw swapError;
 			// R2 (third outcome): finalization-incomplete — the checklist relay
 			// showed ALL requirements done at abort, so the worker committed

@@ -63,6 +63,7 @@ review = true
 # prewalk. 2700000 = 45 min.
 shape = "code"
 wall_timeout_ms = 2700000
+turn_budget = 50
 
 [budget.full]
 # Strong exploration, fast execution + review.
@@ -72,6 +73,7 @@ review_model = "openrouter/~deepseek/deepseek-v4-flash-latest"
 review = true
 shape = "code"
 wall_timeout_ms = 2700000
+turn_budget = 50
 
 [budget.economy]
 # Fast model throughout. prewalk_model == execute_model, so the prewalk
@@ -84,6 +86,7 @@ review_model = "openrouter/~deepseek/deepseek-v4-flash-latest"
 review = false
 shape = "code"
 wall_timeout_ms = 2700000
+turn_budget = 50
 
 [budget.free]
 # Fastest model, no review. prewalk_model == execute_model (no prewalk).
@@ -95,6 +98,7 @@ review_model = "opencode/deepseek-v4-flash-free"
 review = false
 shape = "code"
 wall_timeout_ms = 1800000
+turn_budget = 50
 
 [budget.async]
 # Async workers (detached runs + scheduler jobs) on the efficiency
@@ -118,6 +122,7 @@ service_tier = "flex"
 # the batch lane is unaffected (own endpoint + request body).
 provider_only = ["google-vertex/flex"]
 wall_timeout_ms = 7200000
+turn_budget = 50
 
 [sandbox]
 # Worker bwrap sandbox policy (docs/pi-task-design.md → Worker Sandbox).

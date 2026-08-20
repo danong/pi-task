@@ -242,6 +242,8 @@ export async function runTests(): Promise<void> {
 		check(args.includes("--model") && args[args.indexOf("--model") + 1] === "prov/m", "should pass the model");
 		const extIdx = args.indexOf("--extension");
 		check(extIdx !== -1 && args[extIdx + 1].endsWith("yield.ts"), `yield extension must always load, got ${args[extIdx + 1]}`);
+		check(args.some((a, i) => a === "--extension" && (args[i + 1] ?? "").endsWith("tool-guard.ts")),
+			"the tool guard loads on every worker (Phase 2 enforcement)");
 		check(!args.includes("--append-system-prompt"), "no prompt path → no --append-system-prompt");
 	}
 
@@ -326,7 +328,8 @@ export async function runTests(): Promise<void> {
 			systemPromptPath: "/p/prompt.md",
 		});
 		check(args.includes("/a/checklist.ts") && args.includes("/b/prewalk.ts"), "extra extensions should be forwarded");
-		check(args.filter((a) => a === "--extension").length === 3, "yield + 2 extra extensions = 3 --extension flags");
+		check(args.filter((a) => a === "--extension").length === 4,
+			"yield + tool guard (always-on) + 2 extra extensions = 4 --extension flags");
 		check(
 			args.includes("--append-system-prompt") && args[args.indexOf("--append-system-prompt") + 1] === "/p/prompt.md",
 			"system prompt path should be forwarded",

@@ -98,6 +98,8 @@ export interface DetachedRunOptions {
 	serviceTier?: string;
 	/** OpenRouter provider.only pin the tier declares (flex infra). */
 	providerOnly?: string[];
+	/** Turn budget the tier declares (Phase 3). */
+	turnBudget?: number;
 	shape?: TaskShape;
 	maxFixIterations?: number;
 	workerTimeoutMs?: number;

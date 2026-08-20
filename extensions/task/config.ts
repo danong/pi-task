@@ -109,6 +109,12 @@ export interface BudgetTierConfig {
 	 */
 	wallTimeoutMs: number;
 	/**
+	 * Turn budget for worker runs on this tier (Phase 3): soft convergence
+	 * nudge at 70%, hard abort (typed turn_budget_exhausted) at 100%.
+	 * Default when the tier omits turn_budget: {@link DEFAULT_TURN_BUDGET}.
+	 */
+	turnBudget: number;
+	/**
 	 * OpenRouter service tier for runs on this tier (task.toml `[budget.*]
 	 * service_tier`): "flex" | "priority". Set → every worker/reviewer
 	 * subprocess of the run injects service_tier into its provider calls
@@ -269,6 +275,11 @@ export const DEFAULT_TIER_WALL_TIMEOUT_MS = 45 * 60_000;
  * normalizes that equality to null (the orchestrator's auto-skip rule
  * makes the two forms behaviorally identical).
  */
+/** Default per-tier worker turn budget (Phase 3) — convergence nudge at
+ *  70%, hard abort at 100%. Incident-driven: fix workers burned tokens
+ *  looping on unsatisfiable gates; autonomy is bounded by mechanics. */
+export const DEFAULT_TURN_BUDGET = 50;
+
 export const DEFAULT_BUDGET_TIERS: Record<BudgetTier, BudgetTierConfig> = {
 	max: {
 		prewalkModel: null,
@@ -277,6 +288,7 @@ export const DEFAULT_BUDGET_TIERS: Record<BudgetTier, BudgetTierConfig> = {
 		review: true,
 		shape: "code",
 		wallTimeoutMs: 45 * 60_000,
+		turnBudget: DEFAULT_TURN_BUDGET,
 	},
 	full: {
 		prewalkModel: "qwen-token-plan/qwen3.8-max-preview",
@@ -285,6 +297,7 @@ export const DEFAULT_BUDGET_TIERS: Record<BudgetTier, BudgetTierConfig> = {
 		review: true,
 		shape: "code",
 		wallTimeoutMs: 45 * 60_000,
+		turnBudget: DEFAULT_TURN_BUDGET,
 	},
 	economy: {
 		prewalkModel: null,
@@ -293,6 +306,7 @@ export const DEFAULT_BUDGET_TIERS: Record<BudgetTier, BudgetTierConfig> = {
 		review: false,
 		shape: "code",
 		wallTimeoutMs: 45 * 60_000,
+		turnBudget: DEFAULT_TURN_BUDGET,
 	},
 	free: {
 		prewalkModel: null,
@@ -301,6 +315,7 @@ export const DEFAULT_BUDGET_TIERS: Record<BudgetTier, BudgetTierConfig> = {
 		review: false,
 		shape: "code",
 		wallTimeoutMs: 30 * 60_000,
+		turnBudget: DEFAULT_TURN_BUDGET,
 	},
 	/** Async workers (detached runs + scheduler jobs): the efficiency
 	 *  doctrine — the token-hungry tool loop runs on the CHEAP workhorse
@@ -320,11 +335,13 @@ export const DEFAULT_BUDGET_TIERS: Record<BudgetTier, BudgetTierConfig> = {
 		providerOnly: ["google-vertex/flex"],
 		shape: "async",
 		wallTimeoutMs: 120 * 60_000,
+		turnBudget: DEFAULT_TURN_BUDGET,
 	},
 };
 
 /** Default tier for auto/unset — the design doc's `[defaults] budget = "full"`. */
 export const DEFAULT_BUDGET_TIER: BudgetTier = "full";
+
 
 // ─── Batch lane (M2) ───────────────────────────────────────────────
 
@@ -704,6 +721,16 @@ function loadTier(sections: TomlSections, tier: BudgetTier): BudgetTierConfig | 
 			warn(`${label} provider_only must be a non-empty array of endpoint slugs — using ${providerOnly?.join(",") ?? "default routing"}`);
 		}
 	}
+	// turn_budget: positive integer; absent → the fallback tier's budget;
+	// invalid → warn + fallback.
+	const turnPresent = section?.["turn_budget"] !== undefined;
+	const turnRaw = int(section, "turn_budget");
+	let turnBudget = fallback.turnBudget;
+	if (turnPresent && (turnRaw === undefined || turnRaw <= 0)) {
+		warn(`${label} turn_budget must be a positive integer — using ${turnBudget}`);
+	} else if (turnRaw !== undefined) {
+		turnBudget = turnRaw;
+	}
 	// shape: the run-pipeline shape name (a [shapes.*] section); absent →
 	// the fallback tier's; empty → warn + fallback.
 	const shapeRaw = str(section, "shape");
@@ -725,6 +752,7 @@ function loadTier(sections: TomlSections, tier: BudgetTier): BudgetTierConfig | 
 		providerOnly,
 		shape,
 		wallTimeoutMs,
+		turnBudget,
 	};
 }
 

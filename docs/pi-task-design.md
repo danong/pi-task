@@ -1869,3 +1869,25 @@ satisfy it). The engine adjudicates by EVIDENCE, not prompts:
 Worker autonomy to challenge a gate is a structured `dispute_verification`
 protocol (planned phase 2) — adjudicated by the same baseline evidence,
 never unilateral.
+
+## Worker enforcement layers (Phases 2–3)
+
+Prompt discipline does not scale — it would apply to no other pi agent
+using pi-task — so worker bounds are mechanical:
+
+**Tool guard (`tools/tool-guard.ts`, loaded into every worker/reviewer
+via `--extension`).** Uses pi's mutable `tool_call` hook:
+- bash `timeout` clamped to a cap (default 5 min,
+  `PI_TASK_BASH_TIMEOUT_CAP_MS` overrides) — a hung worker-initiated
+  command can never outlive the bound.
+- Root-scoped `grep/rg/find` sweeps are BLOCKED with an instructive
+  reason: searching the repo root sweeps `.pi/sessions` (full
+  conversation dumps) and floods context with garbage (the incident
+  class). The blocked call costs ~50 tokens; a scoped re-issue follows
+  the reason. Commands carrying `--exclude` pass (deliberate scoping).
+
+**Turn budget (`[budget.*] turn_budget`, default 50).** The engine
+counts the worker's turns from its events: at 70% it injects a
+convergence prompt (RPC `prompt`); at 100% it aborts the session with a
+typed turn-budget error. Fix workers are exempt (already bounded by
+`max_fix_iterations`).

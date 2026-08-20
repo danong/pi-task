@@ -25,6 +25,8 @@ import {
 	resolveReviewGate,
 	resolveReviewAxes,
 	PARALLEL_REVIEW_PERSONA,
+	decideTurnBudgetAction,
+	turnBudgetNudgeMessage,
 	outputSignature,
 	isBrokenVerificationCommand,
 	captureVerificationBaseline,
@@ -649,6 +651,28 @@ async function testVerificationBaselineCapture(errors: string[]): void {
 	}
 }
 
+// ─── Turn budget (Phase 3): bounded autonomy ─────────────────────────
+
+function testTurnBudget(errors: string[]): void {
+	const check = (cond: boolean, msg: string): void => {
+		if (!cond) errors.push(msg);
+	};
+	// No budget → never acts.
+	check(decideTurnBudgetAction(500, undefined, false) === "none", "no budget → none");
+	check(decideTurnBudgetAction(500, 0, false) === "none", "zero budget → none");
+	// Under the soft threshold → none.
+	check(decideTurnBudgetAction(34, 50, false) === "none", "under 70% → none");
+	// At the soft threshold (ceil(50*0.7)=35) → nudge, once.
+	check(decideTurnBudgetAction(35, 50, false) === "nudge", "at 70% → nudge");
+	check(decideTurnBudgetAction(40, 50, true) === "none", "already nudged → none");
+	// At the hard limit → abort, regardless of nudge state.
+	check(decideTurnBudgetAction(50, 50, true) === "abort", "at budget → abort");
+	check(decideTurnBudgetAction(64, 50, false) === "abort", "over budget → abort");
+	// The nudge message carries the numbers + the converge instruction.
+	const msg = turnBudgetNudgeMessage(35, 50);
+	check(msg.includes("35/50") && msg.includes("yield()"), `nudge message, got: ${msg.slice(0, 60)}`);
+}
+
 export async function runTests(): Promise<void> {
 	const errors: string[] = [];
 	console.log("── test-orchestrator: spec parse + splitSpec + aggregateSubSpecs + runVerification + fix loop ──");
@@ -665,6 +689,7 @@ export async function runTests(): Promise<void> {
 	testRecoveryGuide(errors);
 	testVerificationLifecycle(errors);
 	await testVerificationBaselineCapture(errors);
+	testTurnBudget(errors);
 
 	if (errors.length > 0) {
 		throw new Error("test-orchestrator failed:\n  ✗ " + errors.join("\n  ✗ "));

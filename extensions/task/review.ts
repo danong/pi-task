@@ -32,7 +32,7 @@ import {
 } from "./worker.ts";
 import type { RequirementStatus, ReviewResult } from "./schemas/findings.ts";
 import { DEFAULT_PERSONA, type Persona } from "./personas.ts";
-import { SERVICE_TIER_EXTENSION_PATH } from "./worker.ts";
+import { SERVICE_TIER_EXTENSION_PATH, TOOL_GUARD_EXTENSION_PATH } from "./worker.ts";
 
 /** Absolute path to the reviewer-side extension (report_findings + pruning). */
 export const FINDINGS_EXTENSION_PATH = join(dirname(fileURLToPath(import.meta.url)), "tools", "findings.ts");
@@ -292,6 +292,7 @@ export async function forkedReview(opts: ForkReviewOptions): Promise<ReviewOutco
 		// worker.ts buildWorkerArgs for why discovery must be disabled).
 		"--no-extensions",
 		"--extension", FINDINGS_EXTENSION_PATH,
+		"--extension", TOOL_GUARD_EXTENSION_PATH,
 		...(opts.serviceTier ? ["--extension", SERVICE_TIER_EXTENSION_PATH] : []),
 		"--append-system-prompt", promptPath,
 	];
