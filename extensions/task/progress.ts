@@ -296,16 +296,24 @@ export function applyProgressEvent(state: ProgressState, rawEvent: unknown, nowM
 // ─── Rendering (pure, deterministic given `now`) ─────────────────────
 
 /**
- * Format a duration for the progress view, e.g. "42s", "1m05s", "12m".
- * Whole seconds (rounded); minutes carry zero-padded seconds. Pure.
+ * Format a duration compactly and readably, e.g. "250ms", "42s", "1m05s", "7m12s", "1h2m".
+ * Clamps negative numbers to "0s". Pure.
  */
 export function formatDuration(ms: number): string {
-	const totalSeconds = Math.max(0, Math.round(ms / 1000));
+	if (ms <= 0) return "0s";
+	const roundedMs = Math.round(ms);
+	if (roundedMs === 0) return "0s";
+	if (roundedMs < 1000) return `${roundedMs}ms`;
+	const totalSeconds = Math.round(ms / 1000);
 	if (totalSeconds < 60) return `${totalSeconds}s`;
 	const minutes = Math.floor(totalSeconds / 60);
 	const seconds = totalSeconds % 60;
-	if (seconds === 0) return `${minutes}m`;
-	return `${minutes}m${String(seconds).padStart(2, "0")}s`;
+	if (minutes < 60) {
+		return seconds > 0 ? `${minutes}m${String(seconds).padStart(2, "0")}s` : `${minutes}m`;
+	}
+	const hours = Math.floor(minutes / 60);
+	const remainingMinutes = minutes % 60;
+	return remainingMinutes > 0 ? `${hours}h${remainingMinutes}m` : `${hours}h`;
 }
 
 /** The plan line: `plan(<tier>): prewalk(<model>) → work(<model>) → ...`,

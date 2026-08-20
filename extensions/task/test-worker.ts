@@ -380,7 +380,7 @@ export async function runTests(): Promise<void> {
 	{
 		check(formatDuration(45 * 60_000) === "45m", `45 min → 45m, got ${formatDuration(45 * 60_000)}`);
 		check(formatDuration(10 * 60_000) === "10m", `10 min → 10m, got ${formatDuration(10 * 60_000)}`);
-		check(formatDuration(90_000) === "90s", `90s, got ${formatDuration(90_000)}`);
+		check(formatDuration(90_000) === "1m30s", `90s → 1m30s, got ${formatDuration(90_000)}`);
 		check(formatDuration(250) === "250ms", `250ms, got ${formatDuration(250)}`);
 	}
 

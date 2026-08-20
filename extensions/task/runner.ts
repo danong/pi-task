@@ -471,6 +471,7 @@ async function runChild(requestPath: string): Promise<number> {
 		return 2;
 	}
 	const { run_id, metrics_dir, project, worker_count, plan, options } = request;
+	console.error(`PROBE2 options.serviceTier=${JSON.stringify((options as Record<string, unknown>)?.serviceTier)} keys=${Object.keys(options ?? {}).join(",")}`);
 	if (!run_id || !metrics_dir || !project || !options?.cwd || !options.model) {
 		console.error("runner: malformed request (run_id / metrics_dir / project / options.cwd / options.model required)");
 		return 2;

@@ -24,6 +24,8 @@ import {
 	DEFAULT_TOOL_TIMEOUT_MS,
 	aiIdentityToml,
 } from "./config.ts";
+import { formatDuration } from "./progress.ts";
+export { formatDuration };
 
 // ─── Types ───────────────────────────────────────────────────────────
 
@@ -286,13 +288,6 @@ export const WORKER_NO_PROGRESS_TIMEOUT_MS = 10 * 60_000;
 
 /** Poll interval for the no-progress watchdog (cheap; events reset the clock). */
 const NO_PROGRESS_CHECK_INTERVAL_MS = 30_000;
-
-/** Render a millisecond duration compactly and readably ("45m", "90s", "250ms"). */
-export function formatDuration(ms: number): string {
-	if (ms % 60_000 === 0) return `${ms / 60_000}m`;
-	if (ms % 1_000 === 0) return `${ms / 1_000}s`;
-	return `${ms}ms`;
-}
 
 /**
  * RPC event type emitted when the agent run is fully settled — no automatic

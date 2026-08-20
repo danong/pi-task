@@ -29,6 +29,8 @@
 import { createHash, randomBytes } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
+import { formatDuration } from "./progress.ts";
+export { formatDuration };
 import type { Finding } from "./schemas/findings.ts";
 import type { ReadRecord, WorkerResult, WorkerUsage } from "./worker.ts";
 
@@ -812,18 +814,6 @@ export function recentCompletions(metricsDir: string, limit = 5): CompletionView
 	}
 	out.sort((a, b) => b.completedAtMs - a.completedAtMs);
 	return out.slice(0, limit);
-}
-
-/** Compact human duration, e.g. "42s", "7m12s", "1h2m". */
-export function formatDuration(ms: number): string {
-	const total = Math.round(ms / 1000);
-	if (total < 60) return `${total}s`;
-	const m = Math.floor(total / 60);
-	const s = total % 60;
-	if (m < 60) return s > 0 ? `${m}m${s}s` : `${m}m`;
-	const h = Math.floor(m / 60);
-	const rm = m % 60;
-	return rm > 0 ? `${h}h${rm}m` : `${h}h`;
 }
 
 const fmtUsd = (usd: number): string => `$${usd.toFixed(4)}`;
