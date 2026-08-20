@@ -149,7 +149,7 @@ export interface RepoMapConfig {
 
 const DEFAULT_MAP_CONFIG: RepoMapConfig = {
 	mode: "full",
-	annotationModel: "opencode-go/deepseek-v4-flash",
+	annotationModel: "openrouter/openrouter/free",
 	injectWorkers: true,
 	sliceLimit: 15,
 	mainAgent: true,
