@@ -145,7 +145,12 @@ intent first; named implementations are examples, never the requirement.
 > roles are structural (session shapes, prompts, bounds) while the model per
 > role is configuration — single-model operation changes no interfaces.
 > Lanes: interactive (default), flex, batch; unsupported lanes degrade to
-> interactive.
+> interactive. Absolute quota and spend ceilings are never exposed to the
+> engine; how aggressively a run spends is expressed entirely through
+> tier/lane configuration (batch endpoints for generation-heavy items, flex
+> for latency-tolerant background work, cheap models that trade more turns
+> for unit cost). An exhausted run fails typed and escalates — it never
+> requests budget mid-flight.
 >
 > **FR-11 (Engineering bar).** *Intent: the system must be safe to extend by
 > cheap labor, human or model.* CI carries a typecheck gate, and every
@@ -338,43 +343,30 @@ conversation survives many tasks.
 
 ## 6. Autonomy targets
 
-Autonomy is scoped in levels so every release has an honest ceiling:
+Autonomy is scoped in levels so every release has an honest ceiling. The
+scopes below are illustrations of magnitude, not commitments to specific
+projects.
 
 **Level 1 — zero-touch hours. The target of v2's core milestones.** One
 repository, a human-approved plan, tens of dispatches over a few hours, no
-interaction unless an escalation fires. Reference scope: *"complete
-milestones 1–4 of the pi-task-v2 migration"* — real work with verifiable
-exits, suitable for the engine to execute on itself. Enabled by daemon
-durability (NFR-1), bounded attempts with handoff retries (FR-7), hard gates
-(FR-6), typed receipts (§5), and the /build DAG executor over TaskGateway
-(M5). The human's remaining roles: approve the plan up front; answer
-escalations (merge conflicts, repeated verification failure).
+interaction unless an escalation fires — for example, executing a planned,
+verifiable-exit milestone of the kind a team would otherwise staff a day
+for. Enabled by daemon durability (NFR-1), bounded attempts with handoff
+retries (FR-7), hard gates (FR-6), typed receipts (§5), and the /build DAG
+executor over TaskGateway (M5). The human's remaining roles: approve the
+plan up front; answer escalations (merge conflicts, repeated verification
+failure).
 
 **Level 2 — supervised days. Future work.** Hundreds of dependent tasks
 across days: integration waves, architecture artifacts as shared contracts,
 conformance sweeps, program-level telemetry and stall detection; the human
-gates plan approval and wave boundaries. Reference scope: *"build and train
-a deep-Q-learning bot for a game until it reaches ELO 2000"* — code
-generation, environment bring-up, long-running training jobs interleaved
-with code tasks, evaluation-driven iteration loops. Designed in the future
-doc (E.6); requires level-1 reliability evidence first.
+gates plan approval and wave boundaries — for example, a training-loop
+project where long-running compute jobs interleave with code tasks and
+evaluation drives iteration. Designed in the future doc (E.6); requires
+level-1 reliability evidence first.
 
 **Level 3 — walked-away weeks.** Not designed. No mechanism in this document
 assumes it.
-
-### Spend posture without quota knowledge
-
-Neither workers nor any higher orchestration layer ever sees absolute quota,
-dollar budgets, or rate ceilings — those are the operator's private
-knowledge. How aggressively the engine spends is expressed ENTIRELY through
-configured service tiers and lanes (FR-10): batch endpoints for
-generation-heavy parallelizable items, flex lanes for latency-tolerant
-background work (verification re-runs, sweeps), cheap models that buy lower
-unit cost with more turns and iterations, stronger models only where
-turn-efficiency demonstrably pays (thin planning/review slices). A run that
-exhausts its retries fails typed and escalates — it never requests more
-budget mid-flight. Humans change posture by changing tier/lane configuration
-(including mid-run); nothing else about the engine changes.
 
 ## 7. Benchmarks
 
@@ -411,7 +403,7 @@ grounding-heavy measurement) come before polish:
 | M2 | Workspaces & merge: JujutsuWorkspaceDriver (existing ladder verbatim), environment drivers (host, mise), parallel combine | parallel parity; suites 01/02 |
 | M3 | Grounding modes: prewalk port → bundle path + miss telemetry → fork + prune profiles; COR accounting | suite 03 across all modes, with numbers |
 | M4 | Plugin kernel: gateway event vocabulary, plugin contract, first plugins extracted from core | core shrinks; plugins carry real-path tests |
-| M5 | Workflow modes: /plan (planning-only + human gate), /build DAG executor, /survey; cutover | parity check passes; level-1 autonomy (§6) exercisable via /build |
+| M5 | Workflow modes: /plan (planning-only + human gate), /build DAG executor, /survey; cutover | parity check passes |
 
 Migration is four-phase: inventory → shadow/dry-run beside the current
 engine → flip defaults → delete superseded plumbing. M0's smoke tests are
