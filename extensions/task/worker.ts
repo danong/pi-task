@@ -51,6 +51,12 @@ export interface WorkerOptions {
 	 * flag is omitted so a worker runs with the verbose prefix.
 	 */
 	slimWorkerPrompt?: boolean;
+	/** OpenRouter session correlation id (wave-4 cost): set → the spawn carries
+	 *  PI_TASK_SESSION_ID so every provider call of this subprocess gets the
+	 *  run id as a top-level session_id. Unset → the session-id extension
+	 *  still loads but injects only pi's ambient session id (a no-op unless
+	 *  one is present). */
+	sessionId?: string;
 	/**
 	 * Model ids EXEMPT from serviceTier (comma-joined into
 	 * PI_TASK_SERVICE_TIER_EXCLUDES): the cheap workhorse stays
@@ -239,6 +245,10 @@ export const REASONING_EXCLUDE_EXTENSION_PATH = join(THIS_DIR, "tools", "reasoni
  *  declares one (the extension is a no-op without the env var anyway, but
  *  skipping the load keeps ordinary runs extension-count-stable). */
 export const SERVICE_TIER_EXTENSION_PATH = join(THIS_DIR, "tools", "service-tier.ts");
+/** Session-id injection extension (wave-4 cost) — always loaded; it is a no-op
+ *  unless an identifier is present (the run's session id via env, or pi's own
+ *  ambient session id), so ordinary runs pay nothing. */
+export const SESSION_ID_EXTENSION_PATH = join(THIS_DIR, "tools", "session-id.ts");
 const SIGKILL_DELAY_MS = 5000;
 
 /** Default wall-clock budget for a worker run (45 min) — mirrors the config
@@ -804,7 +814,7 @@ export function buildWorkerArgs(opts: {
 	// skills-discovery list (~1.5-2k tokens) into the system prompt; a worker
 	// explores on its own and never uses it. Prune it here. Explicit --skill
 	// paths would still load, but we pass none.
-	const args: string[] = ["--mode", "rpc", "--model", opts.model, "--no-extensions", "--no-skills", "--extension", YIELD_EXTENSION_PATH, "--extension", TOOL_GUARD_EXTENSION_PATH, "--extension", DISPUTE_EXTENSION_PATH, "--extension", REASONING_EXCLUDE_EXTENSION_PATH];
+	const args: string[] = ["--mode", "rpc", "--model", opts.model, "--no-extensions", "--no-skills", "--extension", YIELD_EXTENSION_PATH, "--extension", TOOL_GUARD_EXTENSION_PATH, "--extension", DISPUTE_EXTENSION_PATH, "--extension", REASONING_EXCLUDE_EXTENSION_PATH, "--extension", SESSION_ID_EXTENSION_PATH];
 	if (opts.slimWorkerPrompt === false) {
 		const i = args.indexOf("--no-skills");
 		if (i !== -1) args.splice(i, 1);
@@ -905,6 +915,9 @@ export function spawnWorkerSession(opts: WorkerOptions): WorkerSession {
 			...(opts.providerOnly?.length
 				? { PI_TASK_PROVIDER_ONLY: opts.providerOnly.join(",") }
 				: {}),
+			// Session-id (wave-4 cost): the session-id extension reads this and
+			// injects a top-level session_id (the run id) into every payload.
+			...(opts.sessionId ? { PI_TASK_SESSION_ID: opts.sessionId } : {}),
 			// Reasoning-exclusion (wave-1 cost): the reasoning-exclude
 			// extension reads this and injects reasoning.exclude into every
 			// provider payload — the model reasons at budget but the

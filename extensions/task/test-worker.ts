@@ -8,6 +8,12 @@
 import { pathToFileURL } from "node:url";
 import { injectProviderOnly, injectServiceTier, SERVICE_TIER_ENV_VAR } from "./tools/service-tier.ts";
 import { injectReasoningExclude } from "./tools/reasoning-exclude.ts";
+import {
+	injectSessionId,
+	resolveSessionId,
+	SESSION_ID_ENV_VAR,
+	SESSION_ID_MAX_LENGTH,
+} from "./tools/session-id.ts";
 import { mergeDisputes } from "./tools/yield.ts";
 import { recordDispute, takeRecordedDisputes } from "./tools/dispute.ts";
 import {
@@ -18,6 +24,7 @@ import {
 	createWorkerEventState,
 	isRetryableCapacityError,
 	SERVICE_TIER_EXTENSION_PATH,
+	SESSION_ID_EXTENSION_PATH,
 	decideIdleAction,
 	decideNoProgressAction,
 	decideToolTimeoutAction,
@@ -308,6 +315,33 @@ export async function runTests(): Promise<void> {
 		check(injectReasoningExclude(null, true) === null, "non-object payload → unchanged");
 	}
 
+	// 14h. Session-ID (wave-4, session_id correlation): valid id + object →
+	// a copy with the top-level string session_id added (other fields
+	// preserved); non-object / absent-and-empty id / over-256-char id →
+	// unchanged (dropped, never truncated); input never mutated. Plus the
+	// request-time precedence (run-override) and env-var contract.
+	{
+		const payload = { model: "m", messages: [] };
+		const injected = injectSessionId(payload, "run-abc") as Record<string, unknown>;
+		check(injected.session_id === "run-abc" && injected.model === "m" && !("session_id" in payload),
+			"valid id → session_id on a copy, input untouched");
+		check(injectSessionId(payload, undefined) === payload, "absent id → payload unchanged");
+		check(injectSessionId(payload, "") === payload, "empty id → payload unchanged");
+		check(injectSessionId(null, "run-abc") === null, "non-object payload → unchanged");
+		// Over-length: DROPPED (never truncated); the payload is otherwise intact.
+		const longId = "x".repeat(SESSION_ID_MAX_LENGTH + 1);
+		check(injectSessionId(payload, longId) === payload, "over-256-char id → dropped, payload unchanged");
+		const atCap = injectSessionId(payload, longId.slice(0, 256)) as Record<string, unknown>;
+		check(atCap !== payload && (atCap.session_id as string).length === 256,
+			"exactly-256-char id → injected, not truncated");
+		// run-override precedence: the run id wins over pi's ambient session id.
+		check(resolveSessionId("pi-session", "run-id") === "run-id", "run override (env) beats the ambient pi session id");
+		check(resolveSessionId("pi-session", undefined) === "pi-session", "no run override → ambient pi session id applies");
+		check(resolveSessionId(undefined, undefined) === undefined, "neither → undefined (strict no-op)");
+		check(SESSION_ID_ENV_VAR === "PI_TASK_SESSION_ID", "the env-var contract is the extension's");
+	}
+
+
 	// 14e. Provider pin (provider.only) + the mixed-flow guarantee: in one	// prewalk→swap session the gemini call gets tier+pin, the deepseek
 	// workhorse stays untouched (a vertex pin would break it).
 	{
@@ -371,8 +405,10 @@ export async function runTests(): Promise<void> {
 			systemPromptPath: "/p/prompt.md",
 		});
 		check(args.includes("/a/checklist.ts") && args.includes("/b/prewalk.ts"), "extra extensions should be forwarded");
-		check(args.filter((a) => a === "--extension").length === 6,
-			"yield + tool guard + dispute tool + reasoning-exclude (always-on) + 2 extra extensions = 6 --extension flags");
+		check(args.filter((a) => a === "--extension").length === 7,
+			"yield + tool guard + dispute tool + reasoning-exclude + session-id (always-on) + 2 extra extensions = 7 --extension flags");
+		check(args.some((a, i) => a === "--extension" && (args[i + 1] ?? "").endsWith("session-id.ts")),
+			"the session-id extension loads on every worker (wave-4 cost)");
 		check(args.some((a, i) => a === "--extension" && (args[i + 1] ?? "").endsWith("reasoning-exclude.ts")),
 			"the reasoning-exclude extension loads on every worker (wave-1 cost)");
 		check(

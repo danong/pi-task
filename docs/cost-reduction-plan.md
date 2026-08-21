@@ -79,12 +79,26 @@ paying twice. Escalating options:
    turns of re-discovery. Design pass first (when to fork vs cold-start,
    context-pollution risk, cache behavior).
 
-## Wave 4 — session_id (correlation)
+## Wave 4 — session_id (correlation) LANDED
 
-Determine what OpenRouter does with a session identifier (cache routing /
-attribution), then wire `run_id` into it via the existing payload-mutation
-extension if useful — gives per-run correlation in OpenRouter's dashboard,
-which would have cheapened today's debugging.
+Every pi process that talks to a provider now carries a top-level `session_id`
+in each outgoing request (`before_provider_request`), via the always-loaded
+`extensions/task/tools/session-id.ts` extension:
+
+- **Ambient source:** the interactive session injects pi's own session id
+  (`ctx.sessionManager.getSessionId()`) — registered from the package entry
+  (`index.ts`), since package auto-discovery is index-based, not recursive
+  into `tools/`.
+- **Run override:** worker and reviewer subprocesses set
+  `PI_TASK_SESSION_ID` (the run id) at spawn, so every subprocess of a run
+  correlates on the same id — the run id wins over the ambient pi session id.
+- **Policy:** a `session_id` longer than 256 characters (OpenRouter's cap) is
+  DROPPED, never truncated (a truncated id risks collision), and the drop is
+  logged. An absent identifier → strict no-op.
+- The field is injected only under `before_provider_request` — it never
+  enters prompt text, so the deterministic-prefix/cache rule is preserved.
+
+Gives per-run correlation in OpenRouter's dashboard, which cheapens debugging.
 
 ## Usage policy (no build)
 

@@ -32,7 +32,7 @@ import {
 } from "./worker.ts";
 import type { RequirementStatus, ReviewResult } from "./schemas/findings.ts";
 import { DEFAULT_PERSONA, type Persona } from "./personas.ts";
-import { REASONING_EXCLUDE_EXTENSION_PATH, SERVICE_TIER_EXTENSION_PATH, TOOL_GUARD_EXTENSION_PATH } from "./worker.ts";
+import { REASONING_EXCLUDE_EXTENSION_PATH, SERVICE_TIER_EXTENSION_PATH, SESSION_ID_EXTENSION_PATH, TOOL_GUARD_EXTENSION_PATH } from "./worker.ts";
 
 /** Absolute path to the reviewer-side extension (report_findings + pruning). */
 export const FINDINGS_EXTENSION_PATH = join(dirname(fileURLToPath(import.meta.url)), "tools", "findings.ts");
@@ -125,6 +125,10 @@ export interface ForkReviewOptions {
 	serviceTierExcludes?: string[];
 	/** OpenRouter endpoint slugs for provider.only (the flex pin). */
 	providerOnly?: string[];
+	/** Session correlation id (wave-4 cost): set → the reviewer spawn carries
+	 *  PI_TASK_SESSION_ID so its calls get the run id as session_id (mirrors
+	 *  the worker). Unset → the extension injects only pi's ambient session id. */
+	sessionId?: string;
 	signal?: AbortSignal;
 	onUpdate?: (partial: unknown) => void;
 }
@@ -306,6 +310,7 @@ export async function forkedReview(opts: ForkReviewOptions): Promise<ReviewOutco
 		"--extension", FINDINGS_EXTENSION_PATH,
 		"--extension", TOOL_GUARD_EXTENSION_PATH,
 		"--extension", REASONING_EXCLUDE_EXTENSION_PATH,
+		"--extension", SESSION_ID_EXTENSION_PATH,
 		...(opts.serviceTier ? ["--extension", SERVICE_TIER_EXTENSION_PATH] : []),
 		"--append-system-prompt", promptPath,
 	];
@@ -323,6 +328,9 @@ export async function forkedReview(opts: ForkReviewOptions): Promise<ReviewOutco
 				...(opts.providerOnly?.length
 					? { PI_TASK_PROVIDER_ONLY: opts.providerOnly.join(",") }
 					: {}),
+				// Session-id (wave-4): mirrors spawnWorkerSession — the reviewer's
+				// calls carry the run id as session_id too.
+				...(opts.sessionId ? { PI_TASK_SESSION_ID: opts.sessionId } : {}),
 				// Reasoning-exclusion (wave-1): mirrors spawnWorkerSession — the
 				// reviewer's reasoning is excluded too (transcript stays flat).
 				PI_TASK_EXCLUDE_REASONING: "1",

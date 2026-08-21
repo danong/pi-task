@@ -1774,6 +1774,7 @@ export async function executeTask(opts: ExecuteTaskOptions): Promise<TaskResult>
 			serviceTier: opts.serviceTier,
 			serviceTierExcludes: opts.serviceTier || opts.providerOnly?.length ? [executeModel] : undefined,
 			providerOnly: opts.providerOnly,
+			sessionId: opts.runId,
 			task: promptFor(workerTasks[i]),
 			systemPrompt: systemPrompt ?? buildWorkerSystemPrompt(opts.checklist !== false),
 			extensions: [
@@ -2717,6 +2718,7 @@ async function executeSingle(
 			serviceTier: opts.serviceTier,
 			serviceTierExcludes: opts.serviceTier || opts.providerOnly?.length ? [executeModel] : undefined,
 			providerOnly: opts.providerOnly,
+			sessionId: runId,
 			noProgressTimeoutMs: channelWatchdogWindows((shape ?? DEFAULT_TASK_SHAPES.code).channel).noProgressMs,
 			task: taskPrompt,
 			systemPrompt: workerSystemPrompt,
@@ -3073,6 +3075,7 @@ async function executeSingle(
 				serviceTier: opts.serviceTier,
 				serviceTierExcludes: opts.serviceTier || opts.providerOnly?.length ? [executeModel] : undefined,
 				providerOnly: opts.providerOnly,
+				sessionId: runId,
 				noProgressTimeoutMs: channelWatchdogWindows((shape ?? DEFAULT_TASK_SHAPES.code).channel).noProgressMs,
 				task: fixPrompt,
 				systemPrompt: workerSystemPrompt,

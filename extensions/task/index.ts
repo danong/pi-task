@@ -121,6 +121,7 @@ import {
 	type BudgetTierConfig,
 	type TaskConfig,
 } from "./config.ts";
+import sessionIdExtension from "./tools/session-id.ts";
 
 // Budget vocabulary lives in config.ts (Phases 10-11 — task.toml owns it,
 // config-driven tier discovery since Phase 11); re-exported so existing
@@ -921,6 +922,15 @@ export function readSessionTokensBefore(ctx: {
 }
 
 export default function (pi: ExtensionAPI) {
+	// ── Session-id (wave-4 cost, OpenRouter correlation) ─────────────
+	// The interactive session loads ONLY this entry (package auto-discovery
+	// is index-based, not recursive into tools/). Register the session-id
+	// injection hook here so the conversational agent's own traffic is
+	// attributable: it injects pi's ambient session id (getSessionId) as a
+	// top-level session_id on every outbound payload. Worker/reviewer
+	// subprocesses load the same extension explicitly (--extension) with the
+	// run id via env. Strict no-op when no identifier is present.
+	sessionIdExtension(pi);
 	// ── Config (Phase 11: refreshed, not factory-only) ────────────────
 	// task.toml (budget tiers + defaults) is loaded at factory time so the
 	// --task-budget flag description and the codebase-map wiring exist, and
