@@ -1,0 +1,31 @@
+{
+	// pi-task-v2 type gate (contract FR-11 / milestone M0).
+	//
+	// Strict on purpose: tsx-style runners strip types without checking
+	// them, which is exactly how undeclared identifiers ship green. This
+	// config typechecks ONLY packages/core-v2 (sources + tests) — the v1
+	// engine under extensions/ is deliberately out of scope.
+	//
+	// Run via: mise run typecheck
+	"compilerOptions": {
+		"target": "ES2022",
+		"lib": ["ES2023"],
+		"module": "NodeNext",
+		"moduleResolution": "NodeNext",
+		"allowImportingTsExtensions": true,
+		"verbatimModuleSyntax": true,
+		"isolatedModules": true,
+		"noEmit": true,
+
+		"strict": true,
+		"noUncheckedIndexedAccess": true,
+		"exactOptionalPropertyTypes": true,
+		"noFallthroughCasesInSwitch": true,
+		"noImplicitOverride": true,
+		"forceConsistentCasingInFileNames": true,
+
+		"types": ["node"],
+		"skipLibCheck": true
+	},
+	"include": ["src/**/*.ts", "test/**/*.ts"]
+}

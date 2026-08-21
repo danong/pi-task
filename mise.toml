@@ -3,9 +3,10 @@
 # Everything project-scoped lives here — the image ships the universal
 # toolchain (node, python, git, jj, ...). setup installs dev/test deps with
 # file-staleness (mise skips when node_modules is newer than the manifests),
-# verify is the light toolchain gate the boot sweep runs at startup, and test
+# verify is the light toolchain gate the boot sweep runs at startup, test
 # is the full hermetic suite (zero LLM calls; the one real-LLM e2e is manual
-# and intentionally NOT part of `mise run test`).
+# and intentionally NOT part of `mise run test`), and typecheck is the
+# pi-task-v2 strict type gate over packages/core-v2 (contract FR-11).
 
 [tasks.setup]
 description = "Install dev/test dependencies"
@@ -20,3 +21,7 @@ run = "npx tsx --version && npx tsx extensions/task/test-config.ts"
 [tasks.test]
 description = "Run the full hermetic test suite (zero LLM calls)"
 run = "npx tsx extensions/task/test.ts"
+
+[tasks.typecheck]
+description = "pi-task-v2 type gate — strict tsc over packages/core-v2 only"
+run = "npx tsc --noEmit -p packages/core-v2/tsconfig.json"
