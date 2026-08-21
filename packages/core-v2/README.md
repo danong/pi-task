@@ -28,6 +28,22 @@ the strict gate.
   the resolved tier config, and per-repo `routing_feedback` telemetry to
   `{ planMode, tier, lane }`, plus the feedback-aggregation helpers and
   the named (config-overridable) routing thresholds.
+- `src/guards/` — M1.3 operational hardening (FR-7/FR-8):
+  - `watchdogs.ts` — pure watchdog decisions over observed session events
+    + elapsed time (`continue` / `nudge(text)` / `abort(reason)`), every
+    bound a named constant
+  - `watchdog-driver.ts` — the stateful driver applying those decisions
+    (injectable timer source; `attachWatchdogs` propagates nudges/aborts
+    to a live session handle)
+  - `artifacts.ts` — failure artifacts (R4): bounded atomic
+    `<artifactsDir>/<runId>.failure.json` writes ({ cause, lastEvent?,
+    lastTool?, stderrTail? }, each field capped by a named constant,
+    never throws on write failure)
+- `src/verify/run.ts` — the verification runner (M1.3 R3, FR-6): runs a
+  spec's bash commands sequentially with per-command timeouts, a suite
+  wall clock, and bounded grace for the command in flight at expiry;
+  typed `{ passed, failures: [{ command, exitCode, stderrTail }] }`
+  with capped output tails.
 - `src/version.ts` — the package identity (milestone `CORE_V2_MILESTONE`,
   version `CORE_V2_VERSION`).
 - `test/` — hermetic tests mirroring the layout:
@@ -38,6 +54,11 @@ the strict gate.
   - `test-router.ts` — pure router decisions: every plan mode reachable,
     feedback switching (hit-rate/deviation thresholds), empty-feedback
     defaults, threshold overrides, and determinism
+  - `test-watchdogs.ts`, `test-watchdog-driver.ts` — the watchdog decision
+    matrix and driver behavior over fake timers
+  - `test-verify-run.ts`, `test-artifacts.ts` — real-bash verification
+    semantics (pass/fail/timeout/wall/grace, capped tails) and failure-
+    artifact shape/caps/never-throw
   - `run-all.ts` — the aggregator (see below)
 
 ## Gates
