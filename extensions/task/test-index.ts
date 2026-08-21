@@ -57,6 +57,7 @@ import {
 	taskToolSchema,
 	workflowContractBlock,
 	workflowContractText,
+	efficiencyContractText,
 	formatTokenCount,
 	type BudgetTierConfig,
 	type ProgressState,
@@ -1172,6 +1173,21 @@ function testWorkflowContract(errors: string[]): void {
 	// the injection never blocks or throws).
 	check(workflowContractBlock({ workflowContract: true }) === text, "enabled config → the contract text");
 	check(workflowContractBlock({ workflowContract: false }) === "", "disabled config → no block");
+
+	// Efficiency block (same cost theme as the worker prompt, separate so
+	// the contract's word-count pin stays stable).
+	const eff = efficiencyContractText();
+	check(eff.startsWith("## Efficiency"), "efficiency block has a header");
+	check(/Batch independent tool calls/.test(eff) && /never make sequential calls/.test(eff),
+		"efficiency: batch independent tool calls into one turn");
+	check(/head -c ~2000/.test(eff) && /never cat whole files/.test(eff),
+		"efficiency: truncate large outputs");
+	check(/re-run an identical command/i.test(eff) && /smaller query/.test(eff),
+		"efficiency: don't re-run identical commands");
+	check(/at most twice/.test(eff) && /targeted test files/.test(eff),
+		"efficiency: run the full suite at most twice, target tests otherwise");
+	check(/fewest turns/.test(eff), "efficiency: finish in the fewest turns");
+	console.log("✓ efficiencyContractText: pure efficiency block (batch / truncate / no re-runs / test-sparing / fewest turns)");
 
 	console.log("✓ workflowContract: pure ~120-150-word block (goals / plan-first / delegate-by-default / orientation-only / CONTEXT.md shared language / spec discipline), config-gated");
 }

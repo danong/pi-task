@@ -351,6 +351,13 @@ Run verification commands after your changes.
 When the project has tests, work test-first: write a failing test, verify it fails, then implement until it passes (red-green-refactor).
 Write scratch/debug probes under /tmp, never in the repo — check jj file list before yielding so no debug files are tracked.
 
+Efficiency — make every tool call count:
+- Batch independent tool calls into one turn; never run sequential calls you could run together.
+- Never dump large outputs: truncate bash (head/tail/grep, head -c ~2000), never cat whole files or logs.
+- Never re-run an identical command; re-derive with a smaller query if you lost context.
+- Run the full test suite at most twice (after your changes and before yield); use targeted files otherwise.
+- Each turn must visibly advance the task — finish in the fewest turns you can.
+
 Your first edit should be your most confident change.`;
 
 /** Pure: the worker system prompt with (or without) the checklist mandate. */

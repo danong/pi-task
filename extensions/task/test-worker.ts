@@ -658,7 +658,9 @@ export async function runTests(): Promise<void> {
 			"worker prompt nudges red-green-refactor: write a failing test, verify it fails, implement until it passes");
 		check(/checklist\(\)/.test(p) && /jj commits/.test(p) && /yield\(\)/.test(p),
 			"worker prompt keeps the orientation core (checklist, jj commits, yield)");
-		console.log("✓ worker system prompt: TDD nudge (failing test → verify fails → red-green-refactor) + orientation core");
+		check(/Batch independent tool calls/.test(p) && /head -c ~2000/.test(p) && /at most twice/.test(p),
+			"worker prompt carries the efficiency guidance (batch, truncate, test-sparing)");
+		console.log("✓ worker system prompt: TDD nudge (failing test → verify fails → red-green-refactor) + orientation core + efficiency");
 	}
 
 	if (errors.length > 0) {

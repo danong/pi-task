@@ -791,6 +791,25 @@ export function workflowContractBlock(config: { workflowContract: boolean }): st
 	return config.workflowContract ? workflowContractText() : "";
 }
 
+/**
+ * The efficiency block for the MAIN session's system prompt: context is
+ * expensive — every tool result is re-sent on every later turn. Same theme
+ * as the worker prompt's efficiency bullet, aimed at the conversational
+ * agent's investigation/editing loop. Kept separate from
+ * {@link workflowContractText} so each block's hermetic word-count pin
+ * stays stable. Static text — pure.
+ */
+export function efficiencyContractText(): string {
+	return [
+		"## Efficiency (context is expensive — every tool result is re-sent on every later turn)",
+		"- Batch independent tool calls in one turn; never make sequential calls you could make together.",
+		"- Never dump large outputs: truncate bash output (head/tail/grep, head -c ~2000), never cat whole files or logs.",
+		"- Never re-run an identical command; if you lost context, re-derive with a smaller query.",
+		"- Run the full test suite at most twice (after your changes, and before yield); use targeted test files otherwise.",
+		"- Every turn must visibly advance the task; finish in the fewest turns you can.",
+	].join("\n");
+}
+
 // ─── Progress streaming (TUI, zero LLM tokens) ───────────────────────
 // Pure plan + render logic lives in progress.ts (hermetically tested);
 // re-exported here so index.ts stays the integration surface.
@@ -1435,7 +1454,10 @@ export default function (pi: ExtensionAPI) {
 		pi.on("before_agent_start", (event) => {
 			const block = workflowContractBlock(mapConfig);
 			if (!block) return undefined;
-			return { systemPrompt: event.systemPrompt + "\n\n" + block };
+			// Efficiency guidance (same cost theme as the worker prompt) rides
+			// with the contract — chained so it composes with the others.
+			const eff = efficiencyContractText();
+			return { systemPrompt: event.systemPrompt + "\n\n" + block + "\n\n" + eff };
 		});
 	}
 
