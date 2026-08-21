@@ -10,6 +10,9 @@ cache/
 .pi/npm/
 .pi/git/
 
+# codebase-map session artifact (regenerated per session at the repo root)
+codebase-summary.json
+
 # Editor/OS noise
 *.tsbuildinfo
 .DS_Store
