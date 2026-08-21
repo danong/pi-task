@@ -1,427 +1,316 @@
-# **Architecture Design Document: pi-task-v2**
+# pi-task-v2 — Design Contract
 
-**Author:** danong **Status:** Proposed **Version:** 3.1 **Date:** August 2026
+**Status:** Proposed (v4) · **Supersedes:** v3.1 (2026-08; see `jj log` for the
+prior revision) · **Companions:**
+[subsystems](pi-task-v2-subsystems.md) (interfaces, schemas, ledger DDL,
+plugin contract) · [future](pi-task-v2-future.md) (scale-readiness, deferred
+mechanisms).
 
-> Main body is the overview contract. Code samples, payload schemas, SQL DDL,
-> alternatives, and deferred work live in Appendices A–E.
+This document is the overview contract: invariants, role responsibilities,
+context lifecycle, requirements, benchmarks, and milestones. Everything
+implementation-shaped lives in the subsystems doc; everything not needed to
+build v1's successor lives in the future doc.
 
-## **1. Background**
+## 1. Background
 
-### **1.1 The Problem**
+### 1.1 What v1 proved
 
-Multi-LLM agent chains (scout → planner → worker) duplicate enormous context at every process boundary: each downstream session re-reads files and re-parses dependency graphs, wasting 100K+ tokens per workflow turn. Prose-based plan handoffs compound the waste — receivers parse unstructured text, reconstruct invocation parameters, and make control-flow decisions that deterministic software executes more reliably.
+pi-task-v1 runs as a pi extension: the conversational agent plans and
+dispatches; isolated worker sessions execute under real gates (typed yields,
+bash verification, atomic jj merges). It works and it is cheap where it
+matters. Its measured floor (bench-regression, canned specs, 2026-08):
 
-### **1.2 Lessons from pi-task-v1**
+- ~3.5k input tokens is the minimum for ANY run — the fixed worker prompt
+  dominates at small task sizes. Grounding overhead, not model price, is the
+  cost term to attack.
+- Turn counts are model-dependent: a frontier-class model holds ~4 turns on
+  trivial specs; a cheap workhorse varies 4–10 turns on the same spec.
+  Any hard turn budget below the cheap-model floor causes systematic
+  exhaustion→retry loops that cost more than the turns saved.
+- Latency on small tasks is model-insensitive (~20–25s); the good model buys
+  turn efficiency, not speed.
+- Cost per trivial run: $0.0005–0.0013 (deepseek-flash class), effective
+  $0.0030–0.0037 for a frontier-class model at assumed discount rates.
 
-pi-task-v1 ran as an extension inside a Pi agent session, delegating work via a `task()` tool over JSON-RPC. What worked: hard bash-exit-code verification gates, jj workspace isolation, a private Discord bridge. Structural flaws that motivate v2:
+These numbers are v2's bar. A proposal that cannot state its predicted
+numbers against them does not get built.
 
-> 1. **Inverted ownership** — client crashes/reloads killed background tasks mid-flight.
-> 2. **Nested RPC overhead** — stdin/stdout serialization, fd leaks, brittle recovery.
-> 3. **Monolithic environment pollution** — one container's toolchain conflicted across target projects.
-> 4. **Main-session context inflation** — un-pruned transcripts across multi-task runs.
+### 1.2 Lessons from v1 — full disposition table
 
-**Disposition of v1 mechanisms:**
+Rule: no v1 capability is dropped without an explicit disposition.
 
-| v1 Mechanism | Disposition in v2 |
+| v1 mechanism | Disposition in v2 |
 | :---- | :---- |
-| Hard verification gates (bash exit codes) | **Kept** — FR-6 |
-| Mid-session frontier→cheap model swap | **Superseded** — separate planner/worker sessions achieve the same economics structurally (§3.1) |
-| bwrap sandboxing | **Shifted** — abstracted behind EnvironmentDriver (§3.6) |
-| Hash-gated annotated code maps | **Deferred** — underperformed in practice; revisited as Appendix E.2 |
-| Always-on adversarial review | **Deferred** — optional/on-demand only; see Appendix E.1 |
-| session_id cache threading | **Kept** — generalized into NFR-5 cache-affine prefixes |
-| Batch / flex provider lanes | **Kept** — lane-aware model assignment (§3.1, FR-8) |
-| /plan · /build workflow modes | **Kept** — Milestone 5, workflow modes over the task graph |
+| Hard bash-exit-code verification gates | **Kept** — FR-5 |
+| Typed Zod yields / "tools enforce, prompts suggest" | **Kept** — FR-7 |
+| jj workspace isolation + atomic revset-union squash merge | **Ported verbatim** as the first WorkspaceDriver — FR-4. Not redesigned. |
+| Deterministic union ladder + consistency gate (`assertMerged`) + recovery artifacts | **Ported verbatim** with FR-4 |
+| Prewalk (strong explore → cheap execute swap within one session) | **Kept** — planning mode (a), §3.4 |
+| Forked adversarial review w/ context inheritance | **Kept, budget-gated** — §3.6 |
+| Budget tiers, schema-locked spend control | **Kept** — FR-8 |
+| Batch/flex lanes (OpenRouter batch lane, service_tier flex) | **Kept, generalized** — FR-8 |
+| Watchdogs (settle/no-progress/wall/tool-timeout/verification grace) | **Ported verbatim** — FR-6 |
+| Failure artifacts + scripted recovery guides | **Kept** — FR-6 |
+| Run manifests + `/task-stats` metrics path | **Kept, extended** — NFR-3 (COR accounting) |
+| Session-id correlation, reasoning.exclude, slim prompts, conditional prewalk, checklist-per-tier | **Kept as-is** (cost waves; orthogonal to architecture) |
+| Detached dispatch (`detach: true` + runner child) | **Superseded structurally** — the daemon IS detached by default; per-run detach remains for interactive progress |
+| Inverted ownership (client crash kills tasks) | **Fixed** — FR-1 standalone daemon |
+| Nested RPC worker spawn | **Superseded** — FR-1 in-process SDK sessions |
+| Context-carrying dispatch (Wave-3 fork idea) | **Designed** — planning mode (c), §3.4 |
+| Orientation sections in specs (Wave-3 item 1) | **Formalized** — §3.3 |
 
-## **2. Requirements**
+## 2. Requirements
 
-### **2.1 Problem-to-Requirement Mapping**
+### 2.1 Functional
 
-| v1 Bottleneck | Requirement | Primary Mechanism |
+> **FR-1 (Standalone Host Orchestrator).** A persistent Node.js daemon owns
+> all task state; conversational clients attach and detach freely. Workers
+> run as in-memory SDK sessions inside the daemon — no nested RPC, no pid
+> bookkeeping for interactive workers. Heartbeats apply only to real child
+> processes (detached runners, scheduler jobs).
+>
+> **FR-2 (Typed boundary artifacts).** Exactly five artifact types cross a
+> context-ownership boundary: Spec, ExecutionBundle, Yield, HandoffBundle,
+> TaskReceipt. All are Zod-schema'd ([subsystems](pi-task-v2-subsystems.md)
+> §2). Transcripts never leave the session that paid for them except through
+> an explicit fork with a prune profile. Artifact fields that would break
+> deterministic serialization (timestamps, session ids, run ids) never
+> serialize into prompts.
+>
+> **FR-3 (Bounded attempts, not bounded turns).** Worker bounds are
+> wall-clock + watchdogs (ported from v1) plus a PER-ATTEMPT turn budget,
+> config-driven, defaulting above the measured cheap-model floor (≥10;
+> see §1.1). Exhaustion routes to HandoffBundle retry (bounded), not task
+> failure.
+>
+> **FR-4 (Workspace & merge = v1's proven ladder).** The first
+> JujutsuWorkspaceDriver ports v1's merge machinery unchanged: AI-authored
+> task base, single atomic squash over a revset union, deterministic union
+> ladder, post-merge consistency gate, preserved-workspace failure artifacts
+> with recovery guides. AST-aware merging is explicitly rejected
+> ([subsystems](pi-task-v2-subsystems.md) §4 — Alternatives).
+>
+> **FR-5 (Hard verification gates).** Completion gated by real bash exit
+> codes executed post-merge, per-command timeout, grace when the wall
+> expires mid-verification. Unchanged from v1.
+>
+> **FR-6 (Operational hardening, ported).** The full v1 watchdog taxonomy,
+> failure diagnostics (cause + last tool + stderr tail), and failure
+> artifacts are engine invariants, not optional middleware.
+>
+> **FR-7 (Pluggable seams).** Five kernel interfaces — WorkspaceDriver,
+> EnvironmentDriver, ContextCompressor, VerificationDriver, TaskPlugin —
+> behind which all environment-specific behavior lives. Plugin contract
+> (one file, one interface, one hermetic test, no shared mutable state) and
+> the TaskGateway event vocabulary are specified in
+> [subsystems](pi-task-v2-subsystems.md) §3 before any plugin code exists.
+>
+> **FR-8 (Model routing & lanes).** Model assignment is per-role config
+> with graceful degradation (§2.2). Lanes: interactive (default), flex,
+> batch; unsupported lanes degrade to interactive. Roles are structural
+> (session shapes, prompts, budgets); the MODEL per role is configuration.
+>
+> **FR-9 (Engineering bar).** The repo carries a typecheck gate (tsc or
+> equivalent) in CI, and every kernel seam has a smoke test that exercises
+> its REAL path (the orchestrator invocation, not just exported pure
+> functions). Rationale: two drift bugs shipped green because tsx strips
+> types without checking and hermetic tests covered only pure parts. Cheap
+> models building plug-ins produce exactly this defect class; the gate is
+> what makes FR-7 safe.
+
+### 2.2 Non-functional
+
+> **NFR-1 (Crash recovery).** Task graphs and session state persist in
+> `.pi/tasks.db`; boot reconciliation re-hydrates or reaps crashed runs.
+> Recovery reads the ledger, never transcripts.
+>
+> **NFR-2 (Graceful degradation).** Every optimization disables cleanly:
+> reviewer skipped or downgraded per budget tier (v1's `[budget.*].review`
+> flag semantics carry over), bundles skipped when `bundle_hit_rate` is low,
+> forks skipped when fork-deviation rate is high, sandbox disabled where
+> bwrap is absent, single-model single-lane operation changes no interfaces.
+> The system must run correctly with one free model and zero optional
+> features enabled.
+>
+> **NFR-3 (Measured efficiency).** Every run records COR operationally:
+> grounding tokens (spec + bundle/orientation + fixed prefix) ÷ total input
+> tokens, computed from manifest phase data. Target < 0.20 on grounding-heavy
+> suites. Cost ∝ diff size, not repo size. v1's §1.1 numbers are the baseline.
+>
+> **NFR-4 (Cache affinity).** Request prefixes are deterministic per task;
+> retries APPEND handoffs to an identical serialized prefix (append-only,
+> cache-preserving). No timestamps/ids ahead of the conversation.
+
+### 2.3 Guiding principles
+
+1. **Code orchestrates, LLMs judge.** Routing, spawning, merging, gating are
+   deterministic code; models write code and evaluate diffs.
+2. **Context continuity beats handoff — by default.** Handoffs (bundles,
+   handoff bundles) are optimizations that must earn their way in per-repo
+   via measured hit rates, not foundations the system depends on.
+3. **Every artifact is both interface and collector.** Each typed boundary
+   artifact exists so the sender may forget (§3).
+4. **Scale via seams; degrade gracefully.** New capability attaches as a
+   driver or plugin; every optimization has an off-switch that keeps the
+   system correct (NFR-2).
+
+## 3. Context ownership & lifecycle
+
+The organizing rule: **every piece of context has exactly one owner, and
+crossing an ownership boundary requires a typed artifact — never implicit
+flow.**
+
+### 3.1 Roles
+
+| Role | Who | Context fate |
 | :---- | :---- | :---- |
-| Client disconnect kills tasks | FR-1 / NFR-1 | Root orchestrator daemon; SQLite boot reconciliation |
-| 100K+ redundant reads per worker | FR-2 / NFR-2 | Paginated AST outlines (≤200 tok/file); JIT ExecutionBundle |
-| Unbounded loops & transcript bloat | FR-3 / FR-4 | 3–5 turn budgets; Zod yields; typed HandoffBundle |
-| Cross-project toolchain conflicts | NFR-3 | Ephemeral project containers (EnvironmentDriver) |
-| Workspace/tooling lock-in | FR-7 | Five pluggable driver/plugin abstractions |
-| Unbounded spend | NFR-4 | COR < 0.20; cost ∝ diff size |
-| Cold-cache re-reads across retries | NFR-5 | Deterministic cache-affine request prefixes |
-| Cost/latency inflexibility | FR-8 | Per-role model routing with interactive/flex/batch lanes |
+| Spec author | conversational agent (main session) | persists across tasks, pruned via receipts + eviction |
+| Router | deterministic code | none — pure decisions from spec metadata + config + manifest feedback |
+| Planner | *not a peer role* — a phase inside the worker, or a thin one-shot function | dies with the task |
+| Worker | cheap/fast model (config) | destroyed on yield/exhaustion |
+| Reviewer | strong model (config), budget-gated | forked, pruned, dies with review |
 
-### **2.2 Functional Requirements**
+There is no standing planner session. Planning is either a phase in the
+executing session (continuity) or a thin function producing an ExecutionBundle
+(fast path). A persistent planner would own the deepest context in the system
+and be the hardest thing to prune.
 
-> * **FR-1 (Standalone Host Orchestrator):** Persistent Node.js root process embedding Pi as in-memory SDK sessions (@mariozechner/pi-agent-core). No child RPC processes.
-> * **FR-2 (Execution Bundles & Paginated Outlines):** Planning yields a structured ExecutionBundle whose per-file AST outlines are capped at ~200 tokens. Workers begin editing on Turn 1 with zero exploratory reads.
-> * **FR-3 (Bounded Micro-Sessions):** Hard 3–5 tool-turn budget; workers yield Zod-validated payloads; sessions are destroyed on yield or exhaustion.
-> * **FR-4 (Handoff Bundles):** On verification failure, uncommitted diffs, touched files, and error tails pass forward via a typed HandoffBundle.
-> * **FR-5 (Merge Ladder & Tiered Conflict Resolution):** Changes combine via AST-aware 3-way merge. Residual conflicts surface as structured data → LLM resolution micro-session → human escalation.
-> * **FR-6 (Hard Verification Gates):** Completion is gated by real bash exit codes executed post-merge.
-> * **FR-7 (Pluggable Drivers):** Workspaces (jj, git worktree, plain directory), Environments (Docker, mise, host), and Compressors (Tree-sitter, ctags, regex) decoupled behind TypeScript interfaces.
-> * **FR-8 (Model Routing & Lanes):** Model assignment is per-role configuration with defaults. Requests may target interactive, flex, or batch lanes; unsupported lanes degrade to interactive.
+### 3.2 The cycle
 
-### **2.3 Non-Functional Requirements**
-
-> * **NFR-1 (Crash Recovery):** Task graphs and session states persist in `.pi/tasks.db`; automatic reconciliation on daemon reboot.
-> * **NFR-2 (Context Efficiency):** Worker COR = grounding tokens ÷ total tokens must stay **< 0.20**.
-> * **NFR-3 (Zero Host Pollution):** The orchestrator requires no target-project compilers, SDKs, or build tools on the host.
-> * **NFR-4 (Cost Ceiling):** Token cost scales with diff size, not repository size. Every optimization degrades gracefully to a single-model, git-only run.
-> * **NFR-5 (Cache Affinity):** Request prefixes are deterministic per task. Retries append HandoffBundles to an identical serialized prefix; provider cache/session handles are threaded through SDK session config where supported.
-
-### **2.4 Guiding Principles**
-
-> 1. **Code orchestrates, LLMs judge.** Spawning, routing, merging, and gating are deterministic code; LLMs are invoked only where understanding is required.
-> 2. **Graceful degradation.** Every optimization disables cleanly under budget or environment constraints.
-> 3. **Scale via seams.** New capabilities — transports, providers, tenancy, billing — attach as drivers or plugins. The core kernel stays small.
-
-### **2.5 Scale-Readiness Constraints**
-
-Monetization is explicitly out of scope. These constraints cost nothing now; they exist so that future scale (hosted, multi-tenant, open-weight models) never requires a rewrite:
-
-> 1. **Portable SQL.** The DDL avoids SQLite-only features; the ledger must migrate to Postgres without rewrites.
-> 2. **Transport behind an interface.** Local sockets/WebSockets now; an authenticated remote transport later attaches as a plugin, not a core change.
-> 3. **Meter everything.** Tokens and cost are recorded per task and per session in the ledger — the future source of truth for billing or analytics.
-> 4. **Models are endpoints.** Provider changes are configuration. Self-hosted open-weight providers attach without core changes.
-
-## **3. Architecture**
-
-### **3.1 Host Orchestrator & Model Role Routing**
-
-```text
-┌────────────────────────────────────────────────────────────┐
-│                pi-task-v2 Orchestrator Host                │
-│             (Node.js App / State Machine Kernel)           │
-│                                                            │
-│  - Task Graph & SQLite Ledger State                        │
-│  - Abstract Workspace Engine (WorkspaceDriver Interface)   │
-│  - Environment Execution Engine (EnvironmentDriver)        │
-│  - Plugin & Driver Middleware Manager                      │
-└──────────────┬──────────────────────────────┬──────────────┘
-               │                              │
-               ▼                              ▼
-┌──────────────────────────────┐┌──────────────────────────────┐
-│  Planner Session (SDK)       ││  Worker Micro-Session (SDK)  │
-│  - Planner model             ││  - Worker model              │
-│    (default: deepseek-       ││    (default: deepseek-       │
-│     v4-flash)                ││     v4-flash)                │
-│  - Decomposes goals & specs  ││  - Pristine session          │
-│  - Builds ExecutionBundles   ││  - Strict 3–5 turn limit     │
-└──────────────────────────────┘└──────────────────────────────┘
+```
+ user intent
+     │
+[1] SPEC          main agent writes Goal / Requirements / Verification
+     │            + orientation section (known facts, dead ends)
+     │            → licenses the main session to FORGET those facts
+     ▼
+[2] ROUTE         pure code picks planning mode + shape + lane
+     │            inputs: requirement count, continuation signal,
+     │            bundle_hit_rate, fork_deviation_rate, budget tier
+     ▼
+[3] PLAN+EXECUTE  one of three modes (§3.4), inside a disposable session
+     │
+     ├─ fail small → nudge same session (hot context, ~tens of tokens)
+     ├─ fail large → fresh worker + HandoffBundle (append-only, cache-safe)
+     ▼
+[4] REVIEW        optional; fork of the WORKER session through the
+     │            review prune profile; typed findings; budget-gated
+     ▼
+[5] RECEIPT       TaskReceipt (~150 tok) to the main session;
+                  verified insights → episodic memory store (future doc E.3)
 ```
 
-**Cheap by default.** Roles are structurally separate — distinct session shapes, prompts, and turn budgets — but model class per role is *configuration, not architecture*. The default is `deepseek-v4-flash` for every role; single-model operation changes no interfaces or invariants. Upgrade per role when measured quality demands it (e.g., Gemini Flash/Pro, Claude, GPT class — planner first, workers for hard diffs).
+### 3.3 Pruning inventory
 
-**Lanes (FR-8):** assignments may request `interactive` (default), `flex` (relaxed latency, lower cost), or `batch` (async bulk). Lanes are provider capabilities: drivers report what's supported, and unsupported lanes degrade to interactive. Default lane policy — planner/worker turns run interactive; verification re-runs, benchmark sweeps, cron audits, and E.2 cache regeneration use flex/batch where available.
-
-**Key advantages:** process stability (client drops never kill execution), zero RPC serialization (sessions instantiated in-memory), pristine worker lifecycles (no history accumulation).
-
-### **3.2 Kernel & Driver System**
-
-Five abstractions form the kernel (full signatures in **Appendix A**):
-
-> 1. **WorkspaceDriver** — isolated workspace contexts (jj / git worktree / direct directory).
-> 2. **EnvironmentDriver** — command execution inside the project's runtime, with path resolution and timeouts.
-> 3. **ContextCompressor** — paginated AST outlines and symbol extraction.
-> 4. **VerificationDriver** — post-merge gate execution with structured failure results.
-> 5. **TaskPlugin** — lifecycle triggers, bundle transforms, event subscription.
-
-**Integration modes** (all subscribe via TaskGateway): Discord bridge (threads/embeds), CLI/TUI client (Unix socket or `ws://localhost:8080`), CI/CD runner (PR webhooks, inline annotations), scheduled cron (recurring audits). *CI/CD and cron modes ship after Milestone 3.*
-
-### **3.3 Context Engineering**
-
-```text
-[Raw Codebase] ──► [ContextCompressor] ──► [Paginated ExecutionBundle] ──► [Micro-Session Worker]
-                         │                                                      │
-            (Tree-sitter / ctags / regex)                           Zod-validated yield
-                         │                                                      │
-[SQLite Ledger] ◄─────────┴────────── [Deterministic Merge & Verification] ◄────┘
-```
-
-> 1. **Paginated symbol outlines:** ≤200 tokens per file; cursor-based continuation replaces whole-file dumps.
-> 2. **Execution Bundles:** target paths + line ranges, minimal type definitions, explicit requirements, and verification commands — injected into the worker's initial system prompt, so the worker is fully grounded on Turn 1. Bundles serialize deterministically (NFR-5) so retries reuse identical prefixes.
-> 3. **Bounded micro-sessions:** 3–5 turns; on failure, a HandoffBundle carries diffs, touched files, and error tails to the next attempt (retry count bounded per task).
-> 4. **Tool output distillation:** test/lint/build output is filtered to errors, failure lines, and file offsets; success noise is stripped.
-
-### **3.4 State Persistence**
-
-SQLite ledger `.pi/tasks.db` holds `tasks`, `micro_sessions`, and `workspaces` (**DDL in Appendix C**, portable per §2.5). Heartbeats detect dead sessions; boot reconciliation re-hydrates or reaps crashed runs. Retries are bounded per task (default max 2).
-
-### **3.5 Workspaces & Merge Ladder**
-
-**Workspace drivers:** JujutsuWorkspaceDriver (preferred — non-blocking snapshot isolation), GitWorktreeDriver (standard-git fallback), DirectDirectoryDriver (zero-dependency fallback).
-
-**Merge ladder (FR-5):**
-
-> 1. **Deterministic:** AST-aware merge → standard text 3-way merge → automatic union resolution of whitespace/comment-only overlaps.
-> 2. **LLM:** residual conflicts surface as a structured ConflictSet (file paths, hunk ranges, both sides' content); a bounded conflict-resolution micro-session attempts a fix.
-> 3. **Human:** unresolved conflicts escalate — task status → `escalated`, ConflictSet attached, gateway notifies configured channels.
-
-### **3.6 Runtime Isolation**
-
-**EnvironmentDrivers:** DockerEnvironmentDriver (recommended — attaches to the repo's devcontainer image or spawns an ephemeral container, mounting the workspace volume), HostMiseEnvironmentDriver (`mise exec --` per workspace, enforcing `.mise.toml` tool versions without containers), DirectHostEnvironmentDriver (bare-host fallback). The orchestrator process stays lean and toolchain-free in all cases (NFR-3).
-
-### **3.7 Main-Session Context Contracts**
-
-Conversational sessions record compact TaskReceipts (verdict, file counts, commit IDs — **Appendix B**) instead of free-text summaries. Pluggable multi-axis pruning scores historical turns for eviction (**Appendix A**), keeping long-running main sessions lean.
-
-## **4. Migration & Bootstrapping (v1 → v2)**
-
-**Rules:** non-breaking coexistence in `packages/core-v2`; v1 continues running production workflows and builds v2; a single dispatch-point router separates surfaces; cutover is incremental.
-
-> **Port inventory first.** Before writing new code, inventory v1 modules — session/cache plumbing, verification gate, jj merge logic, Discord bridge, model-swap logic, /plan /build flows — and map each to its v2 seam (port vs. rewrite). No v1 capability is dropped without an explicit disposition (§1.2).
-
-```text
-        ┌────────────────────────────────────┐
-        │      Discord Gateway Bridge        │
-        └─────────────────┬──────────────────┘
-                          │
-        ┌─────────────────┴──────────────────┐
-        │    Single Dispatch Point Router    │
-        └─────────┬─────────────────┬────────┘
-                  │                 │
-      (default)   │                 │  (/v2 prefix)
-                  ▼                 ▼
-        ┌────────────────────┐   ┌────────────────────┐
-        │  pi-task-v1 Engine │   │  pi-task-v2 Engine │
-        │  (until Phase C)   │   │  (packages/core-v2)│
-        └────────────────────┘   └────────────────────┘
-```
-
-> * **Phase A:** Port inventory; build `packages/core-v2` using pi-task-v1.
-> * **Phase B:** Shadow/dry-run — v2 mirrors live v1 tasks, validating AST extraction, path resolution, and bundle generation without executing writes.
-> * **Phase C:** Flip default `/task` routing to v2 once Phase B reaches parity on the §5 suites; retain `/v1` fallback.
-> * **Phase D:** Deprecate and delete v1 RPC code.
-
-`/v2` is a prefix namespace (`/v2 task …`, `/v2 status …`, later `/v2 plan …`, `/v2 build …`), so operational commands never collide with v1's command surface.
-
-## **5. Verification & Microbenchmarking**
-
-**Metrics:** total tokens per completed task · turns to verified fix · COR (target < 0.20) · first-pass verification rate · cost normalized per KB of diff (NFR-4) · cache hit rate on retried sessions (NFR-5).
-
-**Suites** (harness in `packages/benchmarks`):
-
-> * `01_single_file_bugfix` — edits confined to single methods
-> * `02_multi_file_refactor` — cross-file interface updates
-> * `03_large_repo_grounding` — feature additions in 100K+ LOC repositories
-
-**Baselines:** every suite runs against three configurations with the production default model (`deepseek-v4-flash`) pinned across all: (1) baseline single long-context Pi session, (2) pi-task-v1 extension, (3) pi-task-v2 orchestrator. Model upgrades (frontier planner variants) are run as *additional* configurations, never as baseline changes. Reporters emit token/latency/cache comparison tables.
-
-## **6. Milestones & Token Budgets**
-
-| Phase | Scope | Target Deliverables | Budget |
+| Context | Owner | Pruned how | Escapes as |
 | :---- | :---- | :---- | :---- |
-| **M1** | Core Engine & SDK Inversion | Standalone orchestrator, SQLite ledger + boot reconciliation, `resolvePath` contract, per-role model routing with defaults | ~10M |
-| **M2** | Drivers & Execution Bundles | Workspace/Environment drivers (jj, worktree, direct; Docker, mise, host), paginated compressor (≤200 tok/file), ExecutionBundle + HandoffBundle, deterministic serialization (NFR-5), distillation middleware | ~15M |
-| **M3** | Plugin Kernel & Routing | TaskGateway + event pipeline, `/v2` dispatch router, CLI/TUI client | ~10M |
-| **M4** | Benchmarks & Cutover | Suite harness, turn-budget/routing tuning, default cutover, v1 removal | ~15M |
-| **M5** | Workflow Modes | PlanDocument schema, `/plan` planner-only mode with human review gate, `/build` DAG executor over TaskGateway | ~10M |
+| Conversational transcript | main session | receipts replace results; spec-writing externalizes facts; pluggable scorer evicts old turns | specs, forks (through profile) |
+| Exploration reads | worker session | session destroyed on yield/exhaustion | Yield payload, manifest metrics |
+| Planning output | prewalk phase or bundle fn | bundle capped ≤200 tok/file; prewalk context dies with worker | ExecutionBundle |
+| Failure detail | failed worker | capped tails (`capFixOutput` semantics) | HandoffBundle |
+| Review context | reviewer fork | review prune profile | typed findings |
+| Long-term insight | nobody's context | content-hash invalidation + circuit-breaker retest | episodic memory store |
 
-**Total estimated development budget:** ~60M tokens (USD cost dominated by provider pricing; expected at the low end of commodity tiers at `deepseek-v4-flash` defaults).
+Each artifact is simultaneously the interface AND the collection mechanism:
+the spec exists to let the main session forget; the yield exists so the
+orchestrator never sees a transcript; the handoff exists so retries don't
+re-read; the receipt exists so conversation survives many tasks.
 
----
+### 3.4 Planning modes (router-selected)
 
-## **Appendix A: Driver & Plugin Interfaces (TypeScript)**
+**(a) Prewalk-in-session — default for continuation/complex tasks.**
+Strong model explores INSIDE the session that executes; swap to the cheap
+execute model on first edit. Zero handoff loss. This is v1's mechanism,
+unchanged, and the reason there is no planner role.
 
-```typescript
-// 1. Workspace Isolation Driver
-export interface WorkspaceContext {
-  taskId: string;
-  hostPath: string;
-  containerPath?: string;
-  branchName: string;
-  status: "provisioning" | "active" | "merging" | "cleaning_up" | "released" | "orphaned";
-}
+**(b) Bundle fast path — well-scoped self-contained tasks.** Thin one-shot
+call (strong model, few turns) emits an ExecutionBundle: target files, line
+ranges, minimal type defs, verify commands. Worker starts grounded turn 1.
+Miss-path is specified: workers never lose explore tools, so a wrong bundle
+degrades into mode (a) mid-run; the miss increments the repo's
+bundle_hit_rate and the router stops offering bundles until the compressor
+improves. Bundles are an optimization that earns its way in per-repo.
 
-export interface WorkspaceDriver {
-  name: string;
-  isSupported(): Promise<boolean>;
-  createWorkspace(taskId: string, parentBranch?: string): Promise<WorkspaceContext>;
-  mergeWorkspace(context: WorkspaceContext): Promise<{ success: boolean; conflicts?: string[] }>;
-  cleanupWorkspace(context: WorkspaceContext): Promise<void>;
-}
+**(c) Fork-from-conversation — interactive work continuing into dispatch.**
+Worker forks the main session through the CONTINUATION PRUNE PROFILE: goals +
+active spec + recent receipts + orientation facts; implementation chatter,
+tool output, resolved deliberation dropped. One re-encode of ~2–5k tokens
+instead of N discovery turns. Pollution risk handled like bundle misses: the
+yield's deviations field records it, the router tracks fork_deviation_rate,
+cooling-off is automatic.
 
-// 2. Project Environment Execution Driver
-export interface PathResolution {
-  resolvedPath: string;
-  translated: boolean;
-}
+### 3.5 Repair policy
 
-export interface ExecOptions {
-  cwd: WorkspaceContext;
-  env?: Record<string, string>;
-  timeoutMs: number;
-}
+Verification failure size/type thresholds (pure, testable, tunable) choose:
+small → nudge the same session (context hot); large → fresh worker +
+HandoffBundle appended to an identical serialized prefix (cache-preserving,
+NFR-4). Retry count bounded per task (v1 semantics).
 
-export interface EnvironmentDriver {
-  name: string;
-  resolvePath(context: WorkspaceContext): Promise<PathResolution>;
-  exec(command: string, args: string[], options: ExecOptions): Promise<{
-    stdout: string;
-    stderr: string;
-    exitCode: number;
-  }>;
-}
+### 3.6 Review
 
-export class PathResolutionError extends Error {
-  constructor(public readonly context: WorkspaceContext, reason: string) {
-    super(`Cannot resolve path for task ${context.taskId}: ${reason}`);
-  }
-}
+Reviewer forks the WORKER session post-yield through the review prune
+profile (diff + requirements + compressed implementation rationale; read and
+tool noise dropped). Findings return typed. Budget-gated per NFR-2: tiers may
+skip review entirely (v1's economy/free already do) or run it on the
+workhorse instead of a strong model (v1's full tier already does).
 
-// 3. Context Compression & AST Indexer Driver
-export interface OutlinePage {
-  outline: string;
-  truncated: boolean;
-  nextCursor: string | null;
-}
+## 4. Architecture
 
-export interface ContextCompressor {
-  name: string;
-  isSupported(): Promise<boolean>;
-  /** Paginated symbol outline; page sizes honor the ~200-token-per-file budget (§3.3). */
-  generateOutline(filePath: string, options: { maxTokens: number; cursor?: string | null }): Promise<OutlinePage>;
-  extractSymbols(filePath: string, symbolQuery: string): Promise<string>;
-}
+Standalone daemon (FR-1) embedding pi as SDK sessions; conversational
+clients (pi extension, CLI/TUI, later others — see future doc) attach over a
+local transport. Kernel = the five FR-7 interfaces + TaskGateway + SQLite
+ledger + the routing/policy functions (pure). Worker pipeline per task =
+route → plan/execute → verify → (review → fix loop) → receipt, with v1's
+watchdogs, gates, and artifacts ported verbatim.
 
-// 4. Verification & Safety Driver
-export interface VerificationResult {
-  success: boolean;
-  /** Semantic outcome, e.g. "typecheck_failed", "tests_failed", "timeout". */
-  reason?: string;
-  failedCommand?: string;
-  stderrTail?: string;
-}
+Model-per-role defaults follow v1's measured economics: cheap workhorse for
+the token-hungry loop; strong model only for thin slices (prewalk, bundles,
+reviews) — and only when the tier pays for it.
 
-export interface VerificationDriver {
-  name: string;
-  runVerification(context: WorkspaceContext, commands: string[]): Promise<VerificationResult>;
-}
+## 5. Benchmarks
 
-// 5. Lifecycle & Trigger Plugin
-export interface TaskPlugin {
-  name: string;
-  registerTriggers?: (gateway: TaskGateway) => void;
-  transformExecutionBundle?: (bundle: ExecutionBundle) => Promise<ExecutionBundle>;
-  onLifecycleEvent?: (event: TaskLifecycleEvent) => void;
-}
-```
+Harness: `packages/benchmarks`, extending `extensions/task/bench-regression.ts`
+(now functional; its 2026-08 drift bugs motivate FR-9).
 
-## **Appendix B: Payload Schemas (Zod)**
+Suites — note the added grounding class, which is where bundle economics
+actually live:
 
-```typescript
-import { z } from "zod";
+- `01_single_file_bugfix` — edits confined to single methods
+- `02_multi_file_refactor` — cross-file interface updates
+- `03_grounding_heavy` — feature additions in 100K+ LOC repos (NEW: this is
+  the suite that adjudicates bundles vs continuity vs cold-start)
 
-export const TargetFileSchema = z.object({
-  hostPath: z.string(),
-  astOutline: z.string().max(800), // ≈200 tokens @ ~4 chars/token — keep outlines small (§3.3)
-  outlineTruncated: z.boolean(),
-  outlineCursor: z.string().nullable(),
-});
+Metrics per run: total tokens, turns, wall time, cost, COR (operationalized
+per NFR-3), first-pass verification rate, cache hit rate on retried prefixes,
+bundle_hit_rate, fork_deviation_rate. Manifests land through v1's existing
+metrics write path; `/task-stats` reads them.
 
-export const ExecutionBundleSchema = z.object({
-  taskId: z.string(),
-  goal: z.string(),
-  targetFiles: z.array(TargetFileSchema).max(50),
-  requirements: z.array(z.string()),
-  verificationCommands: z.array(z.string()),
-  modelAssignment: ModelAssignmentSchema.optional(),
-});
+Configurations: (1) bare long-context session, (2) pi-task-v1, (3) pi-task-v2
+— production default model pinned across all; stronger models are additional
+configurations, never baseline changes. Acceptance for cutover: v2 ≥ v1 on
+01/02 at equal-or-lower cost; v2 > v1 on 03 (else bundles don't ship as a
+default mode).
 
-// FR-8: model choice and lane are per-request configuration with per-role defaults.
-export const ModelAssignmentSchema = z.object({
-  model: z.string().optional(), // overrides the per-role default (default: deepseek-v4-flash)
-  lane: z.enum(["interactive", "flex", "batch"]).optional(), // unsupported lanes degrade to interactive
-});
+## 6. Milestones
 
-// Per-role routing defaults — single cheap model everywhere by default (§3.1).
-export const ModelRoutingDefaults = {
-  planner: { model: "deepseek-v4-flash" },
-  worker: { model: "deepseek-v4-flash" },
-  reviewer: { model: "deepseek-v4-flash" },
-} as const;
+Reordered against the stated goal (one-shot large engineering tasks): the
+hard part — routing, modes, grounding measurement — comes before polish.
 
-export const HandoffBundleSchema = z.object({
-  taskId: z.string(),
-  precedingSessionId: z.string(),
-  uncommittedDiffSummary: z.string().max(60000),
-  filesTouched: z.array(z.string()),
-  verificationFailures: z.array(z.object({
-    command: z.string(),
-    reason: z.string().optional(),   // semantic outcome, matches VerificationResult.reason
-    stderrTail: z.string(),
-  })),
-  attemptNumber: z.number().int().min(1),
-});
-
-export const TaskReceiptSchema = z.object({
-  taskId: z.string(),
-  verdict: z.enum(["ship", "escalate", "failed"]),
-  filesChanged: z.number(),
-  commitIds: z.array(z.string()),
-  timestamp: z.string(),
-});
-```
-
-## **Appendix C: Ledger Schema (SQLite)**
-
-```sql
-CREATE TABLE tasks (
-    id TEXT PRIMARY KEY,
-    status TEXT NOT NULL CHECK (status IN (
-        'queued', 'planning', 'executing', 'verifying',
-        'reviewing',              -- optional on-demand review (Appendix E.1)
-        'completed', 'failed',
-        'escalated'               -- human escalation rung of the merge ladder (§3.5)
-    )),
-    goal TEXT NOT NULL,
-    parent_branch TEXT,
-    retry_count INTEGER NOT NULL DEFAULT 0,
-    max_retries INTEGER NOT NULL DEFAULT 2,
-    last_heartbeat_at DATETIME,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE micro_sessions (
-    id TEXT PRIMARY KEY,
-    task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
-    worker_role TEXT NOT NULL CHECK (worker_role IN ('planner', 'worker', 'reviewer')),
-    status TEXT NOT NULL CHECK (status IN ('active', 'yielded', 'exhausted', 'crashed')),
-    pid INTEGER,
-    turn_count INTEGER DEFAULT 0,
-    max_turns INTEGER NOT NULL,
-    yield_payload JSON,
-    last_heartbeat_at DATETIME,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE workspaces (
-    task_id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
-    host_path TEXT NOT NULL,
-    container_path TEXT,
-    driver_name TEXT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'active'
-        CHECK (status IN ('provisioning', 'active', 'merging', 'cleaning_up', 'released', 'orphaned'))
-);
-```
-
-## **Appendix D: Alternatives Considered**
-
-| Approach | Mechanics | Reasons for Rejection |
+| Phase | Scope | Exit criterion |
 | :---- | :---- | :---- |
-| **In-Process Extension (pi-task-v1)** | pi-task runs inside Pi via extension hooks, communicating with workers over JSON-RPC. | Inverted ownership; tool calls block the main session loop; network drops crash active background workers. |
-| **Big Bang Rewrite** | Tear down pi-task-v1 completely before writing v2. | Destroys the active development setup; removes the primary agent harness used to build the new system. |
-| **Monolithic Server Container** | Install all languages, SDKs, and build tools into one massive host container. | Image size explodes; system library version conflicts arise across target repos. |
-| **Hardcoded jj Workspaces** | Bake jj workspace commands directly into core engine logic. | Fails without jj installed; breaks Git-only workflows. |
-| **Pure Subprocess Daemon** | Main Pi session calls external CLI subprocesses over OS processes. | Higher launch latency; complex fd piping; prone to process leakage on aborts. |
+| M0 | FR-9 engineering bar: typecheck gate, real-path smoke tests, bench harness repaired + extended with suite 03 | gate red today, green at M0 exit |
+| M1 | Core daemon: ledger + boot reconciliation, in-process SDK sessions, v1 watchdog/gate/artifact port, route function skeleton | v1-equivalent single-worker runs through the daemon |
+| M2 | Workspaces & merge: JujutsuWorkspaceDriver (v1 ladder verbatim), EnvironmentDrivers (host, mise; docker later), parallel combine | v1-equivalent parallel runs; suite 01/02 parity |
+| M3 | Context modes: prewalk (port) → bundle fast path + miss-path telemetry → fork + prune profiles; COR accounting in manifests | suite 03 run across all three modes with numbers |
+| M4 | Plugin kernel: TaskGateway event vocabulary, TaskPlugin contract, first plugins extracted from core | core shrinks; plugins carry hermetic tests |
+| M5 | Workflow modes: /plan (planner-only + human gate), /build DAG executor, /survey over the gateway; cutover per the migration section | Phase C parity check |
 
-## **Appendix E: Deferred Mechanisms & Future Work**
+Migration stays four-phase as proposed in v3.1 (inventory → shadow/dry-run →
+flip default → delete v1 RPC), with the addition that M0's smoke tests are
+what Phase B's parity check runs.
 
-> **E.1 On-Demand Adversarial Review.** Forked, context-inherited review session with implementation reasoning pruned out. Not an always-on gate in v2; enable per-task for complex or high-risk changes, or invoke via `/v2 review`. Uses the existing `reviewer` session role.
+## 7. Non-goals (this document)
 
-> **E.2 Hash-Keyed Context Injection Cache.** Successor to v1's annotated code map: persistent per-file AST annotations keyed by content hash, regenerated only when the hash changes, injected into both conversational and worker sessions for faster ramp-up and fewer duplicate reads. v1's version underperformed in practice; retry with finer-grained invalidation and stricter per-file budgets.
-
-> **E.3 Cross-Task Episodic Memory.** Persist verified insights per repository (build quirks, test layouts, project gotchas) across independent tasks, with circuit-breaker re-testing to expire stale entries.
-
-> **E.4 Multi-Tenant SaaS Isolation.** Wrap worker execution in microVM sandboxes (Firecracker / Bubblewrap) for untrusted or multi-tenant workloads. *Blocked only by the §2.5 constraints, not by any core design decision.*
-
-> **E.5 Automated Cost-Aware Model Selection.** Route sub-tasks dynamically based on live API latency, context-window pricing, and task-difficulty scoring. *Supersedes manual per-role upgrades; builds on the FR-8 lane abstraction.*
+Multi-tenancy, remote transports, billing, episodic memory design, and the
+gateway integration catalog live in the [future doc](pi-task-v2-future.md).
+Monetization remains out of scope.
