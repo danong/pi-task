@@ -44,7 +44,7 @@ All subscribe via TaskGateway — no core changes:
 > untrusted workloads. Blocked only by the constraints above, not core design.
 
 > **E.5 Automated cost-aware model selection.** Dynamic routing on live
-> latency/pricing/difficulty scoring. Builds on FR-8 lanes + the
+> latency/pricing/difficulty scoring. Builds on contract FR-10 lanes + the
 > routing_feedback table; supersedes manual per-role upgrades once measured.
 
 ## Explicit non-goals

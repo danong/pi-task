@@ -65,57 +65,95 @@ changes.
 
 ### 3.1 Functional
 
-> **FR-1 (Standalone orchestrator).** A persistent Node.js daemon owns task
-> state; conversational clients attach and detach freely. Workers run as
-> in-memory SDK sessions inside the daemon — no nested RPC. Heartbeats apply
-> only to real child processes (detached jobs); in-process sessions have no
-> pid and need none.
+Requirements are ordered by layer: substrate (FR-1), kernel seams (FR-2–5),
+safety (FR-6–8), economics (FR-9–10), and process (FR-11). Each states its
+intent first; named implementations are examples, never the requirement.
+
+> **FR-1 (Standalone orchestrator).** *Intent: task survival is independent
+> of any client.* A persistent Node.js daemon owns all task state;
+> conversational clients attach and detach freely. Workers run as in-memory
+> SDK sessions inside the daemon — no nested RPC. Heartbeats apply only to
+> real child processes (detached jobs); in-process sessions have no pid and
+> need none.
 >
-> **FR-2 (Typed boundary artifacts).** Exactly five artifact types cross a
-> context-ownership boundary: Spec, ExecutionBundle, Yield, HandoffBundle,
-> TaskReceipt ([subsystems](pi-task-v2-subsystems.md) §2). Transcripts never
-> leave the session that paid for them except through an explicit fork with
-> a prune profile. Fields that would break deterministic serialization
-> (timestamps, ids) are ledger-only and never serialize into prompts.
->
-> **FR-3 (Bounded attempts).** Worker bounds are wall-clock + watchdogs plus
-> a PER-ATTEMPT turn budget, config-driven, set above the cheap-model floor
-> (§6 — budgets below what cheap models actually spend cause
-> exhaustion→retry loops that cost more than they save). Exhaustion routes
-> to a bounded HandoffBundle retry, not task failure.
->
-> **FR-4 (Workspaces & merge).** Isolated jj workspaces per parallel worker;
-> the atomic combine + deterministic union ladder + post-merge consistency
-> gate port unchanged as the first WorkspaceDriver implementation. AST-aware
-> merging is rejected ([subsystems](pi-task-v2-subsystems.md) §5) — textual
-> 3-way + union resolution + LLM residual micro-sessions is what works.
->
-> **FR-5 (Hard verification).** Completion gated by real bash exit codes
-> executed post-merge; per-command timeouts; grace when a wall expires
-> mid-verification. The gate never trusts claims.
->
-> **FR-6 (Operational hardening).** Watchdogs (idle settle, no progress,
-> wall clock, per-tool timeout, verification grace), failure diagnostics
-> (cause + last action + stderr tail), and failure artifacts with scripted
-> recovery guides are engine invariants.
->
-> **FR-7 (Pluggable seams).** Five kernel interfaces — WorkspaceDriver,
-> EnvironmentDriver, ContextCompressor, VerificationDriver, TaskPlugin —
-> behind which all environment-specific behavior lives. The plugin contract
-> and gateway event vocabulary are specified
+> **FR-2 (Pluggable seams).** *Intent: no environment assumption lives in
+> core.* Five kernel interfaces — WorkspaceDriver, EnvironmentDriver,
+> ContextCompressor, VerificationDriver, TaskPlugin — isolate everything
+> environment-specific behind config-selected implementations. The plugin
+> contract and gateway event vocabulary are specified
 > ([subsystems](pi-task-v2-subsystems.md) §3) BEFORE any plugin code.
 >
-> **FR-8 (Model routing & lanes).** Model assignment is per-role config;
+> **FR-3 (Typed boundary artifacts).** *Intent: context crosses boundaries
+> only as small typed payloads, never implicitly.* Exactly five artifact
+> types may cross a context-ownership boundary: Spec, ExecutionBundle,
+> Yield, HandoffBundle, TaskReceipt ([subsystems](pi-task-v2-subsystems.md)
+> §2). Transcripts never leave the session that paid for them except through
+> an explicit fork with a prune profile. Fields that would break
+> deterministic serialization (timestamps, ids) are ledger-only and never
+> serialize into prompts.
+>
+> **FR-4 (Workspace isolation & deterministic merge).** *Intent: parallel
+> workers can never corrupt each other, and combined work is provably
+> complete.* Each parallel worker gets an isolated workspace; after all
+> yield, changes combine through a DETERMINISTIC MERGE LADDER — textual
+> three-way merge, union resolution of non-semantic overlaps, LLM
+> micro-session for residuals, human escalation last — followed by a
+> CONSISTENCY GATE proving every worker's changes landed before any cleanup.
+> Failed merges PRESERVE the workspaces and emit recovery artifacts. The
+> first implementation ports the current engine's jj-based ladder unchanged;
+> git-worktree and plain-directory drivers follow. AST-aware merging is
+> rejected ([subsystems](pi-task-v2-subsystems.md) §5).
+>
+> **FR-5 (Environment execution & runtime isolation).** *Intent: the daemon
+> runs any project without hosting its toolchain — zero host pollution.*
+> All commands execute through an EnvironmentDriver inside the project's own
+> runtime. Implementation ladder, cheapest first: bare host (fallback) →
+> mise-managed host (the project's pinned tool versions without
+> containers) → ephemeral container (recommended where available: the repo's
+> devcontainer image or an ephemeral mount holding the workspace volume).
+> Capability detection selects the best available; the daemon process itself
+> requires no target-project compilers, SDKs, or build tools in any case.
+>
+> **FR-6 (Hard verification gates).** *Intent: completion is a fact, not a
+> claim.* Tasks complete only when their spec's bash commands exit zero,
+> executed on the merged tree post-merge; per-command timeouts bound hung
+> suites; a wall-clock expiry mid-verification grants bounded grace so work
+> is never left unverified. The gate never trusts model assertions.
+>
+> **FR-7 (Bounded attempts).** *Intent: runaway agents fail fast and
+> cheaply.* Worker bounds are wall-clock plus watchdogs plus a PER-ATTEMPT
+> turn budget, config-driven, set above the cheap-model floor (§6 — budgets
+> below what cheap models actually spend cause exhaustion→retry loops that
+> cost more than they save). Exhaustion routes to a bounded HandoffBundle
+> retry, not task failure.
+>
+> **FR-8 (Operational hardening).** *Intent: every failure is diagnosable
+> and recoverable without archaeology.* Watchdogs (idle settle, no progress,
+> wall clock, per-tool timeout, verification grace), failure diagnostics
+> (cause + last action + stderr tail), and failure artifacts with scripted
+> recovery guides are engine invariants, ported unchanged.
+>
+> **FR-9 (Layered worker grounding).** *Intent: workers start informed but
+> are never constrained.* Grounding arrives in additive layers — engine
+> prefix, spec with orientation notes, repo-map slice, optional
+> ExecutionBundle, pruned fork content (§5.2) — while the live exploration
+> tools are NEVER removed. Every layer saves turns when right and degrades
+> to ordinary exploration when wrong; misses feed routing telemetry.
+>
+> **FR-10 (Model routing & lanes).** *Intent: spend policy is
+> configuration, not conversation.* Model assignment is per-role config;
 > roles are structural (session shapes, prompts, bounds) while the model per
 > role is configuration — single-model operation changes no interfaces.
-> Lanes: interactive (default), flex, batch; unsupported lanes degrade.
+> Lanes: interactive (default), flex, batch; unsupported lanes degrade to
+> interactive.
 >
-> **FR-9 (Engineering bar).** CI carries a typecheck gate, and every kernel
-> seam has a smoke test exercising its REAL path (an actual end-to-end
-> invocation, not just exported pure functions). Rationale: TypeScript
-> runners that strip types without checking let undeclared identifiers ship
-> green, and pure-function tests don't cover integration drift — the two
-> failure classes that motivated this requirement.
+> **FR-11 (Engineering bar).** *Intent: the system must be safe to extend by
+> cheap labor, human or model.* CI carries a typecheck gate, and every
+> kernel seam has a smoke test exercising its REAL path (an actual
+> end-to-end invocation, not just exported pure functions). Rationale:
+> TypeScript runners that strip types without checking let undeclared
+> identifiers ship green, and pure-function tests don't cover integration
+> drift — the two failure classes that motivated this requirement.
 
 ### 3.2 Non-functional
 
@@ -175,6 +213,10 @@ Model economics follow a simple rule: the token-hungry tool loop runs on a
 cheap configured workhorse; stronger models are bought only for thin slices
 (exploration during prewalk, bundle generation, reviews) and only when the
 active budget tier pays for them.
+
+Execution environments follow FR-5's ladder — commands always run inside
+the project's own runtime (bare host fallback → mise-managed → ephemeral
+container where available), never on the daemon's assumptions.
 
 ## 5. Context ownership & lifecycle
 

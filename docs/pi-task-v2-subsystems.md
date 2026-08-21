@@ -8,7 +8,7 @@ contract references it.
 ## 1. Kernel interfaces
 
 Five seams. Each is one file, one interface, hermetically testable in
-isolation, no shared mutable state (the FR-7/FR-9 buildability rule).
+isolation, no shared mutable state (the FR-2/FR-11 buildability rule).
 
 ```typescript
 // 1. Workspace isolation — v1's jj ladder ports behind this interface.
@@ -40,8 +40,12 @@ export interface EnvironmentDriver {
   resolvePath(context: WorkspaceContext): Promise<PathResolution>;
   exec(command: string, args: string[], options: ExecOptions): Promise<ExecResult>;
 }
-// HostMiseEnvironmentDriver (mise exec --), DirectHostEnvironmentDriver,
-// DockerEnvironmentDriver later. NFR: the daemon itself stays toolchain-free.
+// Environment ladder (contract FR-5): bare host (fallback) →
+// HostMiseEnvironmentDriver (mise exec --, project-pinned tool versions
+// without containers) → DockerEnvironmentDriver (recommended where
+// available: devcontainer image or ephemeral mount; WorkspaceContext
+// .containerPath carries the in-container path). Capability detection
+// selects the best available; the daemon itself stays toolchain-free.
 
 // 3. Context compression
 export interface ContextCompressor {
@@ -64,7 +68,7 @@ export interface TaskPlugin { /* §3 */ }
 
 ## 2. Payload schemas (Zod)
 
-The five boundary artifacts (FR-2). Deterministic serialization rule: fields
+The five boundary artifacts (contract FR-3). Deterministic serialization rule: fields
 that vary per attempt (timestamps, session ids, run ids) are ledger-only and
 never enter prompt serialization.
 
@@ -97,7 +101,7 @@ export const HandoffBundleSchema = z.object({
   attemptNumber: z.number().int().min(1),
 });
 // precedingSessionId removed from the serialized schema — ledger-only field
-// (deterministic-prefix rule, contract FR-2).
+// (deterministic-prefix rule, contract NFR-4).
 
 export const YieldSchema = z.object({
   files_changed: z.array(z.string()),
@@ -128,7 +132,7 @@ The buildability contract — specified BEFORE any plugin code exists. A plugin:
 
 1. **One file, one default export implementing `TaskPlugin`.** Loaded by
    path from config (`[plugins]` in task.toml); no discovery magic.
-2. **One hermetic test** exercising its real path (FR-9) — a plugin whose
+2. **One hermetic test** exercising its real path (contract FR-11) — a plugin whose
    test only covers pure helpers does not pass review.
 3. **No shared mutable state**: all interaction with the engine goes through
    the gateway events and the typed transform hooks below.
@@ -210,7 +214,7 @@ prompt-bound payloads.)
 | :---- | :---- |
 | **AST-aware 3-way merge** | Research-grade problem replacing a battle-tested ladder that took many commits to harden (see jj history: divergent changes, stale squash targets, union-tool aborts). Textual 3-way + union + LLM residual micro-session is what actually works. Revisit only after suite 03 shows merge failures dominating. |
 | **Persistent planner session/role** | Would own the system's deepest context and be the hardest thing to prune; its output (a bundle) is exactly what a thin one-shot function or an in-session prewalk phase produces without the standing state. |
-| **Hard 3–5 turn budgets** | Below the cheap-model floor (cheap models spend 4–10 turns even on trivial specs — reproducible via the bench harness). Causes systematic exhaustion→retry loops costing more than they save. Superseded by FR-3 per-attempt budgets. |
+| **Hard 3–5 turn budgets** | Below the cheap-model floor (cheap models spend 4–10 turns even on trivial specs — reproducible via the bench harness). Causes systematic exhaustion→retry loops costing more than they save. Superseded by contract FR-7 per-attempt budgets. |
 | **Big-bang rewrite** | Destroys the active harness used to build v2. Four-phase migration instead. |
 | **Monolithic server container** | Image bloat + cross-repo toolchain conflicts; EnvironmentDrivers exist for this. |
-| **In-process extension forever (v1)** | Inverted ownership; fixed by the daemon (FR-1) while keeping the extension as the first client. |
+| **In-process extension forever (v1)** | Inverted ownership; fixed by the daemon (contract FR-1) while keeping the extension as the first client. |
