@@ -42,8 +42,8 @@ Everything below is hermetic (zero LLM, zero network); run in the repo root.
     tsx-style runners strip types without checking them, so this is the
     gate that actually catches undeclared identifiers in this subtree.
 - **Test** — `mise run test`
-  - The full hermetic suite (v1 + core-v2). It runs `run-all.ts` for the
-    core package (the hardcoded count lives in `run-all.ts`; expect exactly
+  - The full hermetic suite: v1's suites first, then core-v2 via
+    `run-all.ts` (the suite list lives in `run-all.ts`; expect exactly
     the suites it lists there).
 - **Core suite directly** — `npx tsx packages/core-v2/test/run-all.ts`
   - The aggregate runs every module's exported `runTests()`; each module
@@ -70,5 +70,5 @@ of the hermetic `mise run test` suite.
   spec in `extensions/task/bench-regression.ts` (`BENCH_SPECS` then
   `GROUNDING_SPECS`). There is a "default" fallback entry for custom tiers
   plus a RECORDED `bench-good` entry per grounding spec, transcribed from a
-  real run. Re-measure with `--tier bench-good --metrics-dir /tmp/...
+  real run. Re-measure with `--tier bench-good --metrics-dir <temp-dir>`
   and refresh the RECORDED entries when the numbers move.

@@ -388,8 +388,9 @@ from the single anchor file index.ts at the repo root.
 `,
 		fixture: { seed: 42, files: 210, locPerFile: 480 },
 		baseline: {
-			// RECORDED baseline — anchoring tier bench-good (seed 42) from a real
-			// run; the "default" fallback below stays intact for custom tiers.
+			// RECORDED baseline — anchoring spec, tier bench-good (seed 42) from a
+			// real run. "default" mirrors the bench-good measurement until other
+			// tiers are measured (custom tiers fall back here by design).
 			default: { durationMs: 33_207, costUsd: 0 },
 			"bench-good": { durationMs: 33_207, costUsd: 0 },
 		},
@@ -415,8 +416,9 @@ repo root is the front door but is NOT part of the count.
 `,
 		fixture: { seed: 1337, files: 210, locPerFile: 480 },
 		baseline: {
-			// RECORDED baseline — import-scanning tier bench-good (seed 1337) from
-			// a real run; the "default" fallback below stays intact for custom tiers.
+			// RECORDED baseline — import-scanning spec, tier bench-good (seed
+			// 1337) from a real run. "default" mirrors the bench-good measurement
+			// until other tiers are measured (custom tiers fall back by design).
 			default: { durationMs: 53_078, costUsd: 0 },
 			"bench-good": { durationMs: 53_078, costUsd: 0 },
 		},
