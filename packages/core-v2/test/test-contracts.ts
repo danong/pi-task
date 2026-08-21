@@ -50,22 +50,20 @@ import type {
 
 type Expect<T extends true> = T;
 type IsAssignable<A, B> = [A] extends [B] ? true : false;
-type IsDisjoint<A, B> = [A & B] extends [never] ? true : false;
 
-// Every surface event is an object with a discriminant `type` literal.
-type EventsAreDiscriminated = SurfaceEvent extends { type: string } ? true : false;
-
-// The stream is a SINGLE union, one event surface regardless of level; the
-// level relationship is a QoS filter over the SAME stream (delta ⊳ digest ⊳
-// receipts). This identity is what the fake surface's filtering encodes in
-// behaviour below.
-type EventsShareOneUnion<A extends SurfaceEvent, B extends SurfaceEvent> = [A] extends [B] ? true : false;
-type ReceiptIsASurfaceEvent = IsAssignable<{ type: "Receipt"; receipt: TaskReceipt }, SurfaceEvent>;
-type DeltaTurndeltaIsASurfaceEvent = IsAssignable<{ type: "TurnDelta"; text: string }, SurfaceEvent>;
-type DigestToolActivity = IsAssignable<{ type: "ToolActivity"; tool: string; argsPreview: string; phase: "start" | "done" }, SurfaceEvent>;
-
-// Typed-position probes (compile-time only; the runtime fakes below are the
-// behavioural half).
+// The stream is a SINGLE union; the subscription level is a QoS filter over
+// the SAME stream (delta ⊳ digest ⊳ receipts) — the runtime fakes below are
+// the behavioural half of that identity.
+//
+// Every probe is a VALUE declaration (not a bare type alias): tsc skips
+// unreferenced local type aliases, so compile-time assertions must be
+// anchored to a checked const to enforce anything.
+const _eventsAreDiscriminated: Expect<SurfaceEvent extends { type: string } ? true : false> = true;
+const _receiptIsASurfaceEvent: Expect<IsAssignable<{ type: "Receipt"; receipt: TaskReceipt }, SurfaceEvent>> = true;
+const _turnDeltaIsASurfaceEvent: Expect<IsAssignable<{ type: "TurnDelta"; text: string }, SurfaceEvent>> = true;
+const _toolActivityIsASurfaceEvent: Expect<
+	IsAssignable<{ type: "ToolActivity"; tool: string; argsPreview: string; phase: "start" | "done" }, SurfaceEvent>
+> = true;
 
 // ─── Family-level relation helpers (used by the runtime fake) ────────
 
@@ -133,8 +131,10 @@ export async function runTests(): Promise<void> {
 		check(JSON.parse(JSON.stringify(parsedBundle)).taskId === "t1", "ExecutionBundle survives JSON");
 
 		const handoff = HandoffBundleSchema.parse(makeHandoff("sess-1"));
-		check(handoff.attemptNumber === 2 && handoff.verificationFailures.length === 2, "HandoffBundle round-trip");
+		check(handoff.verificationFailures.length === 2, "HandoffBundle round-trip");
 		check("precedingSessionId" in handoff === false, "ledger-only field stripped from the schema shape");
+		check("attemptNumber" in handoff === false,
+			"attempt-varying field stripped from the prompt-bound payload (deterministic-prefix rule)");
 
 		const yieldParsed = YieldSchema.parse({
 			files_changed: ["a.ts"],
@@ -199,9 +199,7 @@ export async function runTests(): Promise<void> {
 			taskId: "t",
 			uncommittedDiffSummary: "d",
 			filesTouched: [],
-			verificationFailures: [],
-			attemptNumber: 0,
-		})), "attemptNumber 0 rejected");
+		})), "handoff missing verificationFailures rejected");
 
 		check(!ok(() => TaskReceiptSchema.parse({
 			taskId: "t",

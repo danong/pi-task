@@ -25,6 +25,9 @@ import {
 	projectForSpec,
 	renderBenchPlan,
 	renderBenchReport,
+	buildGroundingFixture,
+	materializeGroundingFixture,
+	GROUNDING_SPECS,
 	type BenchComparisonRow,
 	type BenchPlan,
 	type BenchSpec,
@@ -124,6 +127,29 @@ export async function runTests(): Promise<void> {
 				check(b.costUsd >= 0, `[${spec.id}] baseline "${tier}" cost must be >= 0`);
 			}
 		}
+	}
+
+	// ─── Suite-03 grounding specs: parseable, deterministic fixture ───
+	{
+		check(GROUNDING_SPECS.length >= 2, `expected >= 2 grounding specs, got ${GROUNDING_SPECS.length}`);
+		const gids = new Set(GROUNDING_SPECS.map((s) => s.id));
+		check(gids.size === GROUNDING_SPECS.length, "grounding spec ids must be unique");
+		for (const spec of GROUNDING_SPECS) {
+			const parsed = parseSpec(spec.specMarkdown);
+			check(parsed.requirements.length >= 1, `[${spec.id}] should have >= 1 requirement`);
+			check(parsed.verification.length >= 1, `[${spec.id}] should have >= 1 verification command`);
+			check(spec.baseline.default !== undefined, `[${spec.id}] baseline must define "default"`);
+		}
+
+		// Fixture determinism (M0 invariant): same seed → identical bytes;
+		// and the stated magnitudes hold (≥200 files, ≥100k LOC).
+		const body = GROUNDING_SPECS[0].fixture;
+		const a = buildGroundingFixture(body);
+		const b = buildGroundingFixture(body);
+		check(JSON.stringify(a) === JSON.stringify(b), "fixture is byte-deterministic per seed");
+		check(a.length >= 200, `fixture should span >= 200 files, got ${a.length}`);
+		const loc = a.reduce((acc, f) => acc + f.content.split("\n").length - 1, 0);
+		check(loc >= 100_000, `fixture should be >= 100k LOC, got ${loc}`);
 	}
 
 	// ─── baselineFor: known tier → its entry; unknown tier → default ───

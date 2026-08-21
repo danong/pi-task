@@ -588,7 +588,10 @@ export function compareToBaselines(opts: {
 			const avgCostUsd = runs > 0 ? tierRows.reduce((a, r) => a + r.costUsd, 0) / runs : 0;
 			const verifyPassRate = runs > 0 ? tierRows.filter((r) => r.verifyPassed).length / runs : 0;
 			const durationRatio = runs > 0 ? avgDurationMs / run.expectedDurationMs : 0;
-			const costRatio = runs > 0 ? avgCostUsd / run.expectedCostUsd : 0;
+			// A non-positive expected cost (free-model runs, un-measured specs)
+			// makes the ratio undefined/Infinite — cost is then NON-COMPARABLE,
+			// never a regression. Ratio 0 = "no data", matching duration above.
+			const costRatio = runs > 0 && run.expectedCostUsd > 0 ? avgCostUsd / run.expectedCostUsd : 0;
 			const regressions: string[] = [];
 			if (runs > 0 && durationRatio > REGRESSION_DURATION_FACTOR) {
 				regressions.push(`duration ${durationRatio.toFixed(2)}x baseline`);

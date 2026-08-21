@@ -59,17 +59,19 @@ export const VerificationFailureSchema = z.object({
 export type VerificationFailure = z.infer<typeof VerificationFailureSchema>;
 
 /**
- * Retry handoff (FR-7). payload timeout/capFixOutput semantics apply per
- * failure: uncommittedDiffSummary is capped, tails are capped. The
- * attempt-carrying compensation fields are ledger-only and removed from
- * the serialized shape (deterministic-prefix / NFR-4 rule).
+ * Retry handoff (FR-7). Payload timeout/capFixOutput semantics apply per
+ * failure: uncommittedDiffSummary is capped, tails are capped.
+ *
+ * DETERMINISTIC-PREFIX RULE: nothing in this schema varies per attempt —
+ * attemptNumber and precedingSessionId ride the LEDGER ENVELOPE
+ * (LedgerEnvelopeFields), never the prompt-bound payload, so a retried
+ * handoff appends byte-identical content to an identical prefix (NFR-4).
  */
 export const HandoffBundleSchema = z.object({
 	taskId: z.string(),
 	uncommittedDiffSummary: z.string().max(60_000),
 	filesTouched: z.array(z.string()),
 	verificationFailures: z.array(VerificationFailureSchema),
-	attemptNumber: z.number().int().min(1),
 });
 export type HandoffBundle = z.infer<typeof HandoffBundleSchema>;
 
@@ -107,6 +109,9 @@ export interface LedgerEnvelopeFields {
 	sessionId?: string;
 	runId?: string;
 	precedingSessionId?: string;
+	/** Which retry attempt produced this record — ledger-only; never
+	 *  prompt-bound (varies per attempt, deterministic-prefix rule). */
+	attemptNumber?: number;
 }
 
 /** A prompt-bound payload together with its ledger-only envelope. */

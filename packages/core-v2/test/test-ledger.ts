@@ -135,13 +135,13 @@ export async function runTests(): Promise<void> {
 			const badRole = expectThrow(() => store.insertMicroSession({ id: "s3", taskId: "t2", role: "janitor" as never }));
 			check(badRole.includes("CHECK"), "invalid session role rejected");
 
-			const badSession = expectThrow(() => store.insertMicroSession({ id: "s4", taskId: "t2", role: "worker", turnCount: 1 }));
+			// Valid rows — must insert WITHOUT throwing (positive probes; the
+			// invalid-status probes below then have rows to act on).
+			store.insertMicroSession({ id: "s4", taskId: "t2", role: "worker", turnCount: 1 });
 			const badSessionStatus = expectThrow(() => store.setSessionStatus("s4", "done" as never));
 			check(badSessionStatus.includes("CHECK"), "invalid session status rejected");
 
-			const badWorkspace = expectThrow(() =>
-				store.insertWorkspace({ id: "w3", taskId: "t2", driver: "d", hostPath: "h", branchName: "b" }),
-			);
+			store.insertWorkspace({ id: "w3", taskId: "t2", driver: "d", hostPath: "h", branchName: "b" });
 			const badWsStatus = expectThrow(() => store.setWorkspaceStatus("w3", "not-a-status" as never));
 			check(badWsStatus.includes("CHECK"), "invalid workspace status rejected");
 
