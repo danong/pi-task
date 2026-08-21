@@ -30,7 +30,7 @@ import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import {
 	CHECKLIST_EXTENSION_PATH,
-	DEFAULT_WORKER_SYSTEM_PROMPT,
+	buildWorkerSystemPrompt,
 	spawnWorkerSession,
 	spawnWorkerSessionResilient,
 	type WorkerFailureDiagnostics,
@@ -45,6 +45,7 @@ import {
 import { attachChecklistRelay, type ChecklistProgress } from "./checklist-relay.ts";
 import { resolveSandbox, type ResolvedSandbox } from "./sandbox.ts";
 import {
+	DEFAULT_PREWALK_MIN_REQUIREMENTS,
 	DEFAULT_TASK_CONFIG,
 	DEFAULT_TASK_SHAPES,
 	channelWatchdogWindows,
@@ -561,6 +562,10 @@ export interface ExecuteTaskOptions {
 	shape?: TaskShape;
 	/** Max fix workers the loop may dispatch (when review enabled). Default: 2. */
 	maxFixIterations?: number;
+	/** Tasks with FEWER requirements than this skip the prewalk (start
+	 *  straight on the execute model). Default: config
+	 *  `[defaults] prewalk_min_requirements` (3). */
+	prewalkMinRequirements?: number;
 	/** Batch lane config ([batch] section, M2). Omitted → loadTaskConfig's
 	 *  [batch] (the shipped defaults when no task.toml). Only consulted on
 	 *  the batch channel (shape.channel === "batch"). */
@@ -572,6 +577,10 @@ export interface ExecuteTaskOptions {
 	/** Turn budget for the main worker (the tier's turn_budget — Phase 3):
 	 *  convergence nudge at 70%, typed abort at 100%. Unset → unbounded. */
 	turnBudget?: number;
+	/** Whether the worker tracks requirements via the checklist tool
+	 *  (the tier's checklist config). false → the checklist extension is
+	 *  not loaded and the prompt stops mandating it. Default: true. */
+	checklist?: boolean;
 	/** OpenRouter endpoint slugs for provider.only (the tier's provider_only
 	 *  config — the flex pin). Threaded with serviceTier. */
 	providerOnly?: string[];
@@ -1089,24 +1098,40 @@ export function decideFixLoop(opts: {
 	return "fix";
 }
 
+/** Default cap on each verification failure's output embedded in the fix
+ *  prompt — a real suite's output can be multi-KB, and it is re-sent on
+ *  every fix iteration. Truncated cell: first N lines + a pointer. */
+const FIX_PROMPT_OUTPUT_CAP_LINES = 40;
+
+/** Pure: cap a verification failure's output for the fix prompt (first
+ *  {@link FIX_PROMPT_OUTPUT_CAP_LINES} lines + a pointer when truncated).
+ *  Hermetically tested. */
+export function capFixOutput(output: string, capLines: number = FIX_PROMPT_OUTPUT_CAP_LINES): string {
+	const lines = output.split("\n");
+	if (lines.length <= capLines) return output;
+	return lines.slice(0, capLines).join("\n") + `\n… (${lines.length - capLines} more lines truncated — full output in the manifest)`;
+}
+
 /**
  * Build the fix-worker prompt from the verification failures + P0/P1
  * findings. Pure — tested hermetically. The fix worker makes the changes and
- * yields; the orchestrator then re-verifies and re-reviews.
+ * yields; the orchestrator then re-verifies and re-reviews. Failure outputs
+ * are capped (see {@link capFixOutput}) so a verbose suite does not blow the
+ * prompt on every fix iteration.
  */
 export function buildFixPrompt(opts: {
 	specMarkdown: string;
 	failures: VerificationCommandResult[];
 	findings: Finding[];
 }): string {
-	const parts = [
+		const parts = [
 		"You are fixing issues found during review of a completed task. Address the " +
 			"findings below and make the verification pass, then call yield().",
 		`## Spec\n${opts.specMarkdown}`,
 	];
 	if (opts.failures.length > 0) {
 		const failText = opts.failures
-			.map((f) => `### \`${f.command}\` (exit ${f.exitCode})\n\`\`\`\n${f.output}\n\`\`\``)
+			.map((f) => `### \`${f.command}\` (exit ${f.exitCode})\n\`\`\`\n${capFixOutput(f.output)}\n\`\`\``)
 			.join("\n\n");
 		parts.push(`## Verification failures\n${failText}`);
 	}
@@ -1492,7 +1517,8 @@ export async function executeTask(opts: ExecuteTaskOptions): Promise<TaskResult>
 	const usePrewalk =
 		shape.prewalk &&
 		opts.prewalkModel !== undefined &&
-		isPrewalkActive(opts.prewalkModel, executeModel);
+		isPrewalkActive(opts.prewalkModel, executeModel) &&
+		(spec.requirements.length >= (opts.prewalkMinRequirements ?? DEFAULT_PREWALK_MIN_REQUIREMENTS));
 	const reviewModel =
 		shape.reviewModel === "prewalk"
 			? (opts.prewalkModel ?? opts.reviewModel ?? executeModel)
@@ -1614,6 +1640,7 @@ export async function executeTask(opts: ExecuteTaskOptions): Promise<TaskResult>
 		return executeSingle(cwd, {
 			taskPrompt: promptFor(specMarkdown),
 			usePrewalk,
+			checklist: opts.checklist,
 			prewalkModel: opts.prewalkModel,
 			executeModel,
 			systemPrompt,
@@ -1748,9 +1775,9 @@ export async function executeTask(opts: ExecuteTaskOptions): Promise<TaskResult>
 			serviceTierExcludes: opts.serviceTier || opts.providerOnly?.length ? [executeModel] : undefined,
 			providerOnly: opts.providerOnly,
 			task: promptFor(workerTasks[i]),
-			systemPrompt: systemPrompt ?? DEFAULT_WORKER_SYSTEM_PROMPT,
+			systemPrompt: systemPrompt ?? buildWorkerSystemPrompt(opts.checklist !== false),
 			extensions: [
-				CHECKLIST_EXTENSION_PATH,
+				...(opts.checklist !== false ? [CHECKLIST_EXTENSION_PATH] : []),
 				...(usePrewalk ? [PREWALK_EXTENSION_PATH] : []),
 			],
 			signal,
@@ -2570,6 +2597,8 @@ async function executeSingle(
 		usePrewalk: boolean;
 		prewalkModel?: string;
 		executeModel: string;
+		/** Whether the checklist tool is loaded (tier checklist config). */
+		checklist?: boolean;
 		systemPrompt?: string;
 		signal?: AbortSignal;
 		onSwap?: (info: SwapInfo) => void;
@@ -2617,6 +2646,13 @@ async function executeSingle(
 		runId, aiAuthorName, aiAuthorEmail,
 	} = opts;
 
+	// Checklist-per-tier: false → the checklist tool is not loaded and the
+	// prompt stops mandating it (saves the init + done-per-requirement
+	// turns on cheap tiers). Default true.
+	const useChecklist = opts.checklist !== false;
+	const workerSystemPrompt = systemPrompt ?? buildWorkerSystemPrompt(useChecklist);
+	const workerExtensions = [...(useChecklist ? [CHECKLIST_EXTENSION_PATH] : []), ...(usePrewalk ? [PREWALK_EXTENSION_PATH] : [])];
+
 	// Verification lifecycle locals: the pre-change baseline (dispatch-time
 	// dry run) + the accumulated spec-defect suspects (failures matching the
 	// baseline exactly — recorded in the result/manifest, never fix-looped).
@@ -2624,8 +2660,6 @@ async function executeSingle(
 	const suspectedSpecDefects: string[] = [];
 	let lastAdjudication: { upheld: string[]; rejected: VerificationDispute[] } = { upheld: [], rejected: [] };
 
-	const workerSystemPrompt = systemPrompt ?? DEFAULT_WORKER_SYSTEM_PROMPT;
-	const workerExtensions = [CHECKLIST_EXTENSION_PATH, ...(usePrewalk ? [PREWALK_EXTENSION_PATH] : [])];
 	const verifyTimeout = verificationTimeoutMs ?? DEFAULT_VERIFICATION_TIMEOUT_MS;
 
 	// The worker persists a session when the reviewer forks it (review) or when
@@ -3042,7 +3076,7 @@ async function executeSingle(
 				noProgressTimeoutMs: channelWatchdogWindows((shape ?? DEFAULT_TASK_SHAPES.code).channel).noProgressMs,
 				task: fixPrompt,
 				systemPrompt: workerSystemPrompt,
-				extensions: [CHECKLIST_EXTENSION_PATH],
+				extensions: useChecklist ? [CHECKLIST_EXTENSION_PATH] : [],
 				signal,
 				sandbox,
 				aiAuthorName,

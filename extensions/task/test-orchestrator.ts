@@ -17,6 +17,7 @@ import {
 	blockersOf,
 	isBlocker,
 	buildFixPrompt,
+	capFixOutput,
 	parseDiffStat,
 	classifyOverlapDiffs,
 	isFinalizationIncomplete,
@@ -244,6 +245,15 @@ function testFixLoop(errors: string[]): void {
 	check(!noFail.includes("Verification failures"), "no failures section when failures empty");
 	const noFind = buildFixPrompt({ specMarkdown: "s", failures: [], findings: [] });
 	check(!noFind.includes("Review findings"), "no findings section when findings empty");
+
+	// capFixOutput: long suite output is truncated for the fix prompt.
+	const verbose = Array.from({ length: 50 }, (_, i) => `line ${i}`).join("\n");
+	const capped = capFixOutput(verbose);
+	check(capped.includes("line 0") && capped.includes("more lines truncated"), "verbose output is capped with a pointer");
+	const short = capFixOutput("one line");
+	check(short === "one line" && !short.includes("truncated"), "short output is untouched");
+	const exact = Array.from({ length: 40 }, (_, i) => `l${i}`).join("\n");
+	check(capFixOutput(exact) === exact, "output at the cap is untouched");
 
 	console.log("✓ fix loop: decideFixLoop, blocker policy, buildFixPrompt");
 }

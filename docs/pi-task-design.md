@@ -400,6 +400,16 @@ review_model = "openrouter/~deepseek/deepseek-v4-flash-latest"
 review = true
 wall_timeout_ms = 2700000  # per-tier worker wall, 45 min
 
+# Additional cost levers (wave 1 of the cost-reduction plan —
+# docs/cost-reduction-plan.md):
+#   [defaults] prewalk_min_requirements = 3  # skip the prewalk for tasks
+#       with FEWER requirements than this (start straight on execute model)
+#   [budget.*] checklist = false              # loose the checklist ritual on
+#       cheap tiers (fewer turns; the manifest records checklist:false)
+#   reasoning.exclude is engine-set (always on for workers/reviewers): the
+#       model still reasons at budget but the response excludes the
+#       reasoning_details blobs, so the transcript stays flat.
+
 [budget.economy]
 prewalk_model = "openrouter/~deepseek/deepseek-v4-flash-latest"
 execute_model = "openrouter/~deepseek/deepseek-v4-flash-latest"
@@ -494,6 +504,29 @@ bound).
 machinery is disabled entirely. No planning instruction injection, no swap
 listener, no checklist nagging. The worker runs on one model start to finish.
 This makes economy/free tiers zero-overhead.
+
+**Prewalk minimum-requirements gate (`[defaults] prewalk_min_requirements`, default 3):**
+tasks with FEWER requirements than the threshold skip the prewalk even when
+the tier model differs — a strong-model planning pass (~$0.02-0.05 on flex) is
+not worth it for a 1-2-requirement task, which now starts straight on the
+execute model.
+
+**Checklist-per-tier (`[budget.*] checklist`, default true):** when false, the
+checklist tool is not loaded and the worker prompt stops mandating it — saving
+the init + done-per-requirement turns on cheap tiers. The manifest records
+`checklist: false`. The prewalk swap trigger and finalization-incomplete
+classification are observer-only and degrade safely when the tool is absent
+(the relay then reports no checklist state, so aborts fall to the flat path).
+
+**Reasoning exclusion (cost, always on for workers/reviewers):** worker and
+reviewer subprocesses set `PI_TASK_EXCLUDE_REASONING=1`; the
+`tools/reasoning-exclude.ts` extension injects `reasoning.exclude: true` into
+every provider payload. The model still reasons at its configured budget (no
+quality drop), but the response excludes the `reasoning_details` blobs, so the
+transcript stops re-sending them on every later turn — context stays flat. The
+conversational session never sets the env var, so its reasoning stays visible
+to the console. Continuation-safe multi-turn behavior is pending confirmation
+on a real (capable) run.
 
 Workspace isolation is independent of budget. Parallel workers always get
 isolated workspaces regardless of model tier — isolation prevents merge

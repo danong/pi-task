@@ -94,6 +94,12 @@ export interface BudgetTierConfig {
 	prewalkModel: string | null;
 	executeModel: string;
 	reviewModel: string;
+	/** Whether worker runs on this tier track requirements via the
+	 *  checklist tool (~6 turns/run: init + done-per-requirement). false →
+	 *  the checklist extension is NOT loaded and the worker prompt stops
+	 *  mandating it (the manifest records checklist:false). Default: true
+	 *  (absent → the fallback tier's; the built-in fallback is true). */
+	checklist: boolean;
 	/** Enable the forked adversarial review + bounded fix loop. */
 	review: boolean;
 	/** The run-pipeline SHAPE (a [shapes.*] section): the phase structure,
@@ -287,6 +293,7 @@ export const DEFAULT_BUDGET_TIERS: Record<BudgetTier, BudgetTierConfig> = {
 		reviewModel: "qwen-token-plan/qwen3.8-max-preview",
 		review: true,
 		shape: "code",
+		checklist: true,
 		wallTimeoutMs: 45 * 60_000,
 		turnBudget: DEFAULT_TURN_BUDGET,
 	},
@@ -296,6 +303,7 @@ export const DEFAULT_BUDGET_TIERS: Record<BudgetTier, BudgetTierConfig> = {
 		reviewModel: "openrouter/~deepseek/deepseek-v4-flash-latest",
 		review: true,
 		shape: "code",
+		checklist: true,
 		wallTimeoutMs: 45 * 60_000,
 		turnBudget: DEFAULT_TURN_BUDGET,
 	},
@@ -305,6 +313,7 @@ export const DEFAULT_BUDGET_TIERS: Record<BudgetTier, BudgetTierConfig> = {
 		reviewModel: "openrouter/~deepseek/deepseek-v4-flash-latest",
 		review: false,
 		shape: "code",
+		checklist: true,
 		wallTimeoutMs: 45 * 60_000,
 		turnBudget: DEFAULT_TURN_BUDGET,
 	},
@@ -314,6 +323,7 @@ export const DEFAULT_BUDGET_TIERS: Record<BudgetTier, BudgetTierConfig> = {
 		reviewModel: "opencode/deepseek-v4-flash-free",
 		review: false,
 		shape: "code",
+		checklist: true,
 		wallTimeoutMs: 30 * 60_000,
 		turnBudget: DEFAULT_TURN_BUDGET,
 	},
@@ -334,6 +344,7 @@ export const DEFAULT_BUDGET_TIERS: Record<BudgetTier, BudgetTierConfig> = {
 		serviceTier: "flex",
 		providerOnly: ["google-vertex/flex"],
 		shape: "async",
+		checklist: true,
 		wallTimeoutMs: 120 * 60_000,
 		turnBudget: DEFAULT_TURN_BUDGET,
 	},
@@ -516,6 +527,11 @@ export interface TaskConfig {
 		budget: BudgetMode;
 		/** Max fix workers the review-fix loop may dispatch. */
 		maxFixIterations: number;
+		/** Tasks with FEWER requirements than this skip the prewalk entirely
+		 *  (start straight on the execute model) — a strong-model planning
+		 *  pass (~$0.02-0.05) is not justified for 1-2-requirement tasks.
+		 *  Default {@link DEFAULT_PREWALK_MIN_REQUIREMENTS} (3). */
+		prewalkMinRequirements: number;
 		/** Per-tool-call budget for a single worker tool execution (ms,
 		 * Phase 11). Default: {@link DEFAULT_TOOL_TIMEOUT_MS} (15 min). */
 		toolTimeoutMs: number;
@@ -560,10 +576,16 @@ export interface TaskConfig {
 	sandbox: SandboxConfig;
 }
 
+/** Default prewalk-minimum-requirements gate: tasks with fewer than 3
+ *  requirements skip the strong-model prewalk (execute straight on the
+ *  workhorse — see [defaults] prewalk_min_requirements). */
+export const DEFAULT_PREWALK_MIN_REQUIREMENTS = 3;
+
 export const DEFAULT_TASK_CONFIG: TaskConfig = {
 	defaults: {
 		budget: DEFAULT_BUDGET_TIER,
 		maxFixIterations: 2,
+		prewalkMinRequirements: DEFAULT_PREWALK_MIN_REQUIREMENTS,
 		toolTimeoutMs: DEFAULT_TOOL_TIMEOUT_MS,
 		verificationTimeoutMs: DEFAULT_VERIFICATION_TIMEOUT_MS,
 		reviewWallTimeoutMs: DEFAULT_REVIEW_WALL_TIMEOUT_MS,
@@ -751,6 +773,7 @@ function loadTier(sections: TomlSections, tier: BudgetTier): BudgetTierConfig | 
 		serviceTier,
 		providerOnly,
 		shape,
+		checklist: bool(section, "checklist") ?? fallback.checklist,
 		wallTimeoutMs,
 		turnBudget,
 	};
@@ -959,6 +982,18 @@ export function loadTaskConfig(configPath?: string): TaskConfig {
 		budget = budgetRaw;
 	}
 
+	// [defaults] prewalk_min_requirements: integer >= 0; invalid → warn +
+	// the built-in default (3). 0 effectively enables prewalk on every task
+	// (requirements.length >= 0) — the explicit opt-IN for old behavior.
+	const prewalkMinPresent = defaults?.["prewalk_min_requirements"] !== undefined;
+	const prewalkMinRaw = int(defaults, "prewalk_min_requirements");
+	let prewalkMinRequirements = DEFAULT_TASK_CONFIG.defaults.prewalkMinRequirements;
+	if (prewalkMinPresent && (prewalkMinRaw === undefined || prewalkMinRaw < 0)) {
+		warn(`[defaults] prewalk_min_requirements must be an integer >= 0 — using ${prewalkMinRequirements}`);
+	} else if (prewalkMinRaw !== undefined) {
+		prewalkMinRequirements = prewalkMinRaw;
+	}
+
 	// [defaults] max_fix_iterations: integer >= 0; invalid → warn + 2.
 	const iterPresent = defaults?.["max_fix_iterations"] !== undefined;
 	const iterRaw = int(defaults, "max_fix_iterations");
@@ -1034,6 +1069,7 @@ export function loadTaskConfig(configPath?: string): TaskConfig {
 		defaults: {
 			budget,
 			maxFixIterations,
+			prewalkMinRequirements,
 			toolTimeoutMs,
 			verificationTimeoutMs,
 			reviewWallTimeoutMs,

@@ -29,6 +29,7 @@ import {
 	DEFAULT_BATCH_MODEL,
 	DEFAULT_BATCH_POLL_INTERVAL_MS,
 	DEFAULT_BATCH_JOB_TIMEOUT_MS,
+	DEFAULT_PREWALK_MIN_REQUIREMENTS,
 	channelWatchdogWindows,
 	aiIdentityToml,
 	resolveTaskShape,
@@ -447,6 +448,34 @@ extra_rw_binds = [1, 2]
 		});
 		check(JSON.stringify(cfg!.tiers.economy.providerOnly) === JSON.stringify(["google-vertex/flex", "openai/priority"]),
 			"provider_only parses as endpoint slugs");
+	});
+
+	// Wave-1 config: prewalk_min_requirements (defaults) + checklist (tier).
+	withTempToml(`[defaults]
+prewalk_min_requirements = 1
+[budget.economy]
+checklist = false
+`, (path) => {
+		let cfg: TaskConfig | undefined;
+		captureWarnings(() => {
+			cfg = loadTaskConfig(path);
+		});
+		check(cfg!.defaults.prewalkMinRequirements === 1,
+			"prewalk_min_requirements parses from [defaults]");
+		check(cfg!.defaults.prewalkMinRequirements !== DEFAULT_PREWALK_MIN_REQUIREMENTS,
+			"the explicit 1 differs from the built-in default");
+		check(cfg!.tiers.economy.checklist === false, "checklist = false parses on the tier");
+	});
+	// Absent keys → built-in defaults (all tiers default checklist ON).
+	withTempToml(`[budget.economy]
+`, (path) => {
+		let cfg: TaskConfig | undefined;
+		captureWarnings(() => {
+			cfg = loadTaskConfig(path);
+		});
+		check(cfg!.tiers.economy.checklist === true, "checklist absent → tier defaults to ON");
+		check(cfg!.defaults.prewalkMinRequirements === DEFAULT_PREWALK_MIN_REQUIREMENTS,
+			"prewalk_min_requirements absent → built-in default");
 	});
 	withTempToml(`[budget.economy]\nturn_budget = 25\n`, (path) => {
 		let cfg: TaskConfig | undefined;

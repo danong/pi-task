@@ -7,6 +7,7 @@
 
 import { pathToFileURL } from "node:url";
 import { injectProviderOnly, injectServiceTier, SERVICE_TIER_ENV_VAR } from "./tools/service-tier.ts";
+import { injectReasoningExclude } from "./tools/reasoning-exclude.ts";
 import { mergeDisputes } from "./tools/yield.ts";
 import { recordDispute, takeRecordedDisputes } from "./tools/dispute.ts";
 import {
@@ -282,8 +283,23 @@ export async function runTests(): Promise<void> {
 			"excluded workhorse stays standard-priced");
 	}
 
-	// 14e. Provider pin (provider.only) + the mixed-flow guarantee: in one
-	// prewalk→swap session the gemini call gets tier+pin, the deepseek
+	// 14f. Reasoning-exclude (wave-1): enabled → reasoning.exclude injected
+	// into a copy, preserving existing reasoning fields; disabled/non-object
+	// → unchanged; input never mutated.
+	{
+		const payload = { model: "m", messages: [] };
+		const injected = injectReasoningExclude(payload, true) as Record<string, unknown>;
+		check((injected.reasoning as Record<string, unknown>).exclude === true && injected.model === "m" && !("reasoning" in payload),
+			"enabled → reasoning.exclude on a copy, input untouched");
+		const existing = { model: "m", reasoning: { effort: "high" }, messages: [] };
+		const merged = injectReasoningExclude(existing, true) as Record<string, unknown>;
+		const r = merged.reasoning as Record<string, unknown>;
+		check(r.exclude === true && r.effort === "high", "existing reasoning fields preserved alongside exclude");
+		check(injectReasoningExclude(payload, false) === payload, "disabled → payload unchanged");
+		check(injectReasoningExclude(null, true) === null, "non-object payload → unchanged");
+	}
+
+	// 14e. Provider pin (provider.only) + the mixed-flow guarantee: in one	// prewalk→swap session the gemini call gets tier+pin, the deepseek
 	// workhorse stays untouched (a vertex pin would break it).
 	{
 		const only = ["google-vertex/flex"];
@@ -346,8 +362,10 @@ export async function runTests(): Promise<void> {
 			systemPromptPath: "/p/prompt.md",
 		});
 		check(args.includes("/a/checklist.ts") && args.includes("/b/prewalk.ts"), "extra extensions should be forwarded");
-		check(args.filter((a) => a === "--extension").length === 5,
-			"yield + tool guard + dispute tool (always-on) + 2 extra extensions = 5 --extension flags");
+		check(args.filter((a) => a === "--extension").length === 6,
+			"yield + tool guard + dispute tool + reasoning-exclude (always-on) + 2 extra extensions = 6 --extension flags");
+		check(args.some((a, i) => a === "--extension" && (args[i + 1] ?? "").endsWith("reasoning-exclude.ts")),
+			"the reasoning-exclude extension loads on every worker (wave-1 cost)");
 		check(
 			args.includes("--append-system-prompt") && args[args.indexOf("--append-system-prompt") + 1] === "/p/prompt.md",
 			"system prompt path should be forwarded",

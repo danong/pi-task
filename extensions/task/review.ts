@@ -32,7 +32,7 @@ import {
 } from "./worker.ts";
 import type { RequirementStatus, ReviewResult } from "./schemas/findings.ts";
 import { DEFAULT_PERSONA, type Persona } from "./personas.ts";
-import { SERVICE_TIER_EXTENSION_PATH, TOOL_GUARD_EXTENSION_PATH } from "./worker.ts";
+import { REASONING_EXCLUDE_EXTENSION_PATH, SERVICE_TIER_EXTENSION_PATH, TOOL_GUARD_EXTENSION_PATH } from "./worker.ts";
 
 /** Absolute path to the reviewer-side extension (report_findings + pruning). */
 export const FINDINGS_EXTENSION_PATH = join(dirname(fileURLToPath(import.meta.url)), "tools", "findings.ts");
@@ -293,6 +293,7 @@ export async function forkedReview(opts: ForkReviewOptions): Promise<ReviewOutco
 		"--no-extensions",
 		"--extension", FINDINGS_EXTENSION_PATH,
 		"--extension", TOOL_GUARD_EXTENSION_PATH,
+		"--extension", REASONING_EXCLUDE_EXTENSION_PATH,
 		...(opts.serviceTier ? ["--extension", SERVICE_TIER_EXTENSION_PATH] : []),
 		"--append-system-prompt", promptPath,
 	];
@@ -301,16 +302,19 @@ export async function forkedReview(opts: ForkReviewOptions): Promise<ReviewOutco
 		cwd: opts.cwd,
 		shell: false,
 		stdio: ["pipe", "pipe", "pipe"],
-		env: {
-			...process.env,
-			...(opts.serviceTier ? { PI_TASK_SERVICE_TIER: opts.serviceTier } : {}),
-			...(opts.serviceTierExcludes?.length
-				? { PI_TASK_SERVICE_TIER_EXCLUDES: opts.serviceTierExcludes.join(",") }
-				: {}),
-			...(opts.providerOnly?.length
-				? { PI_TASK_PROVIDER_ONLY: opts.providerOnly.join(",") }
-				: {}),
-		},
+			env: {
+				...process.env,
+				...(opts.serviceTier ? { PI_TASK_SERVICE_TIER: opts.serviceTier } : {}),
+				...(opts.serviceTierExcludes?.length
+					? { PI_TASK_SERVICE_TIER_EXCLUDES: opts.serviceTierExcludes.join(",") }
+					: {}),
+				...(opts.providerOnly?.length
+					? { PI_TASK_PROVIDER_ONLY: opts.providerOnly.join(",") }
+					: {}),
+				// Reasoning-exclusion (wave-1): mirrors spawnWorkerSession — the
+				// reviewer's reasoning is excluded too (transcript stays flat).
+				PI_TASK_EXCLUDE_REASONING: "1",
+			},
 	});
 
 	const state = createWorkerEventState();

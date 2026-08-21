@@ -6,42 +6,41 @@ goal: small async runs from ~$0.07–0.15 down to ~$0.015–0.03 (the realistic
 target for the scheduler's many-small-jobs future), and −40–60% on medium
 runs.
 
-## Wave 1 — hermetic build (no model calls, UAT by unit tests)
+## Wave 1 — hermetic build (landed; items 1-3 shipped, item 4 pending verification)
 
 1. **Fix-prompt failure-output truncation.** `buildFixPrompt` embeds each
    verification failure's raw output (multi-KB for real suites) into every
-   fix-worker prompt. Cap each failure's output to the first N lines + a
-   pointer. Direct input-token cut on every fix iteration. Pure, tested.
-2. **Conditional prewalk.** The prewalk is a strong-model planning pass; its
-   gemini-flex cost (~$0.02–0.05) is not justified for 1–2-requirement
-   tasks. Add `prewalk_min_requirements` (default 3) to config; when
-   `spec.requirements.length` is below it, `usePrewalk` collapses and the
-   run starts directly on the execute model. Cooperates with the existing
-   `auto` budget heuristic and `isPrewalkActive` (model-difference) gate.
-3. **Checklist-per-tier.** The checklist ritual costs ~6 turns/run (init +
-   done-per-requirement) — 10–15% of a 40-turn run, each re-reading full
-   context. Make checklist tier-configurable (`checklist = false` on cheap
-   tiers): the engine stops loading the checklist extension and the worker
-   prompt stops mandating it. The manifest already records a checklist flag.
-4. **`reasoning.exclude`, not a thinking downgrade.** Keeping the worker's
-   thinking budget at low preserves reasoning quality; the cost driver is
-   that the accumulated encrypted `reasoning_details` blobs (1–5KB each,
-   traced) are re-sent on every later turn. Set OpenRouter
-   `reasoning: { exclude: true }` on worker sessions only (scoped in the
-   service-tier extension), so the model still reasons but the transcript
-   stays flat. **Gated by a continuation canary** (below): reasoning
-   exclusion only works if the provider is on "statues" invisible mode and
-   multi-turn continuation survives — the `reasoning.exclude` field that
-   previously caused our corrupted-thought-signature failure.
+   fix-worker prompt. **DONE:** `capFixOutput` caps each failure's output to
+   40 lines + a pointer, used in `buildFixPrompt`. Hermetic test.
+2. **Conditional prewalk.** **DONE:** `[defaults] prewalk_min_requirements`
+   (default 3) — `usePrewalk` collapses when `spec.requirements.length` is
+   below it, so small tasks start straight on the execute model. Cooperates
+   with the `auto` budget heuristic and `isPrewalkActive` (model-difference)
+   gate.
+3. **Checklist-per-tier.** **DONE:** per-tier `checklist` bool
+   (`[budget.*]`, default true). false → the checklist tool is not loaded
+   and the worker prompt drops the mandate (fewer turns on cheap tiers); the
+   manifest records `checklist: false`. The relay degrades safely when the
+   tool is absent (aborts fall to the flat path).
+4. **`reasoning.exclude`, not a thinking downgrade.** **MECHANISM LANDED,**
+   **CONTINUATION VERIFICATION PENDING.** Worker and reviewer subprocesses
+   set `PI_TASK_EXCLUDE_REASONING=1`; the always-loaded
+   `tools/reasoning-exclude.ts` extension injects `reasoning.exclude: true`
+   into every provider payload. The model still reasons at budget; the
+   transcript stops re-sending the `reasoning_details` blobs — context stays
+   flat. Continuation-safety is unconfirmed (see the dropped canary below).
 
-### Wave 1 canary (folded in, the gate for item 4)
+### Wave 1 canary (dropped — passive verification instead)
 
-A single multi-turn run on the **free model** with a **tiny task** (the
-cheapest, highest-success-probability path): worker spawns with
-`reasoning.exclude` set; each turn must survive continuation (no
-corrupted-signature failure). Pass → ship item 4 in the same wave. Fail →
-fall back to `--thinking minimal` for workers (accepting the quality tradeoff
-you called out) and item 4 becomes the documented better-but-stuck fix.
+Attempted a continuation canary on the **free model**; it was not decisive —
+the free model is too weak to sustain the multi-turn, tool-using session the
+canary exists to test (`worker ended without calling yield`; the probe fired
+no provider calls). Proving a negative with a model that cannot exercise the
+mechanism is the wrong tool. **Adopted: passive verification** — confirm
+multi-turn continuation survives on the NEXT real task run (any capable
+model, watching for a corrupted-signature failure). If it breaks, flip the
+env var off or gate it in config. The mechanism lands now; judgment on
+continuation is deferred to a real run.
 
 ## Wave 2 — prompt pruning (investigate → build)
 

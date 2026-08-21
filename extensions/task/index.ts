@@ -1036,8 +1036,10 @@ export default function (pi: ExtensionAPI) {
 						serviceTier: tierConfig.serviceTier,
 						providerOnly: tierConfig.providerOnly,
 						turnBudget: tierConfig.turnBudget,
+						checklist: tierConfig.checklist,
 						persona: p.review,
 						maxFixIterations: taskConfig.defaults.maxFixIterations,
+						prewalkMinRequirements: taskConfig.defaults.prewalkMinRequirements,
 						// Phase 11 (R4/R5): the same per-tier wall + per-tool budgets
 						// as a blocking run.
 						workerTimeoutMs: tierConfig.wallTimeoutMs,
@@ -1160,7 +1162,8 @@ export default function (pi: ExtensionAPI) {
 						serviceTier: tierConfig.serviceTier,
 						providerOnly: tierConfig.providerOnly,
 						turnBudget: tierConfig.turnBudget,
-						maxFixIterations: taskConfig.defaults.maxFixIterations,
+						checklist: tierConfig.checklist,
+						prewalkMinRequirements: taskConfig.defaults.prewalkMinRequirements,
 						// Phase 11 (R4/R5): the resolved tier's worker wall + the
 						// shared per-tool-call budget (both config-driven).
 						workerTimeoutMs: tierConfig.wallTimeoutMs,

@@ -222,6 +222,12 @@ export const TOOL_GUARD_EXTENSION_PATH = join(THIS_DIR, "tools", "tool-guard.ts"
 /** dispute_verification: the worker's structured challenge against a
  *  defective verification command (engine-adjudicated, never unilateral). */
 export const DISPUTE_EXTENSION_PATH = join(THIS_DIR, "tools", "dispute.ts");
+/** Reasoning-exclusion (wave-1 cost): injects reasoning:false into every
+ *  provider payload when PI_TASK_EXCLUDE_REASONING=1 — the model still
+ *  reasons at its budget but the transcript stops accreting the
+ *  reasoning_details blobs. Loaded on every worker/reviewer (no-op without
+ *  the env var). */
+export const REASONING_EXCLUDE_EXTENSION_PATH = join(THIS_DIR, "tools", "reasoning-exclude.ts");
 /** Service-tier injection extension — loaded only when the run's tier
  *  declares one (the extension is a no-op without the env var anyway, but
  *  skipping the load keeps ordinary runs extension-count-stable). */
@@ -322,20 +328,32 @@ const WORKER_IDLE_NUDGE_PROMPT =
 	"Your task turn ended without calling yield(). Call yield() now with your typed result — the run cannot complete without it.";
 
 /**
- * Default worker system prompt (design doc: minimal, ~150 tokens).
- * Behavior is enforced by tools, not prose — this only orients the worker.
- * Callers can override via WorkerOptions.systemPrompt.
+ * The worker system prompt (design doc: minimal, ~150 tokens). Behavior is
+ * enforced by tools, not prose — this only orients the worker. Callers can
+ * override via WorkerOptions.systemPrompt.
+ *
+ * WAVE-1 (cost): the checklist line is TIER-CONTROLLED — buildWorkerSystemPrompt(false)
+ * drops it (the checklist tool is not loaded on cheap tiers). The exported
+ * DEFAULT_WORKER_SYSTEM_PROMPT is the checklist-enabled variant (back-compat).
  */
-export const DEFAULT_WORKER_SYSTEM_PROMPT = `You are implementing a coding task. Explore the codebase, make changes,
+const WORKER_SYSTEM_PROMPT_BASE = `You are implementing a coding task. Explore the codebase, make changes,
 and call yield() when complete.
 
-Use checklist() to track your progress through requirements.
 Make atomic jj commits as you complete each requirement.
 Run verification commands after your changes.
 When the project has tests, work test-first: write a failing test, verify it fails, then implement until it passes (red-green-refactor).
 Write scratch/debug probes under /tmp, never in the repo — check jj file list before yielding so no debug files are tracked.
 
 Your first edit should be your most confident change.`;
+
+/** Pure: the worker system prompt with (or without) the checklist mandate. */
+export function buildWorkerSystemPrompt(useChecklist: boolean): string {
+	return useChecklist
+		? `${WORKER_SYSTEM_PROMPT_BASE}\n\nUse checklist() to track your progress through requirements.`
+		: WORKER_SYSTEM_PROMPT_BASE;
+}
+
+export const DEFAULT_WORKER_SYSTEM_PROMPT = buildWorkerSystemPrompt(true);
 
 // ─── Helpers ─────────────────────────────────────────────────────────
 
@@ -762,7 +780,7 @@ export function buildWorkerArgs(opts: {
 	// which would register the recursive `task` tool in workers and fire the
 	// session-start map refresh per worker. Explicit --extension paths still
 	// load with discovery disabled.
-	const args: string[] = ["--mode", "rpc", "--model", opts.model, "--no-extensions", "--extension", YIELD_EXTENSION_PATH, "--extension", TOOL_GUARD_EXTENSION_PATH, "--extension", DISPUTE_EXTENSION_PATH];
+	const args: string[] = ["--mode", "rpc", "--model", opts.model, "--no-extensions", "--extension", YIELD_EXTENSION_PATH, "--extension", TOOL_GUARD_EXTENSION_PATH, "--extension", DISPUTE_EXTENSION_PATH, "--extension", REASONING_EXCLUDE_EXTENSION_PATH];
 	if (opts.serviceTier) args.push("--extension", SERVICE_TIER_EXTENSION_PATH);
 	for (const ext of opts.extensions ?? []) {
 		args.push("--extension", ext);
@@ -857,6 +875,11 @@ export function spawnWorkerSession(opts: WorkerOptions): WorkerSession {
 			...(opts.providerOnly?.length
 				? { PI_TASK_PROVIDER_ONLY: opts.providerOnly.join(",") }
 				: {}),
+			// Reasoning-exclusion (wave-1 cost): the reasoning-exclude
+			// extension reads this and injects reasoning.exclude into every
+			// provider payload — the model reasons at budget but the
+			// transcript stops re-sending the reasoning_details blobs.
+			PI_TASK_EXCLUDE_REASONING: "1",
 		},
 	});
 

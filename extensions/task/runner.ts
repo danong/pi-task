@@ -93,6 +93,9 @@ export interface DetachedRunOptions {
 	reviewModel?: string;
 	review?: boolean;
 	persona?: string;
+	/** Tasks with FEWER requirements than this skip the prewalk (start
+	 *  straight on the execute model). Mirrors ExecuteTaskOptions. */
+	prewalkMinRequirements?: number;
 	/** OpenRouter service tier the tier declares (flex infra) — the child
 	 *  threads it to every worker/reviewer spawn. */
 	serviceTier?: string;
@@ -100,6 +103,8 @@ export interface DetachedRunOptions {
 	providerOnly?: string[];
 	/** Turn budget the tier declares (Phase 3). */
 	turnBudget?: number;
+	/** Whether the worker tracks requirements via the checklist tool. */
+	checklist?: boolean;
 	shape?: TaskShape;
 	maxFixIterations?: number;
 	workerTimeoutMs?: number;
