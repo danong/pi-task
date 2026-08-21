@@ -69,18 +69,25 @@ Requirements are ordered by layer: substrate (FR-1), kernel seams (FR-2–5),
 safety (FR-6–8), economics (FR-9–10), and process (FR-11). Each states its
 intent first; named implementations are examples, never the requirement.
 
-> **FR-1 (Standalone orchestrator).** *Intent: task survival is independent
-> of any client.* A persistent Node.js daemon owns all task state;
-> conversational clients attach and detach freely. Workers run as in-memory
-> SDK sessions inside the daemon — no nested RPC. Heartbeats apply only to
-> real child processes (detached jobs); in-process sessions have no pid and
-> need none.
+> **FR-1 (Standalone orchestrator hosting all sessions).** *Intent: task AND
+> conversation survival are independent of any client; session lifecycle is
+> engine machinery, not extension code.* A persistent Node.js daemon hosts
+> ALL pi SDK sessions in process — the conversational/main session you talk
+> to, prewalk/planner phases, worker micro-sessions, reviewers — so spawn,
+> prune, receipt, and eviction live in the engine instead of growing the
+> pi-task extension further. Control surfaces (pi TUI, Discord bridge, CLI,
+> CI/cron) attach through the gateway as thin protocol adapters and detach
+> freely; hosted sessions and running tasks persist across surface
+> disconnects. No nested RPC for any of it. Heartbeats apply only to real
+> child processes (detached jobs); in-process sessions have no pid and need
+> none.
 >
 > **FR-2 (Pluggable seams).** *Intent: no environment assumption lives in
-> core.* Five kernel interfaces — WorkspaceDriver, EnvironmentDriver,
-> ContextCompressor, VerificationDriver, TaskPlugin — isolate everything
-> environment-specific behind config-selected implementations. The plugin
-> contract and gateway event vocabulary are specified
+> core.* Six kernel interfaces — WorkspaceDriver, EnvironmentDriver,
+> ContextCompressor, VerificationDriver, TaskPlugin, ControlSurface —
+> isolate everything environment- and surface-specific behind
+> config-selected implementations. The plugin contract and gateway event
+> vocabulary are specified
 > ([subsystems](pi-task-v2-subsystems.md) §3) BEFORE any plugin code.
 >
 > **FR-3 (Typed boundary artifacts).** *Intent: context crosses boundaries
@@ -196,23 +203,39 @@ intent first; named implementations are examples, never the requirement.
 
 ## 4. Architecture
 
+The daemon is the top level of orchestration and hosts every pi session;
+surfaces are interchangeable protocol adapters, never session owners:
+
 ```
- conversational agent ──┐                      ┌─ CLI/TUI ──┐
- (spec author)          ├─ local transport ────┤  scheduler │   clients
-                        │                      └─ CI/cron ──┘   (attach/
-                        ▼                                       detach freely)
-        ┌─────────────────────────────────────────────┐
-        │            pi-task-v2 daemon                │
-        │  task graph + ledger (.pi/tasks.db)         │
-        │  router (pure policy functions)             │
-        │  kernel: workspace/env/compress/verify      │
-        │          drivers + TaskGateway (plugins)    │
-        │                                             │
-        │  worker pipeline: route → ground → execute  │
-        │  → verify → (review → fix) → receipt        │
-        │  (in-process SDK sessions, v1 watchdogs)    │
-        └─────────────────────────────────────────────┘
+   you ──► control surfaces (thin adapters): pi TUI · Discord bridge · CLI
+             │  subscribe to event streams, publish user intent;
+             │  any surface may drop without disturbing a session
+             ▼
+   ┌───────────────────────────────────────────────────────┐
+   │                pi-task-v2 daemon                      │
+   │  hosts ALL pi SDK sessions in process:                │
+   │    · conversational/main session ← you talk here      │
+   │    · prewalk/planner phases · worker micro-sessions   │
+   │    · reviewers                                        │
+   │  ledger (.pi/tasks.db) · router (pure policy)         │
+   │  kernel drivers + gateway (plugins, control surfaces) │
+   │                                                       │
+   │  worker pipeline: route → ground → execute → verify   │
+   │  → (review → fix) → receipt                           │
+   └───────────────────────────────────────────────────────┘
+              ▲
+              └─ headless dispatchers: scheduler · cron · CI
+                 (pre-authored specs, no conversation)
 ```
+
+Why host the main session too: context management (spawn, prune, receipt,
+evict) then lives entirely in the engine — the motivation for v2 in the
+first place — instead of accumulating as more extension code inside a live
+pi session. Interactive richness is unaffected: pi's TUI remains the
+frontend, bound to its session over the gateway; permission prompts and
+slash commands become protocol events rendered natively by each surface.
+The daemon outlives every surface: crash or disconnect mid-run and tasks
+continue while escalations queue for whatever surface is configured next.
 
 Model economics follow a simple rule: the token-hungry tool loop runs on a
 cheap configured workhorse; stronger models are bought only for thin slices
@@ -233,7 +256,8 @@ flow.**
 
 | Role | Who | Context fate |
 | :---- | :---- | :---- |
-| Spec author | conversational agent | persists across tasks; pruned via receipts + eviction |
+| Spec author | the daemon-hosted conversational session | persists across tasks; pruned via receipts + eviction |
+| Control surfaces | TUI / Discord / CLI adapters | own nothing — render event streams, publish intent |
 | Router | deterministic code | none — pure decisions from spec metadata, config, past-run telemetry |
 | Planner | *not a role* — a phase or thin function (§5.3) | dies with the task |
 | Worker | configured model | disposable; destroyed on yield/exhaustion |
@@ -293,11 +317,13 @@ phase at all. Miss-path: the worker simply explores as usual, and the miss
 feeds telemetry.
 
 **(c) Fork — continuation of interactive work.**
-*Use case:* the dispatching conversation already holds the understanding
-(long interactive debugging that now needs isolated execution hours of work).
-Forking the raw transcript would import ballast; the fork passes through the
-continuation prune profile (§5.2 item 5) so the worker inherits judgment,
-not noise. One re-encode of a few thousand tokens replaces N rediscovery
+*Use case:* the main session already holds the understanding (long
+interactive debugging that now needs isolated execution). Forking the raw
+transcript would import ballast; the fork passes through the continuation
+prune profile (§5.2 item 5) so the worker inherits judgment, not noise. One
+re-encode of a few thousand tokens replaces N rediscovery turns. In-process
+hosting makes this cheap: both sessions live in the daemon, so the profile
+runs where the data already is.
 turns.
 
 **(d) Cold start** — trivial specs skip special grounding beyond the repo-map

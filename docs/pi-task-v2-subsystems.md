@@ -7,7 +7,7 @@ contract references it.
 
 ## 1. Kernel interfaces
 
-Five seams. Each is one file, one interface, hermetically testable in
+Six seams. Each is one file, one interface, hermetically testable in
 isolation, no shared mutable state (the FR-2/FR-11 buildability rule).
 
 ```typescript
@@ -164,6 +164,48 @@ Event vocabulary (initial set; additive-only evolution, versioned):
 Prune profiles (continuation + review forks) are pluggable scorers with the
 same discipline: pure functions over a transcript-shaped input, returning the
 pruned form; hermetically testable; selected by config.
+
+## 3b. ControlSurface contract
+
+Control surfaces (pi TUI, Discord bridge, CLI, CI/cron) are protocol
+adapters over hosted sessions — never session owners. Separate from
+TaskPlugin because the lifecycle differs: long-lived bidirectional streaming
+vs task-scoped hooks.
+
+```typescript
+export interface ControlSurface {
+  name: string;
+  /** Subscribe to a hosted session's event stream at a QoS level:
+   *  "delta" (token-level, TUI), "digest" (coarse, Discord),
+   *  "receipts" (escalations + verdicts only, cron/CI). */
+  connect(sessionId: string, level: SubscriptionLevel): SurfaceStream;
+  capabilities(): SurfaceCapabilities; // e.g. interactive permissions? attachments?
+}
+
+// daemon → surface events (one vocabulary, three granularities):
+//   TurnDelta · ToolActivity · PermissionRequest · Receipt ·
+//   Escalation · StatusSnapshot (model, tier/lane, active tasks)
+// surface → daemon commands:
+//   UserMessage(+attachments) · Approve/Deny(requestId) · Interrupt ·
+//   InvokeCommand(name, args)
+```
+
+Design consequences worth stating once:
+
+- **Slash commands invert.** Extensions register commands engine-side;
+  surfaces discover them via a schema event and render natively (TUI
+  autocomplete, Discord native slash commands). The extension model is
+  untouched; surfaces stay dumb.
+- **Permission prompts become protocol.** A PermissionRequest answered by
+  Approve/Deny lets permission POLICY move engine-side (per session type and
+  surface trust) — which is also what headless/zero-touch sessions need:
+  auto-approve policy plus an escalation queue instead of a human modal.
+- **Multi-surface multiplexing** falls out of hosting: broadcast events to
+  all subscribers of a session, serialize inputs first-writer-wins per turn.
+- **Migration:** through Phase C the familiar pi-session-with-extension
+  remains the primary surface; the remote-TUI cutover is the LAST surface to
+  flip. The contract above must exist first — it defines what a "session
+  event" means for every other surface.
 
 ## 4. Ledger schema (SQLite)
 
