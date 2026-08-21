@@ -114,6 +114,13 @@ export interface ForkReviewOptions {
 	/** OpenRouter service tier (the run's budget tier declares it) — set →
 	 *  the reviewer subprocess injects service_tier into every call. */
 	serviceTier?: string;
+	/**
+	 * Slim the subprocess system-prompt prefix (wave-2 cost): pass
+	 * --no-skills to prune pi's injected skills-discovery list the reviewer
+	 * never uses. Default true. False → the flag is omitted so the verbose
+	 * prefix returns.
+	 */
+	slimWorkerPrompt?: boolean;
 	/** Model ids exempt from the tier (the standard-priced workhorse). */
 	serviceTierExcludes?: string[];
 	/** OpenRouter endpoint slugs for provider.only (the flex pin). */
@@ -291,6 +298,11 @@ export async function forkedReview(opts: ForkReviewOptions): Promise<ReviewOutco
 		// --no-extensions: the reviewer loads ONLY the findings extension (see
 		// worker.ts buildWorkerArgs for why discovery must be disabled).
 		"--no-extensions",
+		// --no-skills (wave-2 cost, [defaults] slim_worker_prompt): prune pi's
+		// injected skills-discovery list from the reviewer system prompt;
+		// omitted when the flag is disabled so an operator can restore the
+		// verbose prefix.
+		...(opts.slimWorkerPrompt === false ? [] : ["--no-skills"]),
 		"--extension", FINDINGS_EXTENSION_PATH,
 		"--extension", TOOL_GUARD_EXTENSION_PATH,
 		"--extension", REASONING_EXCLUDE_EXTENSION_PATH,

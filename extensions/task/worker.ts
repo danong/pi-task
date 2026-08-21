@@ -45,6 +45,13 @@ export interface WorkerOptions {
 	 */
 	serviceTier?: string;
 	/**
+	 * Slim the subprocess system-prompt prefix (wave-2 cost): pass
+	 * --no-skills to prune pi's injected skills-discovery list (~1.5-2k
+	 * tokens per turn) the worker never uses. Default true. False → the
+	 * flag is omitted so a worker runs with the verbose prefix.
+	 */
+	slimWorkerPrompt?: boolean;
+	/**
 	 * Model ids EXEMPT from serviceTier (comma-joined into
 	 * PI_TASK_SERVICE_TIER_EXCLUDES): the cheap workhorse stays
 	 * standard-priced inside a flex run — the tier applies only to the
@@ -773,6 +780,12 @@ export function buildWorkerArgs(opts: {
 	systemPromptPath?: string;
 	/** When set, load the service-tier injection extension. */
 	serviceTier?: string;
+	/**
+	 * Prune pi's injected skills-discovery list from the subprocess system
+	 * prompt: pass --no-skills (wave-2 cost). Default true. False → the flag
+	 * is omitted so the verbose prefix returns.
+	 */
+	slimWorkerPrompt?: boolean;
 }): string[] {
 	// --no-extensions: workers must run with ONLY the explicitly-passed
 	// extensions (yield + checklist/prewalk). Without it, pi auto-discovers
@@ -780,7 +793,16 @@ export function buildWorkerArgs(opts: {
 	// which would register the recursive `task` tool in workers and fire the
 	// session-start map refresh per worker. Explicit --extension paths still
 	// load with discovery disabled.
-	const args: string[] = ["--mode", "rpc", "--model", opts.model, "--no-extensions", "--extension", YIELD_EXTENSION_PATH, "--extension", TOOL_GUARD_EXTENSION_PATH, "--extension", DISPUTE_EXTENSION_PATH, "--extension", REASONING_EXCLUDE_EXTENSION_PATH];
+	// --no-skills (wave-2 cost, [defaults] slim_worker_prompt): pi injects a
+	// skills-discovery list (~1.5-2k tokens) into the system prompt; a worker
+	// explores on its own and never uses it. Prune it here. Explicit --skill
+	// paths would still load, but we pass none.
+	const args: string[] = ["--mode", "rpc", "--model", opts.model, "--no-extensions", "--no-skills", "--extension", YIELD_EXTENSION_PATH, "--extension", TOOL_GUARD_EXTENSION_PATH, "--extension", DISPUTE_EXTENSION_PATH, "--extension", REASONING_EXCLUDE_EXTENSION_PATH];
+	if (opts.slimWorkerPrompt === false) {
+		const i = args.indexOf("--no-skills");
+		if (i !== -1) args.splice(i, 1);
+	}
+
 	if (opts.serviceTier) args.push("--extension", SERVICE_TIER_EXTENSION_PATH);
 	for (const ext of opts.extensions ?? []) {
 		args.push("--extension", ext);
@@ -832,6 +854,7 @@ export function spawnWorkerSession(opts: WorkerOptions): WorkerSession {
 		extensions,
 		systemPromptPath: tmpPromptPath ?? undefined,
 		serviceTier: opts.serviceTier,
+		slimWorkerPrompt: opts.slimWorkerPrompt,
 	});
 
 	const invocation = getPiInvocation(args);

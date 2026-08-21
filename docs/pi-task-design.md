@@ -528,6 +528,15 @@ conversational session never sets the env var, so its reasoning stays visible
 to the console. Continuation-safe multi-turn behavior is pending confirmation
 on a real (capable) run.
 
+**Slim worker prompt (`[defaults] slim_worker_prompt`, default true):** worker
+and reviewer subprocesses spawn with pi's native `--no-skills` flag, pruning
+pi's injected skills-discovery list (~1.5-2k tokens per turn) from their
+fixed system-prompt prefix — a task worker explores on its own and never uses
+that block. false → the flag is omitted so an operator can restore the
+verbose prompt. Additive to the args: the worker still loads all its
+extensions exactly as before. Live by default even before the config key is
+operator-wired (the arg builder's `undefined === false` guard keeps the flag).
+
 Workspace isolation is independent of budget. Parallel workers always get
 isolated workspaces regardless of model tier — isolation prevents merge
 conflicts, it doesn't cost tokens.

@@ -520,6 +520,13 @@ export const DEFAULT_VERIFICATION_TIMEOUT_MS = DEFAULT_TOOL_TIMEOUT_MS;
  */
 export const DEFAULT_REVIEW_WALL_TIMEOUT_MS = 20 * 60_000;
 
+/**
+ * Default for [defaults] slim_worker_prompt (wave-2 cost): workers and
+ * reviewers spawn with --no-skills, pruning pi's skills-discovery list
+ * from their system prompt. Flip to false to restore the verbose prefix.
+ */
+export const DEFAULT_SLIM_WORKER_PROMPT = true;
+
 export interface TaskConfig {
 	defaults: {
 		/** Effective budget mode when neither flag nor param locks a tier.
@@ -544,6 +551,14 @@ export interface TaskConfig {
 		 * each review fork gets its own budget, independent of (never
 		 * subtracted from) the worker's tier wall (workerTimeoutMs). */
 		reviewWallTimeoutMs: number;
+		/**
+		 * Slim the worker/reviewer system-prompt prefix (wave-2 cost,
+		 * [defaults] slim_worker_prompt). true (default) → the subprocess
+		 * receives --no-skills, dropping pi's injected skills-discovery list
+		 * (~1.5-2k tokens per turn) the worker never uses. false → the flag
+		 * is omitted so an operator can restore the verbose prompt.
+		 */
+		slimWorkerPrompt: boolean;
 		/**
 		 * AI commit identity (todo #84): task-worker commits are authored as
 		 * aiAuthorName / aiAuthorEmail — jj reads them via the JJ_CONFIG env
@@ -591,6 +606,7 @@ export const DEFAULT_TASK_CONFIG: TaskConfig = {
 		reviewWallTimeoutMs: DEFAULT_REVIEW_WALL_TIMEOUT_MS,
 		aiAuthorName: "Pi ({model})",
 		aiAuthorEmail: "noreply@danong.dev",
+		slimWorkerPrompt: DEFAULT_SLIM_WORKER_PROMPT,
 	},
 	tiers: DEFAULT_BUDGET_TIERS,
 	tierOrder: [...BUDGET_TIERS],
@@ -1038,6 +1054,19 @@ export function loadTaskConfig(configPath?: string): TaskConfig {
 		reviewWallTimeoutMs = reviewWallRaw;
 	}
 
+	// [defaults] slim_worker_prompt: boolean (wave-2 cost). true (default)
+	// → worker/reviewer subprocesses spawn with --no-skills (slimmer system
+	// prompt); false → the flag is omitted so the verbose prompt returns.
+	// Invalid (non-boolean) → warn + the built-in default (true).
+	const slimPresent = defaults?.["slim_worker_prompt"] !== undefined;
+	const slimRaw = bool(defaults, "slim_worker_prompt");
+	let slimWorkerPrompt = DEFAULT_TASK_CONFIG.defaults.slimWorkerPrompt;
+	if (slimPresent && slimRaw === undefined) {
+		warn(`[defaults] slim_worker_prompt must be a boolean — using ${slimWorkerPrompt}`);
+	} else if (slimRaw !== undefined) {
+		slimWorkerPrompt = slimRaw;
+	}
+
 	// [defaults] ai_author_name / ai_author_email: the AI commit identity
 	// (todo #84). Strings; an explicitly invalid value warns + falls back
 	// to the built-in default, per the warn-and-fallback policy.
@@ -1075,6 +1104,7 @@ export function loadTaskConfig(configPath?: string): TaskConfig {
 			reviewWallTimeoutMs,
 			aiAuthorName,
 			aiAuthorEmail,
+			slimWorkerPrompt,
 		},
 		tiers,
 		tierOrder,

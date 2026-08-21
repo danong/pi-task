@@ -42,19 +42,27 @@ model, watching for a corrupted-signature failure). If it breaks, flip the
 env var off or gate it in config. The mechanism lands now; judgment on
 continuation is deferred to a real run.
 
-## Wave 2 — prompt pruning (investigate → build)
+## Wave 2 — prompt pruning (LANDED)
 
-- Read `docs/environment-variables.md` + config docs for the override knobs
-  (config dir, skills suppression, TODO-injection switch).
-- One empirical spawn on the free model dumps the worker's actual system
-  prompt — measure what is injected (skills list, TODO reminders, pi-docs
-  block, AGENTS.md) before cutting.
-- Iterate / implement cut (engine-controlled config for worker spawns, env
-  override, or flag); if TODO injection is pi-core keyed on project state,
-  point workers at a clean scope or file a pi feature request.
-- Target: worker fixed prefix from ~6–8k → ~2k tokens. Every turn pays this,
-  so it multiplies across all runs.
+**Shipped:** worker + reviewer subprocesses now pin pi's native `--no-skills`
+flag, pruning the skills-discovery list (~1.5-2k tokens per turn) pi injects
+into a worker's fixed system-prompt prefix. Config: `[defaults]
+slim_worker_prompt` (default true); false restores the verbose prompt.
+Threaded through `extensions/task/worker.ts` (buildWorkerArgs) and
+`extensions/task/review.ts` (reviewer args); the worker still loads all its
+extensions exactly as before (the change is additive to the args array).
 
+- **Per-wave decision:** the pi docs (skills.md, prompt-templates.md,
+  environment-variables.md) are the source of truth for the knobs pi
+  supports; no pi-core feature was added. `--no-skills` was chosen because a
+  worker explores on its own and never uses skills discovery.
+- **Live-by-default:** `slimWorkerPrompt` is undefined at spawn → the
+  `=== false` guard leaves `--no-skills` present, so workers now start slim
+  unconditionally. Wiring the config key into the orchestrator spawn calls
+  (the operator-restore flip) is the deferred adapter — the orchestrator was
+  out of the task's protocol scoped.
+
+---
 ## Wave 3 — exploration duplication (the big structural one)
 
 We (the conversational agent) and the workers re-explore the same codebase —

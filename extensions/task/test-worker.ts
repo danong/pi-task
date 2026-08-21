@@ -249,7 +249,16 @@ export async function runTests(): Promise<void> {
 			"the tool guard loads on every worker (Phase 2 enforcement)");
 		check(args.some((a, i) => a === "--extension" && (args[i + 1] ?? "").endsWith("dispute.ts")),
 			"the dispute tool loads on every worker (structured gate challenges)");
+		check(args.includes("--no-skills"), "--no-skills rides in by default (wave-2 slimmer system prompt)");
 		check(!args.includes("--append-system-prompt"), "no prompt path → no --append-system-prompt");
+	}
+	{
+		// slimWorkerPrompt=false omits --no-skills so an operator can restore
+		// the verbose prefix.
+		const verbose = buildWorkerArgs({ model: "prov/m", slimWorkerPrompt: false });
+		check(!verbose.includes("--no-skills"), "slimWorkerPrompt=false omits --no-skills (verbose restore path)");
+		const slim = buildWorkerArgs({ model: "prov/m", slimWorkerPrompt: true });
+		check(slim.includes("--no-skills"), "slimWorkerPrompt=true keeps --no-skills");
 	}
 
 	// 14b. Flex infra: serviceTier loads the injection extension; unset → absent.

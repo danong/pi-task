@@ -484,6 +484,21 @@ checklist = false
 		});
 		check(cfg!.tiers.economy.turnBudget === 25, `turn_budget override, got ${cfg!.tiers.economy.turnBudget}`);
 	});
+	// Wave-2 config: slim_worker_prompt (defaults).
+	withTempToml(`[defaults]\nslim_worker_prompt = false\n`, (path) => {
+		let cfg: TaskConfig | undefined;
+		captureWarnings(() => {
+			cfg = loadTaskConfig(path);
+		});
+		check(cfg!.defaults.slimWorkerPrompt === false, "slim_worker_prompt=false parses");
+	});
+	withTempToml(`[defaults]\n`, (path) => {
+		let cfg: TaskConfig | undefined;
+		captureWarnings(() => {
+			cfg = loadTaskConfig(path);
+		});
+		check(cfg!.defaults.slimWorkerPrompt === true, "slim_worker_prompt absent → default true");
+	});
 	withTempToml(`[budget.economy]\nturn_budget = -5\n`, (path) => {
 		let cfg: TaskConfig | undefined;
 		const warnings = captureWarnings(() => {
