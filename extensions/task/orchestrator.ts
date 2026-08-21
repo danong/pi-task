@@ -1657,6 +1657,7 @@ export async function executeTask(opts: ExecuteTaskOptions): Promise<TaskResult>
 			turnBudget: opts.turnBudget,
 			spec,
 			specMarkdown,
+			reviewRequested: reviewGate.requested,
 			review: reviewGate.enabled,
 			reviewModel,
 			persona: opts.persona,
@@ -2620,6 +2621,10 @@ async function executeSingle(
 		turnBudget?: number;
 		spec: Spec;
 		specMarkdown: string;
+		/** Whether a review was REQUESTED (opts.review or an explicit persona)
+		 *  — may differ from `review` (enabled), which is false for axis-less
+		 *  shapes; a requested-but-not-run review surfaces as reviewSkipped. */
+		reviewRequested?: boolean;
 		review?: boolean;
 		reviewModel?: string;
 		persona?: string;
@@ -2642,7 +2647,7 @@ async function executeSingle(
 ): Promise<TaskResult> {
 	const {
 		taskPrompt, usePrewalk, prewalkModel, executeModel, systemPrompt, signal, onSwap, onUpdate,
-		verificationTimeoutMs, workerTimeoutMs, toolTimeoutMs, reviewWallTimeoutMs, spec, specMarkdown, review, reviewModel,
+		verificationTimeoutMs, workerTimeoutMs, toolTimeoutMs, reviewWallTimeoutMs, spec, specMarkdown, reviewRequested, review, reviewModel,
 		persona, shape, maxFixIterations, metricsDir, project, preserveSessions, budget, sandbox,
 		runId, aiAuthorName, aiAuthorEmail,
 	} = opts;

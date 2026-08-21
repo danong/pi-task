@@ -518,6 +518,7 @@ async function runOne(opts: {
 		const { executeTask } = await import("./orchestrator.ts");
 		const result = await executeTask({
 			cwd: dir,
+			spec: opts.spec.specMarkdown,
 			model: opts.tierConfig.executeModel,
 			prewalkModel: opts.tierConfig.prewalkModel ?? undefined,
 			executeModel: opts.tierConfig.executeModel,
