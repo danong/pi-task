@@ -9,10 +9,12 @@ import { pathToFileURL } from "node:url";
 
 import { runTests as runContractTests } from "./test-contracts.ts";
 import { runTests as runLedgerTests } from "./test-ledger.ts";
+import { runTests as runRouterTests } from "./test-router.ts";
 
 const SUITES: Array<{ name: string; run: () => Promise<void> }> = [
 	{ name: "contracts", run: runContractTests },
 	{ name: "ledger", run: runLedgerTests },
+	{ name: "router", run: runRouterTests },
 ];
 
 export async function runAll(): Promise<void> {

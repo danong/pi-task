@@ -23,6 +23,11 @@ the strict gate.
   dependencies): tasks, micro-sessions, routing feedback, workspaces; a
   versioned additive migration (opening an older DB upgrades in place), the
   in-flight status vocabulary, and boot-reconciliation (`reconcileOnBoot`).
+- `src/router/route.ts` — the M1.1 router skeleton (docs/pi-task-v2.md
+  §5.3/§5.4): `routeTask`, a pure decision function mapping spec metadata,
+  the resolved tier config, and per-repo `routing_feedback` telemetry to
+  `{ planMode, tier, lane }`, plus the feedback-aggregation helpers and
+  the named (config-overridable) routing thresholds.
 - `src/version.ts` — the package identity (milestone `CORE_V2_MILESTONE`,
   version `CORE_V2_VERSION`).
 - `test/` — hermetic tests mirroring the layout:
@@ -30,6 +35,9 @@ the strict gate.
     ControlSurface typing, and per-seam smoke tests over in-memory fakes
   - `test-ledger.ts` — migration-on-open, CRUD round-trips, constraint
     rejection, boot reconciliation
+  - `test-router.ts` — pure router decisions: every plan mode reachable,
+    feedback switching (hit-rate/deviation thresholds), empty-feedback
+    defaults, threshold overrides, and determinism
   - `run-all.ts` — the aggregator (see below)
 
 ## Gates
