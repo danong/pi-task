@@ -324,7 +324,6 @@ prune profile (§5.2 item 5) so the worker inherits judgment, not noise. One
 re-encode of a few thousand tokens replaces N rediscovery turns. In-process
 hosting makes this cheap: both sessions live in the daemon, so the profile
 runs where the data already is.
-turns.
 
 **(d) Cold start** — trivial specs skip special grounding beyond the repo-map
 slice.
@@ -402,7 +401,9 @@ suites:
 - `01_single_file_bugfix` — edits confined to single methods
 - `02_multi_file_refactor` — cross-file interface updates
 - `03_grounding_heavy` — feature additions in 100K+ LOC repos; this suite
-  adjudicates the grounding modes against each other
+  adjudicates the grounding modes against each other (built in M0 and run
+  against current configurations to record baselines; the grounding modes
+  it discriminates between arrive in M3)
 
 Per-run metrics: tokens, turns, wall time, cost, COR (NFR-3), first-pass
 verification rate, cache hits on retried prefixes, bundle hit rate, fork
@@ -424,7 +425,7 @@ grounding-heavy measurement) come before polish:
 
 | Phase | Scope | Exit criterion |
 | :---- | :---- | :---- |
-| M0 | Engineering bar: typecheck gate, real-path smoke tests per seam, bench harness extended with suite 03 | gate red→green |
+| M0 | Engineering bar: typecheck gate, real-path smoke tests per seam, bench harness extended with suite 03 (run against CURRENT configurations only — cold-start baselines; the grounding modes themselves arrive in M3) | gate red→green; suite 03 baselines recorded |
 | M1 | Core daemon: ledger + boot reconciliation, in-process SDK sessions, watchdog/gate/artifact port, router skeleton | current-engine-equivalent single-worker runs through the daemon |
 | M2 | Workspaces & merge: JujutsuWorkspaceDriver (existing ladder verbatim), environment drivers (host, mise), parallel combine | parallel parity; suites 01/02 |
 | M3 | Grounding modes: prewalk port → bundle path + miss telemetry → fork + prune profiles; COR accounting | suite 03 across all modes, with numbers |

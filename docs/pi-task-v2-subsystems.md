@@ -173,21 +173,46 @@ TaskPlugin because the lifecycle differs: long-lived bidirectional streaming
 vs task-scoped hooks.
 
 ```typescript
+export type SubscriptionLevel = "delta" | "digest" | "receipts";
+
+export interface SurfaceCapabilities {
+  /** Can render interactive PermissionRequests (TUI: yes; cron: no). */
+  interactivePermissions: boolean;
+  /** Can carry file/image attachments on UserMessage. */
+  attachments: boolean;
+  /** Tolerated event latency — guides daemon batching. */
+  latencyToleranceMs: number;
+}
+
+/** A live subscription: typed events downstream, commands upstream.
+ *  Events are the union described below; each subscription level delivers
+ *  a coarsening view of the SAME stream (delta ⊃ digest ⊃ receipts). */
+export interface SurfaceStream {
+  events: AsyncIterable<
+    | { type: "TurnDelta"; text: string }
+    | { type: "ToolActivity"; tool: string; argsPreview: string; phase: "start" | "done"; durationMs?: number }
+    | { type: "PermissionRequest"; requestId: string; action: string; detail: string }
+    | { type: "Receipt"; receipt: TaskReceipt }
+    | { type: "Escalation"; taskId: string; reason: string; detail: string }
+    | { type: "StatusSnapshot"; model: string; tier: string; activeTasks: number }
+  >;
+  send(command:
+    | { type: "UserMessage"; text: string; attachments?: string[] }
+    | { type: "Approve"; requestId: string; grant: boolean }
+    | { type: "Interrupt"; scope: "turn" | "task" }
+    | { type: "InvokeCommand"; name: string; args?: Record<string, unknown> }
+  ): void;
+  close(): void;
+}
+
 export interface ControlSurface {
   name: string;
   /** Subscribe to a hosted session's event stream at a QoS level:
    *  "delta" (token-level, TUI), "digest" (coarse, Discord),
    *  "receipts" (escalations + verdicts only, cron/CI). */
   connect(sessionId: string, level: SubscriptionLevel): SurfaceStream;
-  capabilities(): SurfaceCapabilities; // e.g. interactive permissions? attachments?
+  capabilities(): SurfaceCapabilities;
 }
-
-// daemon → surface events (one vocabulary, three granularities):
-//   TurnDelta · ToolActivity · PermissionRequest · Receipt ·
-//   Escalation · StatusSnapshot (model, tier/lane, active tasks)
-// surface → daemon commands:
-//   UserMessage(+attachments) · Approve/Deny(requestId) · Interrupt ·
-//   InvokeCommand(name, args)
 ```
 
 Design consequences worth stating once:
