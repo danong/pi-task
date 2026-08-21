@@ -10,10 +10,12 @@
  * modified by this script.
  *
  * Usage:
- *   npx tsx extensions/task/bench-regression.ts [--tier <name>] [--dry-run]
+ *   npx tsx extensions/task/bench-regression.ts [--tier <name>] [--spec <id>] [--dry-run]
  *
  * Flags:
  *   --tier <name>     Restrict the run to one tier (repeatable).
+ *   --spec <id>       Restrict the run to one spec id (repeatable);
+ *                     matches canned AND suite-03 grounding specs.
  *   --shape <name>    Run-pipeline shape to benchmark (default: code;
  *                     analysis benchmarks the strong-writer shape).
  *   --dry-run         Print the run plan (tiers, specs, expected cost/time)
@@ -37,6 +39,9 @@
  * always reflects the installed config. The canned specs are the same
  * shapes the e2e suite exercises (create-a-file + commit, README edit,
  * verify gate) — each completes well under a minute per tier by design.
+ * Suite-03 (GROUNDING_SPECS, docs/pi-task-v2.md §7) adds grounding-heavy
+ * specs that run against a seeded ~100k-LOC synthetic fixture each run
+ * materializes into the bench repo before the worker spawns.
  *
  * The pure parts (plan assembly, baseline comparison, rendering) are
  * exported and hermetically tested in test-bench-regression.ts; the runner
@@ -46,8 +51,8 @@
  */
 
 import { execSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
@@ -168,6 +173,282 @@ Create a data file and a small test that passes.
 		},
 	},
 ];
+
+// ─── Suite-03 grounding-heavy specs (R4/M0) ──────────────────────────
+
+/**
+ * test-bench-regression.ts (v1) locks BENCH_SPECS.length to 2-3 and its
+ * <=60s baseline bounds, so suite-03 (docs/pi-task-v2.md §7) lands in its
+ * OWN list. The runner's default spec set is ALL_SPECS (BENCH_SPECS +
+ * GROUNDING_SPECS), so a plain dry-run or real run includes the grounding
+ * suite without disturbing BENCH_SPECS; --spec <id> narrows any run to
+ * named ids across both lists.
+ */
+
+/** Deterministic body of a synthesized grounding fixture. */
+export interface GroundingBody {
+	/** PRNG seed (the generated graph is identical run-to-run per seed). */
+	seed: number;
+	/** Cross-importing module files spread across GROUNDING_LAYERS. */
+	files: number;
+	/** Lines of well-formed code per module file (total ≈ files × this). */
+	locPerFile: number;
+}
+
+/** A suite-03 spec: a BenchSpec plus the seeded fixture it runs against. */
+export interface GroundingSpec extends BenchSpec {
+	/** Non-optional: runOne materializes this into the repo before the
+	 *  worker spawns. */
+	fixture: GroundingBody;
+}
+
+/** Fixture layer: a directory of same-prefix modules (grounding surface). */
+export interface GroundingLayer {
+	/** Module name prefix ("<prefix>NNNN.ts", NNNN = zero-padded index). */
+	prefix: string;
+	/** Directory the layer's modules live in (repo-relative). */
+	dir: string;
+}
+
+/**
+ * The suite-03 layers in dependency order: handlers import services,
+ * services import types — navigating the fixture means crossing
+ * directories, which is what makes these specs grounding-heavy.
+ */
+export const GROUNDING_LAYERS: GroundingLayer[] = [
+	{ prefix: "type", dir: "packages/types" },
+	{ prefix: "svc", dir: "services" },
+	{ prefix: "handler", dir: "handlers" },
+];
+
+/** Which layer the i-th module belongs to (layers split the id space). */
+export function groundingLayerOf(i: number, files: number): number {
+	const per = Math.max(1, Math.floor(files / GROUNDING_LAYERS.length));
+	return Math.min(Math.floor(i / per), GROUNDING_LAYERS.length - 1);
+}
+
+/** Base name (no extension) of the i-th fixture module. */
+export function groundingModuleName(i: number, files: number): string {
+	return `${GROUNDING_LAYERS[groundingLayerOf(i, files)].prefix}${String(i).padStart(4, "0")}`;
+}
+
+/**
+ * mulberry32 — tiny deterministic PRNG, no stdlib, pure. Seeded per spec
+ * so the synthesized graph is identical run-to-run.
+ */
+export function mulberry32(seed: number): () => number {
+	let s = seed >>> 0;
+	return () => {
+		s = (s + 0x6d2b79f5) >>> 0;
+		let t = s;
+		t = Math.imul(t ^ (t >>> 15), t | 1);
+		t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+		return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+	};
+}
+
+/** Relative import specifier (no extension) from module `from` to `to`. */
+export function groundingImportPath(fromLayer: number, to: number, files: number): string {
+	const fromSegs = GROUNDING_LAYERS[fromLayer].dir.split("/");
+	const toLayer = groundingLayerOf(to, files);
+	const toSegs = GROUNDING_LAYERS[toLayer].dir.split("/");
+	let common = 0;
+	while (common < fromSegs.length && common < toSegs.length && fromSegs[common] === toSegs[common]) common++;
+	const ups = fromSegs.slice(common).map(() => "..");
+	const downs = toSegs.slice(common);
+	const name = groundingModuleName(to, files);
+	if (ups.length === 0 && downs.length === 0) return `./${name}`;
+	return [...ups, ...downs, name].join("/");
+}
+
+/**
+ * Pure: synthesize a cross-importing TypeScript corpus — `files` modules
+ * spread across GROUNDING_LAYERS (packages/types, services, handlers),
+ * each importing 2-4 strictly-earlier modules (a DAG by construction, at
+ * least one cross-layer edge per non-root-layer module) and padded to
+ * `locPerFile` lines of distinct well-formed code, plus an index.ts
+ * "front door" at the repo root importing a fixed spread across all three
+ * layers. Total ≈ files × locPerFile LOC (suite uses 210 × 480 ≈ 100k).
+ */
+export function buildGroundingFixture(body: GroundingBody): Array<{ path: string; content: string }> {
+	if (body.files < GROUNDING_LAYERS.length) {
+		throw new Error(`grounding fixture needs >= ${GROUNDING_LAYERS.length} files, got ${body.files}`);
+	}
+	if (body.locPerFile < 16) throw new Error(`grounding fixture locPerFile must be >= 16, got ${body.locPerFile}`);
+	const rand = mulberry32(body.seed);
+	const per = Math.max(1, Math.floor(body.files / GROUNDING_LAYERS.length));
+	const layerStart = (layer: number): number => layer * per;
+	const layerEnd = (layer: number): number =>
+		layer === GROUNDING_LAYERS.length - 1 ? body.files : (layer + 1) * per;
+	const out: Array<{ path: string; content: string }> = [];
+	for (let i = 0; i < body.files; i++) {
+		const layer = groundingLayerOf(i, body.files);
+		const name = groundingModuleName(i, body.files);
+		// Deps: strictly earlier module ids → acyclic by construction.
+		const deps = new Set<number>();
+		const nDeps = 2 + Math.floor(rand() * 3); // 2-4
+		if (i > 0) {
+			if (layer > 0) {
+				// Guaranteed cross-layer edge into the previous layer.
+				const start = layerStart(layer - 1);
+				deps.add(start + Math.floor(rand() * (layerEnd(layer - 1) - start)));
+			}
+			let guard = 0;
+			while (deps.size < nDeps && guard++ < 64) deps.add(Math.floor(rand() * i));
+		}
+		const lines: string[] = [];
+		for (const d of [...deps].sort((a, b) => a - b)) {
+			lines.push(`import { ${groundingModuleName(d, body.files)}Estimate } from \"${groundingImportPath(layer, d, body.files)}\";`);
+		}
+		if (lines.length > 0) lines.push("");
+		const depSum = [...deps].sort((a, b) => a - b).map((d) => `${groundingModuleName(d, body.files)}Estimate`).join(" + ");
+		lines.push(
+			`export const ${name}Estimate = ${depSum.length > 0 ? `${depSum} + ` : ""}${i};`,
+			`export interface ${name}Shape { id: number; label: string; depth: ${layer} }`,
+			`export function ${name}Describe(): string { return \"${name}\"; }`,
+		);
+		const fixed = lines.length;
+		for (let k = 0; k < Math.max(0, body.locPerFile - fixed); k++) {
+			lines.push(`export const ${name}_p${k} = ${(i * 7919 + k * 104729) % 65536};`);
+		}
+		out.push({ path: join(GROUNDING_LAYERS[layer].dir, `${name}.ts`), content: lines.join("\n") + "\n" });
+	}
+	// The front door: index.ts at the repo root imports a fixed spread
+	// across all three layers (the grounding-anchor spec starts here).
+	const spread = [0, 1, 25, 70, 99, 104, 140, 199, 200, 209].filter((d) => d < body.files);
+	const index = [
+		"// suite-03 grounding fixture — front door (generated).",
+		"// Imports a fixed spread of modules across packages/types, services,",
+		"// and handlers.",
+		"",
+		...spread.map(
+			(d) => `import { ${groundingModuleName(d, body.files)}Estimate } from \"./${GROUNDING_LAYERS[groundingLayerOf(d, body.files)].dir}/${groundingModuleName(d, body.files)}\";`,
+		),
+		"",
+		"export const FIXTURE_ESTIMATE = 42;",
+	];
+	out.push({ path: "index.ts", content: index.join("\n") + "\n" });
+	return out;
+}
+
+/** Files written / LOC committed by materializeGroundingFixture. */
+export interface GroundingFixtureStats {
+	files: number;
+	loc: number;
+}
+
+/**
+ * Materialize a fixture INTO a jj-tracked bench workspace and commit it,
+ * so the worker orients over a real, tracked, cross-importing graph.
+ * Composes with runOne's temp-repo creation (called after the init
+ * commit, before the worker spawns).
+ */
+export function materializeGroundingFixture(dir: string, body: GroundingBody): GroundingFixtureStats {
+	const files = buildGroundingFixture(body);
+	let loc = 0;
+	for (const f of files) {
+		const p = join(dir, f.path);
+		mkdirSync(dirname(p), { recursive: true });
+		writeFileSync(p, f.content, "utf-8");
+		loc += f.content.split("\n").length - 1;
+	}
+	execSync(`jj commit -m \"suite-03 grounding fixture (${body.files} modules, seed ${body.seed})\"`, {
+		cwd: dir,
+		stdio: "pipe",
+	});
+	return { files: files.length, loc };
+}
+
+/**
+ * Suite-03 cold-grounding specs. Each REQUIRES the worker to orient over
+ * the ~100k-LOC / 210-module tracked fixture; every Verification command
+ * is plain bash and asserts against the REAL tree (never a count answered
+ * in the prompt). Baselines are pre-R5 estimates until the recorded
+ * bench-good numbers land (R5).
+ */
+export const GROUNDING_SPECS: GroundingSpec[] = [
+	{
+		id: "grounding-anchor",
+		description: "ground at the fixture front door, list the modules it imports",
+		specMarkdown: `## Goal
+A synthetic TypeScript fixture (suite-03) fills this repo: modules under
+packages/types/, services/, and handlers/ cross-import each other. Orient
+from the single anchor file index.ts at the repo root.
+
+## Requirements
+- R1: Read index.ts and identify every module it imports.
+- R2: Write INDEX.md at the repo root listing each imported module's bare file name (e.g. type0000.ts), one per line, no other content.
+- R3: Commit the change with jj (message: "grounding-anchor")
+
+## Verification
+- test -f INDEX.md
+- test "$(grep -cE '^(type|svc|handler)[0-9]{4}\\.ts$' INDEX.md | tr -d ' ')" -ge 10
+- test "$(find packages services handlers -name '*.ts' | wc -l | tr -d ' ')" -ge 200
+- test "$(find packages services handlers index.ts -name '*.ts' -print0 | xargs -0 cat | wc -l | tr -d ' ')" -ge 100000
+`,
+		fixture: { seed: 42, files: 210, locPerFile: 480 },
+		baseline: {
+			// Pre-R5 estimate; refreshed with the recorded baseline (bench-good) after R5.
+			default: { durationMs: 300_000, costUsd: 0.3 },
+		},
+	},
+	{
+		id: "grounding-imports",
+		description: "count the cross-file import edges over the fixture",
+		specMarkdown: `## Goal
+The fixture in this repo (packages/types/, services/, handlers/) is a DAG
+of module imports. Count its edges by scanning the tree — index.ts at the
+repo root is the front door but is NOT part of the count.
+
+## Requirements
+- R1: Count every line that starts with "import " across all *.ts files under packages/, services/, and handlers/ (repo-root index.ts excluded).
+- R2: Write INVENTORY.md at the repo root containing a single line "edges: <N>" with that count.
+- R3: Commit the change with jj (message: "import-edges")
+
+## Verification
+- test -f INVENTORY.md
+- test "$(grep -c '^edges: ' INVENTORY.md | tr -d ' ')" -eq 1
+- test "$(grep -oE '^edges: [0-9]+' INVENTORY.md)" = "edges: $(grep -rh '^import ' packages services handlers | wc -l | tr -d ' ')"
+- test "$(find packages services handlers -name '*.ts' | wc -l | tr -d ' ')" -ge 200
+`,
+		fixture: { seed: 1337, files: 210, locPerFile: 480 },
+		baseline: {
+			// Pre-R5 estimate; refreshed with the recorded baseline (bench-good) after R5.
+			default: { durationMs: 300_000, costUsd: 0.3 },
+		},
+	},
+	{
+		id: "grounding-surface",
+		description: "recover the fixture's max module index by scanning",
+		specMarkdown: `## Goal
+The fixture's modules follow a strict naming pattern: <prefix>NNNN.ts
+where NNNN is a zero-padded module index, across packages/types/,
+services/, and handlers/. Recover the surface extent by scanning.
+
+## Requirements
+- R1: Find the largest module index NNNN defined by any *.ts file under packages/, services/, and handlers/.
+- R2: Write SURFACE.md at the repo root containing a single line "max-module-index: <N>" where <N> is that index as a plain decimal number (no leading zeros).
+- R3: Commit the change with jj (message: "grounding-surface")
+
+## Verification
+- test -f SURFACE.md
+- test "$(grep -c '^max-module-index: ' SURFACE.md | tr -d ' ')" -eq 1
+- test "$(grep -oE '^max-module-index: [0-9]+' SURFACE.md)" = "max-module-index: $(find packages services handlers -name '*.ts' | grep -oE '[0-9]{4}' | sort -n | tail -1 | sed 's/^0*//')"
+- test "$(find packages services handlers -name '*.ts' | wc -l | tr -d ' ')" -ge 200
+`,
+		fixture: { seed: 2048, files: 210, locPerFile: 480 },
+		baseline: {
+			// Pre-R5 estimate; refreshed with the recorded baseline (bench-good) after R5.
+			default: { durationMs: 300_000, costUsd: 0.3 },
+		},
+	},
+];
+
+/**
+ * Bench spectrum: BENCH_SPECS (v1 canned, length-locked at 2-3) FIRST,
+ * then GROUNDING_SPECS (suite-03). The runner's default spec set.
+ */
+export const ALL_SPECS: BenchSpec[] = [...BENCH_SPECS, ...GROUNDING_SPECS];
 
 // ─── Plan assembly (pure) ────────────────────────────────────────────
 
@@ -345,7 +626,7 @@ export function renderBenchPlan(plan: BenchPlan): string[] {
 	if (specs.length > 0) {
 		lines.push(`specs (${specs.length}):`);
 		for (const specId of specs) {
-			const spec = BENCH_SPECS.find((s) => s.id === specId);
+			const spec = ALL_SPECS.find((s) => s.id === specId);
 			lines.push(`  ${specId} — ${spec?.description ?? "?"}`);
 		}
 	}
@@ -353,7 +634,7 @@ export function renderBenchPlan(plan: BenchPlan): string[] {
 	for (const t of plan.tiers) {
 		for (const r of t.runs) {
 			lines.push(
-				`  ${r.tier.padEnd(9)} × ${r.specId.padEnd(7)} ${formatDuration(r.expectedDurationMs).padStart(7)} ` +
+				`  ${r.tier.padEnd(9)} × ${r.specId.padEnd(16)} ${formatDuration(r.expectedDurationMs).padStart(7)} ` +
 					`${fmtUsd(r.expectedCostUsd).padStart(9)}`,
 			);
 		}
@@ -382,7 +663,7 @@ export function renderBenchReport(rows: BenchComparisonRow[]): string[] {
 					`${formatDuration(r.avgDurationMs)} ${fmtUsd(r.avgCostUsd)} ` +
 					`(${r.durationRatio.toFixed(2)}x/${r.costRatio.toFixed(2)}x baseline)`;
 		const flag = r.regressions.length > 0 ? `  ⚠ ${r.regressions.join("; ")}` : "";
-		lines.push(`  ${r.tier.padEnd(9)} × ${r.specId.padEnd(7)} ${data}${flag}`);
+		lines.push(`  ${r.tier.padEnd(9)} × ${r.specId.padEnd(16)} ${data}${flag}`);
 	}
 	if (regressions.length > 0) {
 		lines.push(
@@ -417,6 +698,10 @@ export interface BenchOptions {
 	 *  fallback. */
 	shape?: string;
 	tierFilter?: string[];
+	/** Narrow to these spec ids (--spec, repeatable). Empty = the full
+	 *  default set. Unknown ids are an error. */
+	specFilter?: string[];
+	/** Explicit spec set; defaults to ALL_SPECS (canned + suite-03). */
 	specs?: BenchSpec[];
 	metricsDir: string;
 	projectPrefix?: string;
@@ -434,10 +719,19 @@ export interface BenchOptions {
  */
 export async function runBench(opts: BenchOptions): Promise<BenchRunOutcome> {
 	const projectPrefix = opts.projectPrefix ?? "bench-";
+	const specSet = opts.specs ?? ALL_SPECS;
+	const specFilter = opts.specFilter ?? [];
+	const unknown = specFilter.filter((id) => !specSet.some((s) => s.id === id));
+	if (unknown.length > 0) {
+		throw new Error(
+			`--spec matched no known spec id(s): ${unknown.join(", ")} (known: ${specSet.map((s) => s.id).join(", ")})`,
+		);
+	}
+	const specs = specFilter.length > 0 ? specSet.filter((s) => specFilter.includes(s.id)) : [...specSet];
 	const plan = buildBenchPlan({
 		tiers: opts.tiers,
 		tierOrder: opts.tierOrder,
-		specs: opts.specs,
+		specs,
 		tierFilter: opts.tierFilter,
 		shape: opts.shape,
 	});
@@ -446,7 +740,6 @@ export async function runBench(opts: BenchOptions): Promise<BenchRunOutcome> {
 		return { exitCode: 0, plan, failures: [], report: renderBenchPlan(plan) };
 	}
 
-	const specs = opts.specs ?? BENCH_SPECS;
 	const failures: BenchRunFailure[] = [];
 	for (const tierPlan of plan.tiers) {
 		const tierConfig = opts.tiers[tierPlan.tier];
@@ -512,6 +805,15 @@ async function runOne(opts: {
 		writeFileSync(join(dir, "README.md"), "# Bench repo\n", "utf-8");
 		execSync('jj commit -m "init"', { cwd: dir, stdio: "pipe" });
 
+		// Suite-03: grounding-heavy specs materialize their seeded fixture
+		// INTO the bench repo (committed) before the worker spawns, so the
+		// worker orients over a real tracked ~100k-LOC graph.
+		const fixture = (opts.spec as GroundingSpec).fixture;
+		if (fixture) {
+			const stats = materializeGroundingFixture(dir, fixture);
+			console.log(`  fixture: ${stats.files} files · ${stats.loc} LOC (seed ${fixture.seed})`);
+		}
+
 		// Lazy import: the orchestrator (and its worker machinery) loads
 		// only when a run actually happens — dry-run and hermetic tests
 		// never pull it in.
@@ -550,6 +852,8 @@ async function runOne(opts: {
 
 export interface BenchCliArgs {
 	tierFilter: string[];
+	specFilter: string[];
+	shape?: string;
 	dryRun: boolean;
 	metricsDir?: string;
 	help: boolean;
@@ -557,13 +861,17 @@ export interface BenchCliArgs {
 
 /** Parse the CLI flags. Pure — tested. */
 export function parseBenchArgs(argv: string[]): BenchCliArgs {
-	const out: BenchCliArgs = { tierFilter: [], dryRun: false, help: false };
+	const out: BenchCliArgs = { tierFilter: [], specFilter: [], dryRun: false, help: false };
 	for (let i = 0; i < argv.length; i++) {
 		const arg = argv[i];
 		if (arg === "--shape") {
 			const value = argv[++i];
 			if (value === undefined) throw new Error("--shape requires a value");
 			out.shape = value;
+		} else if (arg === "--spec") {
+			const value = argv[++i];
+			if (value === undefined) throw new Error("--spec requires a value");
+			out.specFilter.push(value);
 		} else if (arg === "--tier") {
 			const value = argv[++i];
 			if (value === undefined) throw new Error("--tier requires a value");
@@ -583,13 +891,15 @@ export function parseBenchArgs(argv: string[]): BenchCliArgs {
 	return out;
 }
 
-const USAGE = `usage: npx tsx extensions/task/bench-regression.ts [--tier <name>] [--dry-run]
+const USAGE = `usage: npx tsx extensions/task/bench-regression.ts [--tier <name>] [--spec <id>] [--dry-run]
 
 Runs tiny canned specs per budget tier (models from task.toml) and reports
 latency/cost against shipped baselines. See the header of this file.
 
 flags:
   --tier <name>     restrict to one tier (repeatable)
+  --spec <id>       restrict to one spec id (repeatable; matches canned
+                    and suite-03 grounding specs)
   --shape <name>    run-pipeline shape to benchmark (default: code;
                     analysis benchmarks the strong-writer shape)
   --dry-run         print the run plan and exit 0 (no spawns, no LLM)
@@ -619,6 +929,7 @@ async function main(): Promise<number> {
 		shapes: config.shapes,
 		shape: args.shape,
 		tierFilter: args.tierFilter,
+		specFilter: args.specFilter,
 		metricsDir,
 		dryRun: args.dryRun,
 		sandbox: config.sandbox,
