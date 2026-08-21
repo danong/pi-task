@@ -79,7 +79,7 @@ paying twice. Escalating options:
    turns of re-discovery. Design pass first (when to fork vs cold-start,
    context-pollution risk, cache behavior).
 
-## Wave 4 — session_id (correlation) LANDED
+## Wave 4 — session_id (correlation) LANDED — real-run confirmation pending
 
 Every pi process that talks to a provider now carries a top-level `session_id`
 in each outgoing request (`before_provider_request`), via the always-loaded
@@ -100,6 +100,10 @@ in each outgoing request (`before_provider_request`), via the always-loaded
 
 Gives per-run correlation in OpenRouter's dashboard, which cheapens debugging.
 
+**What remains:** a real-run check that the field actually lands in the
+outbound provider payload (the M2 smoke was dropped by plan). See
+"Residual verification (passive)" below.
+
 ## Usage policy (no build)
 
 Route-by-shape (batch for greenfield parallelizable, review-less economy for
@@ -114,3 +118,22 @@ caching). Worth a short section in the design doc's cost note so it survives.
   thinking-level downgrade): quality preserved, context flattened.
 - Wave-1 canary folded into wave 1 (single commit, UAT by the free-model
   tiny task).
+
+## Residual verification (passive)
+
+Two wave mechanisms are shipped but never confirmed on a REAL run (cheap
+devs, not free-model canaries). Both confirmations are one real task run
+away — same recipe, watch for two things:
+
+1. **session_id in the outbound payload** (Wave 4): run any small real task
+   (e.g. `timeout 900 npx tsx extensions/task/test-e2e.ts`) and confirm the
+   provider request carries `session_id` = the run id (capture via a payload
+   log, or check OpenRouter's dashboard for the run's requests).
+2. **reasoning.exclude continuation** (Wave 1 item 4): in that same run,
+   watch that a multi-turn worker completes without a corrupted-signature
+   failure (the transcript skips `reasoning_details`). If it breaks, flip
+   `PI_TASK_EXCLUDE_REASONING` off or gate it in config.
+
+Work is complete when both hold on one real run; record the result in the
+wave section above. Until then the mechanisms stay "landed, confirmation
+pending" — do not claim real-run safety in docs.
