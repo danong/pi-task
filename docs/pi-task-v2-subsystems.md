@@ -210,7 +210,7 @@ prompt-bound payloads.)
 | :---- | :---- |
 | **AST-aware 3-way merge** | Research-grade problem replacing a battle-tested ladder that took many commits to harden (see jj history: divergent changes, stale squash targets, union-tool aborts). Textual 3-way + union + LLM residual micro-session is what actually works. Revisit only after suite 03 shows merge failures dominating. |
 | **Persistent planner session/role** | Would own the system's deepest context and be the hardest thing to prune; its output (a bundle) is exactly what a thin one-shot function or an in-session prewalk phase produces without the standing state. |
-| **Hard 3–5 turn budgets** | Below the measured cheap-model floor (4–10 turns on TRIVIAL specs, 2026-08 bench). Causes systematic exhaustion→retry loops costing more than they save. Superseded by FR-3 per-attempt budgets. |
+| **Hard 3–5 turn budgets** | Below the cheap-model floor (cheap models spend 4–10 turns even on trivial specs — reproducible via the bench harness). Causes systematic exhaustion→retry loops costing more than they save. Superseded by FR-3 per-attempt budgets. |
 | **Big-bang rewrite** | Destroys the active harness used to build v2. Four-phase migration instead. |
 | **Monolithic server container** | Image bloat + cross-repo toolchain conflicts; EnvironmentDrivers exist for this. |
 | **In-process extension forever (v1)** | Inverted ownership; fixed by the daemon (FR-1) while keeping the extension as the first client. |

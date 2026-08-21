@@ -1,316 +1,341 @@
 # pi-task-v2 — Design Contract
 
-**Status:** Proposed (v4) · **Supersedes:** v3.1 (2026-08; see `jj log` for the
-prior revision) · **Companions:**
-[subsystems](pi-task-v2-subsystems.md) (interfaces, schemas, ledger DDL,
-plugin contract) · [future](pi-task-v2-future.md) (scale-readiness, deferred
-mechanisms).
+**Status:** Proposed · **Companions:**
+[subsystems](pi-task-v2-subsystems.md) (kernel interfaces, payload schemas,
+ledger DDL, plugin contract) · [future](pi-task-v2-future.md)
+(scale-readiness, deferred mechanisms).
 
-This document is the overview contract: invariants, role responsibilities,
+This document is the overview contract: the problem, the architecture,
 context lifecycle, requirements, benchmarks, and milestones. Everything
 implementation-shaped lives in the subsystems doc; everything not needed to
-build v1's successor lives in the future doc.
+build the next version lives in the future doc.
 
-## 1. Background
+## 1. What pi-task is
 
-### 1.1 What v1 proved
+pi-task is a task-execution engine for the [pi coding agent](https://pi.dev).
+A conversational agent chats with the user, decomposes engineering work into
+specs (Goal / Requirements / Verification), and dispatches them to isolated
+worker sessions that edit code, run tests, and commit — under gates enforced
+by deterministic software rather than by prompts:
 
-pi-task-v1 runs as a pi extension: the conversational agent plans and
-dispatches; isolated worker sessions execute under real gates (typed yields,
-bash verification, atomic jj merges). It works and it is cheap where it
-matters. Its measured floor (bench-regression, canned specs, 2026-08):
+- completion requires schema-validated yields AND passing bash verification;
+- parallel workers run in isolated jj workspaces combined by an atomic,
+  deterministic merge ladder;
+- spend is controlled structurally (budget tiers locked out of the model's
+  tool schema), not conversationally;
+- every run leaves typed evidence: a manifest with cost/latency/token
+  phases, and on failure a diagnostic artifact with a recovery guide.
 
-- ~3.5k input tokens is the minimum for ANY run — the fixed worker prompt
-  dominates at small task sizes. Grounding overhead, not model price, is the
-  cost term to attack.
-- Turn counts are model-dependent: a frontier-class model holds ~4 turns on
-  trivial specs; a cheap workhorse varies 4–10 turns on the same spec.
-  Any hard turn budget below the cheap-model floor causes systematic
-  exhaustion→retry loops that cost more than the turns saved.
-- Latency on small tasks is model-insensitive (~20–25s); the good model buys
-  turn efficiency, not speed.
-- Cost per trivial run: $0.0005–0.0013 (deepseek-flash class), effective
-  $0.0030–0.0037 for a frontier-class model at assumed discount rates.
+## 2. Why a v2
 
-These numbers are v2's bar. A proposal that cannot state its predicted
-numbers against them does not get built.
+v1 runs entirely inside the conversational agent's process: the engine is a
+pi extension, workers are child processes reached over JSON-RPC. That
+substrate produced four structural problems no amount of hardening fixes:
 
-### 1.2 Lessons from v1 — full disposition table
-
-Rule: no v1 capability is dropped without an explicit disposition.
-
-| v1 mechanism | Disposition in v2 |
+| Problem | Consequence |
 | :---- | :---- |
-| Hard bash-exit-code verification gates | **Kept** — FR-5 |
-| Typed Zod yields / "tools enforce, prompts suggest" | **Kept** — FR-7 |
-| jj workspace isolation + atomic revset-union squash merge | **Ported verbatim** as the first WorkspaceDriver — FR-4. Not redesigned. |
-| Deterministic union ladder + consistency gate (`assertMerged`) + recovery artifacts | **Ported verbatim** with FR-4 |
-| Prewalk (strong explore → cheap execute swap within one session) | **Kept** — planning mode (a), §3.4 |
-| Forked adversarial review w/ context inheritance | **Kept, budget-gated** — §3.6 |
-| Budget tiers, schema-locked spend control | **Kept** — FR-8 |
-| Batch/flex lanes (OpenRouter batch lane, service_tier flex) | **Kept, generalized** — FR-8 |
-| Watchdogs (settle/no-progress/wall/tool-timeout/verification grace) | **Ported verbatim** — FR-6 |
-| Failure artifacts + scripted recovery guides | **Kept** — FR-6 |
-| Run manifests + `/task-stats` metrics path | **Kept, extended** — NFR-3 (COR accounting) |
-| Session-id correlation, reasoning.exclude, slim prompts, conditional prewalk, checklist-per-tier | **Kept as-is** (cost waves; orthogonal to architecture) |
-| Detached dispatch (`detach: true` + runner child) | **Superseded structurally** — the daemon IS detached by default; per-run detach remains for interactive progress |
-| Inverted ownership (client crash kills tasks) | **Fixed** — FR-1 standalone daemon |
-| Nested RPC worker spawn | **Superseded** — FR-1 in-process SDK sessions |
-| Context-carrying dispatch (Wave-3 fork idea) | **Designed** — planning mode (c), §3.4 |
-| Orientation sections in specs (Wave-3 item 1) | **Formalized** — §3.3 |
+| Inverted ownership | the engine lives in the client session; a crash/reload/disconnect kills in-flight tasks |
+| Nested process RPC | stdin/stdout serialization, fd leaks, awkward recovery between orchestrator and workers |
+| Main-session inflation | the orchestrating conversation accumulates transcripts across many tasks; long-running sessions degrade and get expensive |
+| Environment coupling | one host serves all projects; toolchains conflict, sandboxing fights the host |
 
-## 2. Requirements
+Separately, the *economics* of multi-session agent chains have a known shape:
+every process boundary duplicates expensive work (each new session re-reads
+code the previous one already read), and unstructured prose handoffs make
+receivers reconstruct what senders knew. Any redesign must treat context as
+the scarce resource and move it across boundaries only as small typed
+artifacts — or not at all.
 
-### 2.1 Functional
+### What changes vs. what stays
 
-> **FR-1 (Standalone Host Orchestrator).** A persistent Node.js daemon owns
-> all task state; conversational clients attach and detach freely. Workers
-> run as in-memory SDK sessions inside the daemon — no nested RPC, no pid
-> bookkeeping for interactive workers. Heartbeats apply only to real child
-> processes (detached runners, scheduler jobs).
+**Stays** (ported unchanged — these are solved problems): verification
+gates, typed yields, budget tiers and lanes, the jj merge ladder, watchdogs
+and failure diagnostics, manifests/metrics, batch processing.
+
+**Changes:** the engine becomes a **standalone daemon** owning all task
+state (workers become in-process SDK sessions, clients attach/detach
+freely); a pure-code **router** selects how each task is planned and
+executed; **context flow becomes explicit** — exactly five typed artifacts
+may cross a session boundary, and forks pass through prune profiles; the
+kernel grows **pluggable seams** so environment-specific behavior
+(workspaces, containers, compression, transports) attaches without core
+changes.
+
+## 3. Requirements
+
+### 3.1 Functional
+
+> **FR-1 (Standalone orchestrator).** A persistent Node.js daemon owns task
+> state; conversational clients attach and detach freely. Workers run as
+> in-memory SDK sessions inside the daemon — no nested RPC. Heartbeats apply
+> only to real child processes (detached jobs); in-process sessions have no
+> pid and need none.
 >
 > **FR-2 (Typed boundary artifacts).** Exactly five artifact types cross a
 > context-ownership boundary: Spec, ExecutionBundle, Yield, HandoffBundle,
-> TaskReceipt. All are Zod-schema'd ([subsystems](pi-task-v2-subsystems.md)
-> §2). Transcripts never leave the session that paid for them except through
-> an explicit fork with a prune profile. Artifact fields that would break
-> deterministic serialization (timestamps, session ids, run ids) never
-> serialize into prompts.
+> TaskReceipt ([subsystems](pi-task-v2-subsystems.md) §2). Transcripts never
+> leave the session that paid for them except through an explicit fork with
+> a prune profile. Fields that would break deterministic serialization
+> (timestamps, ids) are ledger-only and never serialize into prompts.
 >
-> **FR-3 (Bounded attempts, not bounded turns).** Worker bounds are
-> wall-clock + watchdogs (ported from v1) plus a PER-ATTEMPT turn budget,
-> config-driven, defaulting above the measured cheap-model floor (≥10;
-> see §1.1). Exhaustion routes to HandoffBundle retry (bounded), not task
-> failure.
+> **FR-3 (Bounded attempts).** Worker bounds are wall-clock + watchdogs plus
+> a PER-ATTEMPT turn budget, config-driven, set above the cheap-model floor
+> (§6 — budgets below what cheap models actually spend cause
+> exhaustion→retry loops that cost more than they save). Exhaustion routes
+> to a bounded HandoffBundle retry, not task failure.
 >
-> **FR-4 (Workspace & merge = v1's proven ladder).** The first
-> JujutsuWorkspaceDriver ports v1's merge machinery unchanged: AI-authored
-> task base, single atomic squash over a revset union, deterministic union
-> ladder, post-merge consistency gate, preserved-workspace failure artifacts
-> with recovery guides. AST-aware merging is explicitly rejected
-> ([subsystems](pi-task-v2-subsystems.md) §4 — Alternatives).
+> **FR-4 (Workspaces & merge).** Isolated jj workspaces per parallel worker;
+> the atomic combine + deterministic union ladder + post-merge consistency
+> gate port unchanged as the first WorkspaceDriver implementation. AST-aware
+> merging is rejected ([subsystems](pi-task-v2-subsystems.md) §5) — textual
+> 3-way + union resolution + LLM residual micro-sessions is what works.
 >
-> **FR-5 (Hard verification gates).** Completion gated by real bash exit
-> codes executed post-merge, per-command timeout, grace when the wall
-> expires mid-verification. Unchanged from v1.
+> **FR-5 (Hard verification).** Completion gated by real bash exit codes
+> executed post-merge; per-command timeouts; grace when a wall expires
+> mid-verification. The gate never trusts claims.
 >
-> **FR-6 (Operational hardening, ported).** The full v1 watchdog taxonomy,
-> failure diagnostics (cause + last tool + stderr tail), and failure
-> artifacts are engine invariants, not optional middleware.
+> **FR-6 (Operational hardening).** Watchdogs (idle settle, no progress,
+> wall clock, per-tool timeout, verification grace), failure diagnostics
+> (cause + last action + stderr tail), and failure artifacts with scripted
+> recovery guides are engine invariants.
 >
 > **FR-7 (Pluggable seams).** Five kernel interfaces — WorkspaceDriver,
 > EnvironmentDriver, ContextCompressor, VerificationDriver, TaskPlugin —
-> behind which all environment-specific behavior lives. Plugin contract
-> (one file, one interface, one hermetic test, no shared mutable state) and
-> the TaskGateway event vocabulary are specified in
-> [subsystems](pi-task-v2-subsystems.md) §3 before any plugin code exists.
+> behind which all environment-specific behavior lives. The plugin contract
+> and gateway event vocabulary are specified
+> ([subsystems](pi-task-v2-subsystems.md) §3) BEFORE any plugin code.
 >
-> **FR-8 (Model routing & lanes).** Model assignment is per-role config
-> with graceful degradation (§2.2). Lanes: interactive (default), flex,
-> batch; unsupported lanes degrade to interactive. Roles are structural
-> (session shapes, prompts, budgets); the MODEL per role is configuration.
+> **FR-8 (Model routing & lanes).** Model assignment is per-role config;
+> roles are structural (session shapes, prompts, bounds) while the model per
+> role is configuration — single-model operation changes no interfaces.
+> Lanes: interactive (default), flex, batch; unsupported lanes degrade.
 >
-> **FR-9 (Engineering bar).** The repo carries a typecheck gate (tsc or
-> equivalent) in CI, and every kernel seam has a smoke test that exercises
-> its REAL path (the orchestrator invocation, not just exported pure
-> functions). Rationale: two drift bugs shipped green because tsx strips
-> types without checking and hermetic tests covered only pure parts. Cheap
-> models building plug-ins produce exactly this defect class; the gate is
-> what makes FR-7 safe.
+> **FR-9 (Engineering bar).** CI carries a typecheck gate, and every kernel
+> seam has a smoke test exercising its REAL path (an actual end-to-end
+> invocation, not just exported pure functions). Rationale: TypeScript
+> runners that strip types without checking let undeclared identifiers ship
+> green, and pure-function tests don't cover integration drift — the two
+> failure classes that motivated this requirement.
 
-### 2.2 Non-functional
+### 3.2 Non-functional
 
 > **NFR-1 (Crash recovery).** Task graphs and session state persist in
 > `.pi/tasks.db`; boot reconciliation re-hydrates or reaps crashed runs.
 > Recovery reads the ledger, never transcripts.
 >
-> **NFR-2 (Graceful degradation).** Every optimization disables cleanly:
-> reviewer skipped or downgraded per budget tier (v1's `[budget.*].review`
-> flag semantics carry over), bundles skipped when `bundle_hit_rate` is low,
-> forks skipped when fork-deviation rate is high, sandbox disabled where
-> bwrap is absent, single-model single-lane operation changes no interfaces.
-> The system must run correctly with one free model and zero optional
-> features enabled.
+> **NFR-2 (Graceful degradation).** Every optimization disables cleanly and
+> the system remains correct: review skipped or downgraded per budget tier;
+> bundles skipped where their hit rate is poor; forks skipped where they
+> pollute; sandbox off where unavailable; single free model with zero
+> optional features is a fully supported configuration.
 >
 > **NFR-3 (Measured efficiency).** Every run records COR operationally:
-> grounding tokens (spec + bundle/orientation + fixed prefix) ÷ total input
-> tokens, computed from manifest phase data. Target < 0.20 on grounding-heavy
-> suites. Cost ∝ diff size, not repo size. v1's §1.1 numbers are the baseline.
+> grounding tokens (fixed prefix + spec + injected codebase context) ÷ total
+> input tokens, computed from manifest phase data. Cost should scale with
+> diff size, not repository size. Current-engine measurements are the
+> baseline to beat (§6).
 >
 > **NFR-4 (Cache affinity).** Request prefixes are deterministic per task;
 > retries APPEND handoffs to an identical serialized prefix (append-only,
-> cache-preserving). No timestamps/ids ahead of the conversation.
+> cache-preserving).
 
-### 2.3 Guiding principles
+### 3.3 Principles
 
 1. **Code orchestrates, LLMs judge.** Routing, spawning, merging, gating are
    deterministic code; models write code and evaluate diffs.
-2. **Context continuity beats handoff — by default.** Handoffs (bundles,
-   handoff bundles) are optimizations that must earn their way in per-repo
-   via measured hit rates, not foundations the system depends on.
-3. **Every artifact is both interface and collector.** Each typed boundary
-   artifact exists so the sender may forget (§3).
+2. **Context continuity beats handoff, by default.** Handoff artifacts are
+   optimizations that earn their way in via measurement, not foundations.
+3. **Every artifact is both interface and collector.** Boundary artifacts
+   exist precisely so the sender may forget (§5).
 4. **Scale via seams; degrade gracefully.** New capability attaches as a
-   driver or plugin; every optimization has an off-switch that keeps the
-   system correct (NFR-2).
-
-## 3. Context ownership & lifecycle
-
-The organizing rule: **every piece of context has exactly one owner, and
-crossing an ownership boundary requires a typed artifact — never implicit
-flow.**
-
-### 3.1 Roles
-
-| Role | Who | Context fate |
-| :---- | :---- | :---- |
-| Spec author | conversational agent (main session) | persists across tasks, pruned via receipts + eviction |
-| Router | deterministic code | none — pure decisions from spec metadata + config + manifest feedback |
-| Planner | *not a peer role* — a phase inside the worker, or a thin one-shot function | dies with the task |
-| Worker | cheap/fast model (config) | destroyed on yield/exhaustion |
-| Reviewer | strong model (config), budget-gated | forked, pruned, dies with review |
-
-There is no standing planner session. Planning is either a phase in the
-executing session (continuity) or a thin function producing an ExecutionBundle
-(fast path). A persistent planner would own the deepest context in the system
-and be the hardest thing to prune.
-
-### 3.2 The cycle
-
-```
- user intent
-     │
-[1] SPEC          main agent writes Goal / Requirements / Verification
-     │            + orientation section (known facts, dead ends)
-     │            → licenses the main session to FORGET those facts
-     ▼
-[2] ROUTE         pure code picks planning mode + shape + lane
-     │            inputs: requirement count, continuation signal,
-     │            bundle_hit_rate, fork_deviation_rate, budget tier
-     ▼
-[3] PLAN+EXECUTE  one of three modes (§3.4), inside a disposable session
-     │
-     ├─ fail small → nudge same session (hot context, ~tens of tokens)
-     ├─ fail large → fresh worker + HandoffBundle (append-only, cache-safe)
-     ▼
-[4] REVIEW        optional; fork of the WORKER session through the
-     │            review prune profile; typed findings; budget-gated
-     ▼
-[5] RECEIPT       TaskReceipt (~150 tok) to the main session;
-                  verified insights → episodic memory store (future doc E.3)
-```
-
-### 3.3 Pruning inventory
-
-| Context | Owner | Pruned how | Escapes as |
-| :---- | :---- | :---- | :---- |
-| Conversational transcript | main session | receipts replace results; spec-writing externalizes facts; pluggable scorer evicts old turns | specs, forks (through profile) |
-| Exploration reads | worker session | session destroyed on yield/exhaustion | Yield payload, manifest metrics |
-| Planning output | prewalk phase or bundle fn | bundle capped ≤200 tok/file; prewalk context dies with worker | ExecutionBundle |
-| Failure detail | failed worker | capped tails (`capFixOutput` semantics) | HandoffBundle |
-| Review context | reviewer fork | review prune profile | typed findings |
-| Long-term insight | nobody's context | content-hash invalidation + circuit-breaker retest | episodic memory store |
-
-Each artifact is simultaneously the interface AND the collection mechanism:
-the spec exists to let the main session forget; the yield exists so the
-orchestrator never sees a transcript; the handoff exists so retries don't
-re-read; the receipt exists so conversation survives many tasks.
-
-### 3.4 Planning modes (router-selected)
-
-**(a) Prewalk-in-session — default for continuation/complex tasks.**
-Strong model explores INSIDE the session that executes; swap to the cheap
-execute model on first edit. Zero handoff loss. This is v1's mechanism,
-unchanged, and the reason there is no planner role.
-
-**(b) Bundle fast path — well-scoped self-contained tasks.** Thin one-shot
-call (strong model, few turns) emits an ExecutionBundle: target files, line
-ranges, minimal type defs, verify commands. Worker starts grounded turn 1.
-Miss-path is specified: workers never lose explore tools, so a wrong bundle
-degrades into mode (a) mid-run; the miss increments the repo's
-bundle_hit_rate and the router stops offering bundles until the compressor
-improves. Bundles are an optimization that earns its way in per-repo.
-
-**(c) Fork-from-conversation — interactive work continuing into dispatch.**
-Worker forks the main session through the CONTINUATION PRUNE PROFILE: goals +
-active spec + recent receipts + orientation facts; implementation chatter,
-tool output, resolved deliberation dropped. One re-encode of ~2–5k tokens
-instead of N discovery turns. Pollution risk handled like bundle misses: the
-yield's deviations field records it, the router tracks fork_deviation_rate,
-cooling-off is automatic.
-
-### 3.5 Repair policy
-
-Verification failure size/type thresholds (pure, testable, tunable) choose:
-small → nudge the same session (context hot); large → fresh worker +
-HandoffBundle appended to an identical serialized prefix (cache-preserving,
-NFR-4). Retry count bounded per task (v1 semantics).
-
-### 3.6 Review
-
-Reviewer forks the WORKER session post-yield through the review prune
-profile (diff + requirements + compressed implementation rationale; read and
-tool noise dropped). Findings return typed. Budget-gated per NFR-2: tiers may
-skip review entirely (v1's economy/free already do) or run it on the
-workhorse instead of a strong model (v1's full tier already does).
+   driver/plugin; every optimization has an off-switch that preserves
+   correctness.
 
 ## 4. Architecture
 
-Standalone daemon (FR-1) embedding pi as SDK sessions; conversational
-clients (pi extension, CLI/TUI, later others — see future doc) attach over a
-local transport. Kernel = the five FR-7 interfaces + TaskGateway + SQLite
-ledger + the routing/policy functions (pure). Worker pipeline per task =
-route → plan/execute → verify → (review → fix loop) → receipt, with v1's
-watchdogs, gates, and artifacts ported verbatim.
+```
+ conversational agent ──┐                      ┌─ CLI/TUI ──┐
+ (spec author)          ├─ local transport ────┤  scheduler │   clients
+                        │                      └─ CI/cron ──┘   (attach/
+                        ▼                                       detach freely)
+        ┌─────────────────────────────────────────────┐
+        │            pi-task-v2 daemon                │
+        │  task graph + ledger (.pi/tasks.db)         │
+        │  router (pure policy functions)             │
+        │  kernel: workspace/env/compress/verify      │
+        │          drivers + TaskGateway (plugins)    │
+        │                                             │
+        │  worker pipeline: route → ground → execute  │
+        │  → verify → (review → fix) → receipt        │
+        │  (in-process SDK sessions, v1 watchdogs)    │
+        └─────────────────────────────────────────────┘
+```
 
-Model-per-role defaults follow v1's measured economics: cheap workhorse for
-the token-hungry loop; strong model only for thin slices (prewalk, bundles,
-reviews) — and only when the tier pays for it.
+Model economics follow a simple rule: the token-hungry tool loop runs on a
+cheap configured workhorse; stronger models are bought only for thin slices
+(exploration during prewalk, bundle generation, reviews) and only when the
+active budget tier pays for them.
 
-## 5. Benchmarks
+## 5. Context ownership & lifecycle
 
-Harness: `packages/benchmarks`, extending `extensions/task/bench-regression.ts`
-(now functional; its 2026-08 drift bugs motivate FR-9).
+Organizing rule: **every piece of context has exactly one owner, and
+crossing an ownership boundary requires a typed artifact — never implicit
+flow.**
 
-Suites — note the added grounding class, which is where bundle economics
-actually live:
+### 5.1 Roles
+
+| Role | Who | Context fate |
+| :---- | :---- | :---- |
+| Spec author | conversational agent | persists across tasks; pruned via receipts + eviction |
+| Router | deterministic code | none — pure decisions from spec metadata, config, past-run telemetry |
+| Planner | *not a role* — a phase or thin function (§5.3) | dies with the task |
+| Worker | configured model | disposable; destroyed on yield/exhaustion |
+| Reviewer | configured model, budget-gated | forked, pruned, dies with the review |
+
+There is deliberately no standing planner session: it would own the deepest
+context in the system and be the hardest thing to prune.
+
+### 5.2 Worker context injection
+
+What a worker session receives at spawn, in order:
+
+1. **Engine prefix** — fixed prompt: tool rules, yield contract, checklist
+   protocol. This is the irreducible floor every run pays (~3.5k tokens in
+   the current engine); keeping it slim is permanent work, not an incident.
+2. **The Spec** — Goal, Requirements, Verification commands, plus any
+   orientation notes the author attached (known file locations, verified
+   facts, dead ends already ruled out).
+3. **Repo-map slice** — the cached, annotated codebase map (built once per
+   repo, refreshed incrementally), sliced by relevance to the spec. This is
+   the DEFAULT grounding layer: it lets the worker navigate without raw
+   directory scans. Depth (skeleton vs full) is config/budget-driven.
+4. **ExecutionBundle** *(optional — bundle mode only)* — per-file symbol
+   outlines (≤200 tokens/file), target line ranges, minimal type
+   definitions, for tasks whose relevant files are predictable in advance.
+5. **Pruned continuation** *(fork mode only)* — replaces 3–4: goals, active
+   specs, recent receipts, and orientation facts carried over from the
+   dispatching conversation through the continuation prune profile.
+
+Grounding layers are additive optimizations with one invariant: **the live
+tools (read/grep/find/bash/edit) are never removed.** Every layer exists to
+save turns; none restricts capability. A wrong bundle or a stale map degrades
+into ordinary exploration, and the miss is recorded as telemetry (§5.4).
+
+### 5.3 Planning modes (router-selected)
+
+Which grounding a task gets is a pure routing decision — inputs: requirement
+count, presence of orientation notes, whether the task continues prior
+conversational work, per-repo telemetry, budget tier.
+
+**(a) Prewalk — the default for exploration-heavy tasks.**
+*Use case:* the task needs genuine investigation of unfamiliar or
+fast-moving code — nobody can precompute which files matter (that difficulty
+is the point). The worker spawns on the STRONG model, explores, plans, and
+starts working; on its FIRST EDIT the engine swaps the very same session to
+the CHEAP execute model. All reads stay in one context — nothing is handed
+off, nothing lost. The economic bet: pay strong-model rates for reading
+once, cheap rates for the mechanical edit-test-commit loop. When the tier's
+plan and execute models are identical, the machinery auto-skips (zero
+overhead).
+
+**(b) Bundle — the fast path for well-scoped tasks.**
+*Use case:* the relevant files are predictable (greenfield files, surgical
+fixes in stable areas). A thin one-shot call generates the ExecutionBundle
+(§5.2 item 4) and the worker starts grounded on turn 1 — no exploration
+phase at all. Miss-path: the worker simply explores as usual, and the miss
+feeds telemetry.
+
+**(c) Fork — continuation of interactive work.**
+*Use case:* the dispatching conversation already holds the understanding
+(long interactive debugging that now needs isolated execution hours of work).
+Forking the raw transcript would import ballast; the fork passes through the
+continuation prune profile (§5.2 item 5) so the worker inherits judgment,
+not noise. One re-encode of a few thousand tokens replaces N rediscovery
+turns.
+
+**(d) Cold start** — trivial specs skip special grounding beyond the repo-map
+slice.
+
+### 5.4 Failure, repair, feedback
+
+Verification failure routes by size/type thresholds (pure, tunable):
+small failures nudge the SAME session (context hot, tens of tokens); large
+failures get a FRESH worker with a HandoffBundle — diff summary, touched
+files, capped error tails — appended to an identical serialized prefix
+(cache-preserving). Retries are bounded per task.
+
+Every run feeds the ledger's routing telemetry: bundle hit/miss,
+fork cleanliness (from the yield's deviations field), turns, cost. The
+router consumes this, so mode selection improves from accumulated evidence
+rather than developer intuition.
+
+### 5.5 Review
+
+Optional, budget-gated (tiers may skip it entirely or run it on the
+workhorse — both exist today). The reviewer FORKS THE WORKER SESSION after
+yield through the review prune profile: diff + requirements + compressed
+implementation rationale kept; read/tool noise dropped. Findings return
+typed (verdict, priority, category, location) and feed the bounded fix loop.
+
+### 5.6 Pruning inventory
+
+| Context | Owner | Pruned how | Escapes as |
+| :---- | :---- | :---- | :---- |
+| Conversational transcript | main session | receipts replace results; writing specs externalizes facts; scorer evicts old turns | Specs, forks (through profile) |
+| Exploration reads | worker session | session destroyed on yield/exhaustion | Yield payload, manifest metrics |
+| Planning output | prewalk phase / bundle fn | bundle capped ≤200 tok/file; prewalk context dies with worker | ExecutionBundle |
+| Failure detail | failed worker | capped tails per failure | HandoffBundle |
+| Review context | reviewer fork | review prune profile | typed findings |
+| Long-term insight | nobody's context | content-hash invalidation, retest circuit-breakers | episodic store (future doc) |
+
+Each artifact is simultaneously the interface AND the collection mechanism:
+the spec exists so the main session can forget; the yield exists so the
+orchestrator never sees a transcript; the handoff exists so retries don't
+re-read; the receipt (~150 tokens: verdict, commits, cost, turns) exists so
+conversation survives many tasks.
+
+## 6. Benchmarks
+
+Acceptance is empirical. Harness extends the existing canned-spec runner;
+suites:
 
 - `01_single_file_bugfix` — edits confined to single methods
 - `02_multi_file_refactor` — cross-file interface updates
-- `03_grounding_heavy` — feature additions in 100K+ LOC repos (NEW: this is
-  the suite that adjudicates bundles vs continuity vs cold-start)
+- `03_grounding_heavy` — feature additions in 100K+ LOC repos; this suite
+  adjudicates the grounding modes against each other
 
-Metrics per run: total tokens, turns, wall time, cost, COR (operationalized
-per NFR-3), first-pass verification rate, cache hit rate on retried prefixes,
-bundle_hit_rate, fork_deviation_rate. Manifests land through v1's existing
-metrics write path; `/task-stats` reads them.
+Per-run metrics: tokens, turns, wall time, cost, COR (NFR-3), first-pass
+verification rate, cache hits on retried prefixes, bundle hit rate, fork
+cleanliness. Configurations compared: bare long-context session, the current
+in-process engine, and the v2 daemon — production default model pinned;
+stronger models are additional configurations, never baseline changes.
 
-Configurations: (1) bare long-context session, (2) pi-task-v1, (3) pi-task-v2
-— production default model pinned across all; stronger models are additional
-configurations, never baseline changes. Acceptance for cutover: v2 ≥ v1 on
-01/02 at equal-or-lower cost; v2 > v1 on 03 (else bundles don't ship as a
-default mode).
+Reference points from the current engine that motivate the design constants
+(all reproducible via the bench harness): ~3.5k-token fixed worker prefix;
+cheap-model turn counts of 4–10 even on trivial specs; near-equal latency
+across model classes on small tasks. Cutover acceptance: v2 ≥ current on
+01/02 at equal-or-lower cost; v2 > current on 03 — otherwise bundles do not
+ship as a default mode.
 
-## 6. Milestones
+## 7. Milestones
 
-Reordered against the stated goal (one-shot large engineering tasks): the
-hard part — routing, modes, grounding measurement — comes before polish.
+Ordered so the risky/uncertain parts (routing, grounding modes,
+grounding-heavy measurement) come before polish:
 
 | Phase | Scope | Exit criterion |
 | :---- | :---- | :---- |
-| M0 | FR-9 engineering bar: typecheck gate, real-path smoke tests, bench harness repaired + extended with suite 03 | gate red today, green at M0 exit |
-| M1 | Core daemon: ledger + boot reconciliation, in-process SDK sessions, v1 watchdog/gate/artifact port, route function skeleton | v1-equivalent single-worker runs through the daemon |
-| M2 | Workspaces & merge: JujutsuWorkspaceDriver (v1 ladder verbatim), EnvironmentDrivers (host, mise; docker later), parallel combine | v1-equivalent parallel runs; suite 01/02 parity |
-| M3 | Context modes: prewalk (port) → bundle fast path + miss-path telemetry → fork + prune profiles; COR accounting in manifests | suite 03 run across all three modes with numbers |
-| M4 | Plugin kernel: TaskGateway event vocabulary, TaskPlugin contract, first plugins extracted from core | core shrinks; plugins carry hermetic tests |
-| M5 | Workflow modes: /plan (planner-only + human gate), /build DAG executor, /survey over the gateway; cutover per the migration section | Phase C parity check |
+| M0 | Engineering bar: typecheck gate, real-path smoke tests per seam, bench harness extended with suite 03 | gate red→green |
+| M1 | Core daemon: ledger + boot reconciliation, in-process SDK sessions, watchdog/gate/artifact port, router skeleton | current-engine-equivalent single-worker runs through the daemon |
+| M2 | Workspaces & merge: JujutsuWorkspaceDriver (existing ladder verbatim), environment drivers (host, mise), parallel combine | parallel parity; suites 01/02 |
+| M3 | Grounding modes: prewalk port → bundle path + miss telemetry → fork + prune profiles; COR accounting | suite 03 across all modes, with numbers |
+| M4 | Plugin kernel: gateway event vocabulary, plugin contract, first plugins extracted from core | core shrinks; plugins carry real-path tests |
+| M5 | Workflow modes: /plan (planning-only + human gate), /build DAG executor, /survey; cutover | parity check passes |
 
-Migration stays four-phase as proposed in v3.1 (inventory → shadow/dry-run →
-flip default → delete v1 RPC), with the addition that M0's smoke tests are
-what Phase B's parity check runs.
+Migration is four-phase: inventory → shadow/dry-run beside the current
+engine → flip defaults → delete superseded plumbing. M0's smoke tests are
+what the shadow phase's parity checks run.
 
-## 7. Non-goals (this document)
+## 8. Non-goals (this document)
 
 Multi-tenancy, remote transports, billing, episodic memory design, and the
-gateway integration catalog live in the [future doc](pi-task-v2-future.md).
-Monetization remains out of scope.
+client-integration catalog live in the [future doc](pi-task-v2-future.md).
