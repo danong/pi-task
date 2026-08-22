@@ -381,13 +381,15 @@ export interface SurfaceCapabilities {
   latencyToleranceMs: number;
 }
 
-/** Downstream event union a surface may receive per level. */
+/** Downstream event union a surface may receive per level.
+ *  Escalation is reserved for task.escalated (retryable/needs-human);
+ *  terminal task.failed arrives as Receipt(verdict:"failed"). */
 export type SurfaceEvent =
   | { type: "TurnDelta"; text: string }
   | { type: "ToolActivity"; tool: string; argsPreview: string; phase: "start" | "done"; durationMs?: number }
   | { type: "PermissionRequest"; requestId: string; action: string; detail: string }
   | { type: "Receipt"; receipt: TaskReceipt }
-  | { type: "Escalation"; taskId: string; reason: string; detail: string }
+  | { type: "Escalation"; taskId: string; reason: string }
   | { type: "StatusSnapshot"; model: string; tier: string; activeTasks: number };
 
 /** Upstream command union a surface may publish. */

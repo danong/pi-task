@@ -29,6 +29,7 @@ export const TASK_LIFECYCLE_EVENTS = [
 	"task.completed",
 	"task.failed",
 	"task.escalated",
+	"permission.requested",
 ] as const;
 
 export type TaskLifecycleEventType = (typeof TASK_LIFECYCLE_EVENTS)[number];
@@ -54,7 +55,11 @@ export type TaskLifecycleEvent =
 	| { type: "merge.conflict"; taskId: string; detail: { conflicts: readonly string[] } }
 	| { type: "task.completed"; taskId: string; detail: { verdict: Extract<TaskVerdict, "ship"> } }
 	| { type: "task.failed"; taskId: string; detail: { cause: string } }
-	| { type: "task.escalated"; taskId: string; detail: { verdict: Extract<TaskVerdict, "escalate"> } };
+	| { type: "task.escalated"; taskId: string; detail: { verdict: Extract<TaskVerdict, "escalate"> } }
+	| { type: "permission.requested"; taskId: string; sessionId: string; requestId: string; action: string; detail: string };
+	| { type: "task.completed"; taskId: string; sessionId?: string; detail: { verdict: Extract<TaskVerdict, "ship"> } }
+	| { type: "task.failed"; taskId: string; sessionId?: string; detail: { cause: string } }
+	| { type: "task.escalated"; taskId: string; sessionId?: string; detail: { verdict: Extract<TaskVerdict, "escalate"> } };
 
 /** Event-name pattern for on() subscriptions: an exact type ("task.routed"),
  *  a family wildcard ("task.*"), or the catch-all ("*"). */
@@ -87,6 +92,7 @@ export function eventTypeOf(event: TaskLifecycleEvent): TaskLifecycleEventType {
 		case "task.completed":
 		case "task.failed":
 		case "task.escalated":
+		case "permission.requested":
 			return event.type;
 		default: {
 			const exhaustive: never = event;
@@ -95,9 +101,27 @@ export function eventTypeOf(event: TaskLifecycleEvent): TaskLifecycleEventType {
 	}
 }
 
-/** Pure pattern matcher: exact match, family prefix with ".*", or "*". */
+/**
+ * Pure pattern matcher over DOT SEGMENTS: an exact type ("task.routed"),
+ * a family wildcard whose segments are all literal except a trailing ".*"
+ * ("task.*"), or the catch-all ("*"). Anything else — empty patterns,
+ * embedded wildcards ("ta*"), bare prefixes without a dot ("task") or
+ * trailing-dot forms ("task.") — is malformed and matches NOTHING rather
+ * than silently widening into a raw-prefix match.
+ */
 export function eventMatchesPattern(type: TaskLifecycleEventType, pattern: EventPattern): boolean {
 	if (pattern === "*") return true;
-	if (pattern.endsWith(".*")) return type.startsWith(pattern.slice(0, -1));
-	return pattern === type;
+	const segments = pattern.split(".");
+	if (!pattern.includes(".")) return false; // malformed: family match needs a dot
+	if (segments.some((s) => s.length === 0)) return false; // malformed: empty segment ("task." / ".queued" / "..")
+	const last = segments[segments.length - 1]!;
+	if (last !== "*" && segments.slice(0, -1).includes("*")) return false; // malformed: non-trailing wildcard
+	if (last !== "*") return pattern === type; // exact match only
+	const typeSegments = type.split(".");
+	if (typeSegments.length < segments.length - 1) return false;
+	for (let i = 0; i < segments.length - 1; i++) {
+		if (segments[i] !== typeSegments[i]) return false;
+	}
+	// A trailing wildcard consumes exactly one remaining dot-segment.
+	return typeSegments.length === segments.length;
 }

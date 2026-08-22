@@ -108,7 +108,7 @@ export async function runTests(): Promise<void> {
 		const script: TaskLifecycleEvent[] = [
 			{ type: "session.spawned", taskId: "t1", sessionId: "s1" },
 			{ type: "verify.completed", taskId: "t1", detail: { passed: true } },
-			{ type: "task.completed", taskId: "t1", detail: { verdict: "ship" } },
+			{ type: "task.completed", taskId: "t1", sessionId: "s1", detail: { verdict: "ship" } },
 		];
 
 		const streams = {
@@ -140,10 +140,15 @@ export async function runTests(): Promise<void> {
 		}
 
 		const typesOf = (events: SurfaceEvent[]): string[] => events.map((e) => e.type);
-		// delta sees ToolActivity (spawned) + Receipt + StatusSnapshot(verify)
+		// delta sees ToolActivity (spawned) + Receipt; verify.completed is
+		// silent (no fabricated StatusSnapshot), receipts never sees activity.
 		check(typesOf(seen.delta).includes("ToolActivity"), "delta sees ToolActivity");
 		check(typesOf(seen.digest).includes("ToolActivity"), "digest sees ToolActivity");
 		check(!typesOf(seen.receipts).includes("ToolActivity"), "receipts never sees ToolActivity");
+		for (const level of ["delta", "digest", "receipts"] as const) {
+			check(!seen[level].some((e) => e.type === "StatusSnapshot"),
+				`${level} never sees a fabricated StatusSnapshot`);
+		}
 		check(
 			typesOf(seen.delta).includes("Receipt") && typesOf(seen.digest).includes("Receipt")
 				&& typesOf(seen.receipts).includes("Receipt"),
@@ -225,7 +230,7 @@ export async function runTests(): Promise<void> {
 		const pendingA = drain(streamA, 1);
 		const pendingB = drain(streamB, 1);
 
-		gateway.emit({ type: "task.completed", taskId: "tmux", detail: { verdict: "ship" } });
+		gateway.emit({ type: "task.completed", taskId: "tmux", sessionId: "shared-session", detail: { verdict: "ship" } });
 
 		const [gotA, gotB] = await Promise.all([pendingA, pendingB]);
 		check(gotA.length === 1 && gotA[0]?.type === "Receipt", "first multiplexed surface sees the Receipt");
@@ -251,10 +256,82 @@ export async function runTests(): Promise<void> {
 		check(got.length === 0, "closed stream receives nothing after close() unsubscribes");
 	}
 
+	// ─── Session scoping: foreign task verdicts are filtered (P0-2) ─────
+	{
+		const gateway = makeGateway();
+		const surface = new NullSurface({ gateway });
+		const stream = surface.connect("s-mine", "receipts");
+
+		const pending = drain(stream, 3);
+
+		// Another task's terminal event (no session stamp / other session)
+		// must NOT reach a receipts listener on s-mine...
+		gateway.emit({ type: "task.completed", taskId: "foreign-unscoped", detail: { verdict: "ship" } });
+		gateway.emit({ type: "task.failed", taskId: "foreign-other", sessionId: "s-other", detail: { cause: "boom" } });
+		// ...while our own stamped verdict does.
+		gateway.emit({ type: "task.failed", taskId: "mine", sessionId: "s-mine", detail: { cause: "verification failed" } });
+
+		const got = await pending;
+		check(got.length === 1, `receipts listener sees exactly its own session's verdict (got ${got.length})`);
+		check(got[0]?.type === "Receipt", "the delivered event is a Receipt");
+		const receipt = got[0] as Extract<SurfaceEvent, { type: "Receipt" }>;
+		check(receipt.receipt.taskId === "mine" && receipt.receipt.verdict === "failed",
+			"task.failed maps to Receipt(verdict:'failed'), not Escalation");
+
+		stream.close();
+	}
+
+	// ─── Verdict mapping: escalated → Receipt(escalate) + typed Escalation (P2-4) ──
+	{
+		const gateway = makeGateway();
+		const surface = new NullSurface({ gateway });
+		const stream = surface.connect("s-esc", "receipts");
+		const pending = drain(stream, 2);
+
+		gateway.emit({ type: "task.escalated", taskId: "esc-t", sessionId: "s-esc", detail: { verdict: "escalate" } });
+
+		const got = await pending;
+		const esc = got.find((e): e is Extract<SurfaceEvent, { type: "Escalation" }> => e.type === "Escalation");
+		check(esc !== undefined && !("detail" in esc), "task.escalated yields Escalation without duplicated reason/detail fields");
+		check(got.some((e) => e.type === "Receipt"
+			&& (e as Extract<SurfaceEvent, { type: "Receipt" }>).receipt.verdict === "escalate"),
+			"task.escalated also carries a Receipt(verdict:'escalate')");
+
+		stream.close();
+	}
+
+	// ─── Overlapping next() calls do not starve each other (P2-2) ────────
+	{
+		const gateway = makeGateway();
+		const surface = new NullSurface({ gateway });
+		const stream = surface.connect("sx", "receipts");
+		const iterator = stream.events[Symbol.asyncIterator]();
+
+		// Two overlapping waits BEFORE any event exists — both must resolve.
+		const first = iterator.next();
+		const second = iterator.next();
+
+		gateway.emit({ type: "task.completed", taskId: "w1", sessionId: "sx", detail: { verdict: "ship" } });
+		gateway.emit({ type: "task.completed", taskId: "w2", sessionId: "sx", detail: { verdict: "ship" } });
+
+		const raced = await Promise.race([
+			Promise.all([first, second]).then(([a, b]) => {
+				const taskId = (r: IteratorResult<SurfaceEvent>): string | null =>
+					r.done ? null : r.value.type === "Receipt" ? r.value.receipt.taskId : null;
+				return [taskId(a), taskId(b)] as const;
+			}),
+			new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), 250)),
+		]);
+		check(raced !== "timeout" && raced[0] === "w1" && raced[1] === "w2",
+			`two overlapping next() calls each get their own event (got ${JSON.stringify(raced)})`);
+
+		stream.close();
+	}
+
 	if (errors.length > 0) {
 		throw new Error("surfaces tests failed:\n  ✗ " + errors.join("\n  ✗ "));
 	}
-	console.log("✓ surfaces: QoS coarsening, capability correctness, permission routing, multiplexing, close semantics");
+	console.log("✓ surfaces: QoS coarsening, capability correctness, permission routing, session scoping, verdict mapping, waiter queue, close semantics");
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

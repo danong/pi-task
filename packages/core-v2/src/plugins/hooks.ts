@@ -20,8 +20,15 @@ export interface PluginHookContext {
 }
 
 function report(ctx: PluginHookContext | undefined, err: unknown): void {
+	// The sink call itself is guarded: a custom onHookError that throws must
+	// never turn a plugin failure into an unhandled rejection or crash the
+	// pipeline — it degrades to console.error.
 	const sink = ctx?.onHookError ?? ((e: unknown) => console.error("plugin: hook failed", e));
-	sink(err);
+	try {
+		sink(err);
+	} catch (sinkErr) {
+		console.error("plugin: hook-failure sink itself threw", sinkErr, "while reporting", err);
+	}
 }
 
 async function callIsolated(

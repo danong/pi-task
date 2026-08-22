@@ -29,6 +29,7 @@ import { pathToFileURL } from "node:url";
 import type { TaskGateway, TaskLedgerRow, TaskLifecycleEvent } from "../src/contracts/index.ts";
 import {
 	TASK_LIFECYCLE_EVENTS,
+	eventMatchesPattern,
 	eventTypeOf,
 } from "../src/contracts/index.ts";
 import { GatewayError, InMemoryTaskGateway } from "../src/gateway/index.ts";
@@ -71,6 +72,7 @@ function assertExhaustive(event: TaskLifecycleEvent): string {
 		case "task.completed": return event.type;
 		case "task.failed": return event.type;
 		case "task.escalated": return event.type;
+		case "permission.requested": return event.type;
 		default: {
 			const exhaustive: never = event;
 			return exhaustive;
@@ -288,15 +290,36 @@ export async function runTests(): Promise<void> {
 			check(gw.listEvents().length === 1, "the event is still recorded on the audit list");
 		}
 
-		// ─── Vocabulary integrity (R1) ──────────────────────────────────
+		// ─── Vocabulary integrity (R1) + dot-segment pattern matching ────
 		{
 			check(TASK_LIFECYCLE_EVENTS.length === new Set(TASK_LIFECYCLE_EVENTS).size, "vocabulary has no duplicate literals");
 			check(TASK_LIFECYCLE_EVENTS[0] === "task.queued", "vocabulary starts at the documented first event");
 			for (const literal of ["task.routed", "session.spawned", "session.yielded", "session.exhausted",
 				"verify.completed", "review.completed", "merge.completed", "merge.conflict",
-				"task.completed", "task.failed", "task.escalated"]) {
+				"task.completed", "task.failed", "task.escalated", "permission.requested"]) {
 				check((TASK_LIFECYCLE_EVENTS as readonly string[]).includes(literal), `vocabulary contains ${literal}`);
 			}
+			// eventTypeOf is the kernel-side exhaustiveness switch: it must
+			// accept the permission.requested variant now that it is vocabulary.
+			const permEvent: TaskLifecycleEvent = {
+				type: "permission.requested",
+				taskId: "t",
+				sessionId: "s",
+				requestId: "r",
+				action: "bash",
+				detail: "d",
+			};
+			check(eventTypeOf(permEvent) === "permission.requested", "eventTypeOf accepts the permission.requested variant");
+
+			// Dot-segment matching: family wildcards match whole segments only,
+			// and malformed patterns match nothing.
+			check(eventMatchesPattern("task.queued", "task.*"), "family wildcard matches its own family");
+			check(!eventMatchesPattern("task.queued", "session.*"), "family wildcard rejects other families");
+			check(!eventMatchesPattern("task.queued", "task"), "a dotless prefix is malformed and matches nothing");
+			check(!eventMatchesPattern("task.queued", "task."), "a trailing-dot pattern is malformed and matches nothing");
+			check(!eventMatchesPattern("task.queued", "ta*"), "an embedded wildcard is malformed and matches nothing");
+			check(!eventMatchesPattern("task.queued", ""), "the empty pattern is malformed and matches nothing");
+			check(eventMatchesPattern("task.queued", "*"), "the catch-all still matches everything");
 		}
 	} finally {
 		rmSync(dir, { recursive: true, force: true });

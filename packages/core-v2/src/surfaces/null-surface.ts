@@ -8,7 +8,7 @@
  * SurfaceStream events — a coarsening view of the SAME stream
  * (delta ⊃ digest ⊃ receipts):
  *
- *   - receipts: Receipt / Escalation / StatusSnapshot   (cron, CI)
+ *   - receipts: Receipt / Escalation   (cron, CI)
  *   - digest:   receipts + ToolActivity / PermissionRequest (Discord-like)
  *   - delta:    digest + TurnDelta                       (TUI-like)
  *
@@ -37,34 +37,11 @@ import type { TaskReceipt } from "../contracts/payloads.ts";
 
 /** Which surface-event discriminants each QoS level delivers (a partition
  *  of the single SurfaceEvent union: delta ⊃ digest ⊃ receipts). */
-export const SURFACE_LEVEL_EVENTS: Record<SubscriptionLevel, readonly string[]> = {
-	delta: ["TurnDelta", "ToolActivity", "PermissionRequest", "Receipt", "Escalation", "StatusSnapshot"],
-	digest: ["ToolActivity", "PermissionRequest", "Receipt", "Escalation", "StatusSnapshot"],
-	receipts: ["Receipt", "Escalation", "StatusSnapshot"],
+export const SURFACE_LEVEL_EVENTS: Record<SubscriptionLevel, readonly SurfaceEvent["type"][]> = {
+	delta: ["TurnDelta", "ToolActivity", "PermissionRequest", "Receipt", "Escalation"],
+	digest: ["ToolActivity", "PermissionRequest", "Receipt", "Escalation"],
+	receipts: ["Receipt", "Escalation"],
 };
-
-/**
- * Additive permission-protocol event crossing the gateway. Rides the
- * gateway's versioned add-only event channel until the kernel vocabulary
- * absorbs it; the adapter narrows structurally so it compiles against the
- * frozen TaskLifecycleEvent union.
- */
-export interface PermissionRequestEvent {
-	type: "permission.requested";
-	taskId: string;
-	sessionId: string;
-	requestId: string;
-	action: string;
-	detail: string;
-}
-
-function isPermissionRequest(event: unknown): event is PermissionRequestEvent {
-	return (
-		typeof event === "object" &&
-		event !== null &&
-		(event as { type?: unknown }).type === "permission.requested"
-	);
-}
 
 /** Gateway subscription pattern per QoS level: receipts cares about the
  *  task family only; digest/delta take the full stream. */
@@ -89,20 +66,40 @@ export function projectLifecycleEvent(
 
 	const out: SurfaceEvent[] = [];
 
-	// Session-scoped events are filtered to the subscribed session.
-	if ("sessionId" in event && event.sessionId !== sessionId) return out;
+	// Session scoping (review M4 P0-2): events carrying a session id must
+	// match the subscribed session, and terminal task.* verdicts must CARRY
+	// the subscribed session's id — the emitting runner stamps it on the
+	// event, so a receipts listener on s1 never sees another concurrent
+	// task's outcome, nor an unscoped aggregate row.
+	const isTerminalTask =
+		event.type === "task.completed" || event.type === "task.failed" || event.type === "task.escalated";
+	if (("sessionId" in event ? event.sessionId !== sessionId : false) || (isTerminalTask && !("sessionId" in event))) {
+		return out;
+	}
 
 	switch (event.type) {
 		case "task.completed":
-			push(out, { type: "Receipt", receipt: emptyUsageReceipt(event.taskId, event.detail.verdict) });
-			break;
 		case "task.failed":
-			push(out, { type: "Escalation", taskId: event.taskId, reason: event.detail.cause, detail: event.detail.cause });
+		// Terminal verdict → Receipt carrying that verdict (review M4 P2-4):
+		// task.failed is TERMINAL — it maps to Receipt(verdict:"failed"),
+		// never to Escalation, so a cron surface distinguishes give-up from
+		// needs-a-human by event type alone.
+		case "task.escalated": {
+			const receipt = emptyUsageReceipt(
+				event.taskId,
+				event.type === "task.completed"
+					? event.detail.verdict
+					: event.type === "task.failed"
+					? "failed"
+					: event.detail.verdict,
+			);
+			push(out, { type: "Receipt", receipt });
+			if (event.type === "task.escalated") {
+				// Only task.escalated is retryable/needs-human → Escalation.
+				push(out, { type: "Escalation", taskId: event.taskId, reason: event.detail.verdict });
+			}
 			break;
-		case "task.escalated":
-			push(out, { type: "Escalation", taskId: event.taskId, reason: event.detail.verdict, detail: event.detail.verdict });
-			push(out, { type: "Receipt", receipt: emptyUsageReceipt(event.taskId, event.detail.verdict) });
-			break;
+		}
 		case "session.spawned":
 		case "session.yielded":
 		case "session.exhausted": {
@@ -116,10 +113,24 @@ export function projectLifecycleEvent(
 			});
 			break;
 		}
+		case "permission.requested": {
+			// Session-scoped protocol event (now part of the typed vocabulary):
+			// surfaced as a digest/delta-grade PermissionRequest. The generic
+			// sessionId filter above already dropped other sessions.
+			push(out, {
+				type: "PermissionRequest",
+				requestId: event.requestId,
+				action: event.action,
+				detail: event.detail,
+			});
+			break;
+		}
 		default:
-			// queued/routed/verify/review/merge: liveness snapshot only —
-			// receipts-level subscribers get a heartbeat without volume.
-			push(out, { type: "StatusSnapshot", model: "unknown", tier: "unknown", activeTasks: 1 });
+			// queued/routed/verify/review/merge: no surface event. StatusSnapshot
+			// is daemon state (model/tier/activeTasks); projecting it from a
+			// lifecycle point would fabricate values (review M4 P2-3), so the
+			// headless adapter stays silent until real daemon state has an
+			// emission path.
 			break;
 	}
 	return out;
@@ -177,30 +188,21 @@ export class NullSurface implements ControlSurface {
 	connect(sessionId: string, level: SubscriptionLevel): SurfaceStream {
 		const allowed = new Set(SURFACE_LEVEL_EVENTS[level]);
 		const queue: SurfaceEvent[] = [];
-		let wake: (() => void) | null = null;
+		// Waiter QUEUE (review M4 P2-2): overlapping next() calls each get
+		// their own resolver so none starves the other — a single wake slot
+		// let a second concurrent next() orphan the first.
+		const waiters: Array<() => void> = [];
 		let closed = false;
 
 		const deliver = (event: SurfaceEvent): void => {
 			if (!allowed.has(event.type)) return;
 			queue.push(event);
-			if (wake !== null) {
-				const w = wake;
-				wake = null;
-				w();
+			while (waiters.length > 0) {
+				waiters.shift()!();
 			}
 		};
 
 		const handle = (raw: unknown): void => {
-			if (isPermissionRequest(raw)) {
-				if (raw.sessionId !== sessionId) return;
-				deliver({
-					type: "PermissionRequest",
-					requestId: raw.requestId,
-					action: raw.action,
-					detail: raw.detail,
-				});
-				return;
-			}
 			const event = raw as TaskLifecycleEvent;
 			for (const mapped of projectLifecycleEvent(event, sessionId, level)) deliver(mapped);
 		};
@@ -218,7 +220,7 @@ export class NullSurface implements ControlSurface {
 								}
 								if (closed) return { value: undefined as never, done: true };
 								await new Promise<void>((resolve) => {
-									wake = resolve;
+									waiters.push(resolve);
 								});
 							}
 						},
@@ -234,10 +236,8 @@ export class NullSurface implements ControlSurface {
 				if (closed) return;
 				closed = true;
 				unsubscribe();
-				if (wake !== null) {
-					const w = wake;
-					wake = null;
-					w();
+				while (waiters.length > 0) {
+					waiters.shift()!();
 				}
 			},
 		};

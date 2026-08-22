@@ -64,6 +64,7 @@ import type { TaskGateway } from "../contracts/index.ts";
 import type { TaskPlugin } from "../contracts/task-plugin.ts";
 import {
 	emitLifecycleEventToPlugins,
+	registerPluginTriggers,
 	transformExecutionBundleThrough,
 	transformHandoffThrough,
 } from "../plugins/index.ts";
@@ -300,9 +301,14 @@ export interface RunTaskOptions {
 	 */
 	bundle?: { targetPaths?: readonly string[] } | undefined;
 	/** Config-loaded lifecycle plugins (subsystems §3): transform hooks
-	 *  fire on the bundle/handoff paths, onLifecycleEvent fans out per emit
-	 *  — each call isolated, never fatal (R4). */
+	 *  fire on the bundle/handoff paths, registerTriggers subscribes through
+	 *  the gateway BEFORE the run, onLifecycleEvent fans out per emit — each
+	 *  call isolated, never fatal (R4). */
 	plugins?: readonly TaskPlugin[] | undefined;
+	/** Sink for plugin hook failures (defaults to console.error). Wired
+	 *  through every hook invocation site so operators can route plugin
+	 *  diagnostics instead of scraping stderr. */
+	onPluginHookError?: ((err: unknown) => void) | undefined;
 	/** Observability sink for session events (progress UIs, debugging). */
 	onEvent?: (event: SessionHostEvent) => void;
 	/** Lifecycle event sink (R4); defaults to an InMemoryTaskGateway over
@@ -365,15 +371,24 @@ async function runWithStore(
 	// as the gateway itself).
 	const baseGateway = options.gateway ?? new InMemoryTaskGateway({ store });
 	const plugins = options.plugins ?? [];
+	const pluginHookCtx = options.onPluginHookError === undefined ? undefined : { onHookError: options.onPluginHookError };
 	const gateway: TaskGateway = {
 		emit: (event) => {
 			baseGateway.emit(event);
-			if (plugins.length > 0) emitLifecycleEventToPlugins(event, plugins);
+			if (plugins.length > 0) emitLifecycleEventToPlugins(event, plugins, pluginHookCtx);
 		},
 		on: (pattern, handler) => baseGateway.on(pattern, handler),
 		getTaskState: (taskId) => baseGateway.getTaskState(taskId),
 		getManifest: (taskId) => baseGateway.getManifest(taskId),
 	};
+	// Trigger half of the plugin contract (subsystems §3): registerTriggers-
+	// style plugins subscribe through the SAME gateway the pipeline emits
+	// into, BEFORE the first event fires — registration itself is isolated,
+	// so one throwing registerTriggers cannot prevent later plugins from
+	// registering nor break the run.
+	if (plugins.length > 0) {
+		registerPluginTriggers((plugin) => plugin.registerTriggers?.(gateway), plugins, pluginHookCtx);
+	}
 	gateway.emit({ type: "task.queued", taskId });
 
 	const observation: RunObservation = {
@@ -406,7 +421,9 @@ async function runWithStore(
 		});
 		store.setSessionStatus(`${taskId}-worker`, "crashed");
 		store.setTaskStatus(taskId, "failed");
-		gateway.emit({ type: "task.failed", taskId, detail: { cause } });
+		// Session stamp (review M4 P0-2): terminal task.* events carry the
+		// owning session id so session-scoped surface subscribers can filter.
+		gateway.emit({ type: "task.failed", taskId, sessionId: `${taskId}-worker`, detail: { cause } });
 		// R3: a bundled run that dies anywhere is a MISS. When the bundle was
 		// merely attempted (never grounded), the miss row was already written
 		// at build time — do not double-count it.
@@ -447,29 +464,30 @@ async function runWithStore(
 	// planMode gates attachment; the caller only supplies candidates.
 	bundleAttempted = decision.planMode === "bundle" && options.bundle !== undefined;
 	if (bundleAttempted) {
+		let built: ExecutionBundle | undefined;
 		try {
-			const built = buildExecutionBundle({
+			built = buildExecutionBundle({
 				taskId,
 				goal: parsed.goal,
 				requirements: parsed.requirements,
 				verificationCommands: parsed.verificationCommands,
 				targetPaths: options.bundle!.targetPaths ?? [],
 			});
-			if (isBundleUsable(built)) {
-				// Plugin transform (R3): BEFORE grounding attaches. The helper
-				// re-validates through ExecutionBundleSchema, so a plugin cannot
-				// inject an invalid bundle into the prompt prefix.
-				bundle = await transformExecutionBundleThrough(built, plugins);
-				bundleUsed = true;
-			} else {
-				// An EMPTY bundle grounds nothing: record the miss up front and
-				// proceed ungrounded rather than pretending the shortcut fired.
-				bundleMissRecorded = true;
-				store.recordRoutingFeedback(repo, BUNDLE_FEEDBACK_MODE, 0);
-			}
 		} catch {
+			built = undefined;
+		}
+		if (built === undefined || !isBundleUsable(built)) {
+			// An EMPTY/unusable bundle grounds nothing: record the miss up front
+			// and proceed ungrounded rather than pretending the shortcut fired.
 			bundleMissRecorded = true;
 			store.recordRoutingFeedback(repo, BUNDLE_FEEDBACK_MODE, 0);
+		} else {
+			// Plugin transform (R3): BEFORE grounding attaches. The helper
+			// re-validates through ExecutionBundleSchema, so a plugin cannot
+			// inject an invalid bundle into the prompt prefix; its isolation
+			// means a failing plugin yields the BUILT bundle, never a miss row.
+			bundle = await transformExecutionBundleThrough(built, plugins, pluginHookCtx);
+			bundleUsed = true;
 		}
 	}
 
@@ -604,6 +622,7 @@ async function runWithStore(
 					})),
 				},
 			plugins,
+			pluginHookCtx,
 		);
 		writeFailureArtifact({
 			artifactsDir: options.artifactsDir,
@@ -614,7 +633,7 @@ async function runWithStore(
 		store.setTaskStatus(taskId, "failed");
 		// Same miss discipline as failRun (see above).
 		if (bundleUsed || !bundleAttempted) store.recordRoutingFeedback(repo, decision.planMode, 0);
-		gateway.emit({ type: "task.failed", taskId, detail: { cause: "verification failed" } });
+		gateway.emit({ type: "task.failed", taskId, sessionId: `${taskId}-worker`, detail: { cause: "verification failed" } });
 		return {
 			receipt: {
 				taskId,
@@ -646,7 +665,7 @@ async function runWithStore(
 		store.recordRoutingFeedback(repo, decision.planMode, 1);
 	}
 	store.setTaskStatus(taskId, "completed");
-	gateway.emit({ type: "task.completed", taskId, detail: { verdict: "ship" } });
+	gateway.emit({ type: "task.completed", taskId, sessionId: `${taskId}-worker`, detail: { verdict: "ship" } });
 	return {
 		receipt: {
 			taskId,

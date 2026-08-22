@@ -70,9 +70,9 @@ const _toolActivityIsASurfaceEvent: Expect<
 /** Which event discriminant types each QoS level delivers (a partition of
  *  the single SurfaceEvent union: delta ⊳ digest ⊳ receipts). */
 const LEVEL_EVENTS: Record<SubscriptionLevel, readonly string[]> = {
-	delta: ["TurnDelta", "ToolActivity", "PermissionRequest", "Receipt", "Escalation", "StatusSnapshot"],
-	digest: ["ToolActivity", "PermissionRequest", "Receipt", "Escalation", "StatusSnapshot"],
-	receipts: ["Receipt", "Escalation", "StatusSnapshot"],
+	delta: ["TurnDelta", "ToolActivity", "PermissionRequest", "Receipt", "Escalation"],
+	digest: ["ToolActivity", "PermissionRequest", "Receipt", "Escalation"],
+	receipts: ["Receipt", "Escalation"],
 };
 
 // ─── Deterministic serialization fixtures ────────────────────────────
@@ -367,7 +367,7 @@ export async function runTests(): Promise<void> {
 				const allowed = LEVEL_EVENTS[level2];
 				const events: SurfaceEvent[] = [
 					{ type: "Receipt", receipt: { taskId: "t", verdict: "ship", filesChanged: 1, commitIds: [], turns: 1, costUsd: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cor: 0, bundleHit: null } },
-					{ type: "Escalation", taskId: "t", reason: "r", detail: "d" },
+					{ type: "Escalation", taskId: "t", reason: "r" },
 					{ type: "StatusSnapshot", model: "m", tier: "full", activeTasks: 0 },
 				];
 				const stream2: SurfaceStream = {
@@ -388,9 +388,12 @@ export async function runTests(): Promise<void> {
 		})();
 		check(caps.interactivePermissions === false, "surface capabilities typed");
 		check(
-			receipts.every((t) => LEVEL_EVENTS.receipts.includes(t)) && receipts.length === 3,
+			receipts.every((t) => LEVEL_EVENTS.receipts.includes(t)),
 			"receipts-level surface delivers only receipts-level events",
 		);
+		// The coarsening is real: StatusSnapshot is daemon state and never
+		// crosses at receipts level.
+		check(!receipts.includes("StatusSnapshot"), "receipts level excludes daemon-state snapshots");
 	}
 
 	if (errors.length > 0) {
