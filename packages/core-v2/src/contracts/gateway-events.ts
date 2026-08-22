@@ -53,10 +53,7 @@ export type TaskLifecycleEvent =
 	| { type: "review.completed"; taskId: string; detail: { verdict: "ship" | "fix" | "escalate" } }
 	| { type: "merge.completed"; taskId: string; detail: { commitId: string } }
 	| { type: "merge.conflict"; taskId: string; detail: { conflicts: readonly string[] } }
-	| { type: "task.completed"; taskId: string; detail: { verdict: Extract<TaskVerdict, "ship"> } }
-	| { type: "task.failed"; taskId: string; detail: { cause: string } }
-	| { type: "task.escalated"; taskId: string; detail: { verdict: Extract<TaskVerdict, "escalate"> } }
-	| { type: "permission.requested"; taskId: string; sessionId: string; requestId: string; action: string; detail: string };
+	| { type: "permission.requested"; taskId: string; sessionId: string; requestId: string; action: string; detail: string; }
 	| { type: "task.completed"; taskId: string; sessionId?: string; detail: { verdict: Extract<TaskVerdict, "ship"> } }
 	| { type: "task.failed"; taskId: string; sessionId?: string; detail: { cause: string } }
 	| { type: "task.escalated"; taskId: string; sessionId?: string; detail: { verdict: Extract<TaskVerdict, "escalate"> } };
