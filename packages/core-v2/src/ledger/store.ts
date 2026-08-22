@@ -210,6 +210,12 @@ export class LedgerStore {
 			.run(status, id);
 	}
 
+	setTaskPlanMode(id: string, planMode: PlanMode): void {
+		this.db
+			.prepare("UPDATE tasks SET plan_mode = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+			.run(planMode, id);
+	}
+
 	incrementRetry(id: string): void {
 		this.db
 			.prepare("UPDATE tasks SET retry_count = retry_count + 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?")

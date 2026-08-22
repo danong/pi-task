@@ -28,6 +28,27 @@ the strict gate.
   the resolved tier config, and per-repo `routing_feedback` telemetry to
   `{ planMode, tier, lane }`, plus the feedback-aggregation helpers and
   the named (config-overridable) routing thresholds.
+- `src/sessions/` — the M1.2 in-process session host: `host.ts` spawns one
+  pi SDK `AgentSession` per role (no subprocess, no RPC; model resolution
+  is typed and never silent), `tools.ts` registers the engine-side `yield`
+  and `checklist` tools, and `SDK-NOTES.md` records the surveyed SDK
+  surface the host relies on.
+- `src/guards/` — the M1.3 safety layer: `watchdogs.ts` (pure settle /
+  no-progress / wall / per-tool-timeout decisions), `watchdog-driver.ts`
+  (injectable-timer driver carrying out the decisions on a session
+  handle), and `artifacts.ts` (capped `.failure.json` diagnostics).
+- `src/verify/run.ts` — the M1.3 verification runner: per-command timeout,
+  suite wall with bounded grace, typed per-command results with capped
+  output tails.
+- `src/daemon/` — the M1.4 assembly: `task-runner.ts` (`runTask`: validate
+  → route → guarded session → yield → verify → ledger → receipt;
+  deterministic worker prompt; injectable host for tests), and
+  `start.ts` (`startDaemon`: open ledger + boot reconciliation).
+- `test/e2e-parity.ts` — the M1 exit gate: one real single-worker run on
+  `openrouter/stealth/ox-alpha` against a temp jj repo, asserting ship
+  receipt + verification + ledger rows. Manual/network gate — NOT part of
+  `mise run test`; run it with
+  `timeout 1200 npx tsx packages/core-v2/test/e2e-parity.ts`.
 - `src/guards/` — M1.3 operational hardening (FR-7/FR-8):
   - `watchdogs.ts` — pure watchdog decisions over observed session events
     + elapsed time (`continue` / `nudge(text)` / `abort(reason)`), every
