@@ -37,6 +37,9 @@ the strict gate.
   no-progress / wall / per-tool-timeout decisions), `watchdog-driver.ts`
   (injectable-timer driver carrying out the decisions on a session
   handle), and `artifacts.ts` (capped `.failure.json` diagnostics).
+- `src/daemon/` — the M1.4 assembly: `task-runner.ts` runs the full pipeline
+  (validate → route → host → guard → yield → verify → ledger → receipt),
+  `start.ts` opens the ledger and reconciles stale in-flight tasks at boot.
 - `src/verify/run.ts` — the M1.3 verification runner: per-command timeout,
   suite wall with bounded grace, typed per-command results with capped
   output tails.
@@ -98,6 +101,11 @@ Everything below is hermetic (zero LLM, zero network); run in the repo root.
 - **Core suite directly** — `npx tsx packages/core-v2/test/run-all.ts`
   - The aggregate runs every module's exported `runTests()`; each module
     can also run standalone (`npx tsx packages/core-v2/test/<suite>.ts`).
+- **Parity e2e (manual, real LLM)** — `timeout 1200 npx tsx packages/core-v2/test/e2e-parity.ts`
+  - One real single-worker `runTask` on openrouter/stealth/ox-alpha against
+    a temp jj repo; asserts ship verdict, committed file, and ledger rows.
+    Skips with exit 0 when no OpenRouter auth is configured. On failure the
+    workspace, ledger, and failure artifact are kept for diagnosis.
 
 ### Bench runner (suite-03 baselines)
 
