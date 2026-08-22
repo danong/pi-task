@@ -13,10 +13,13 @@ import type { SessionHandle, SessionHost, SessionHostConfig, SessionHostEvent } 
 import { startDaemon } from "../src/daemon/start.ts";
 import {
 	buildWorkerSystemPrompt,
+	computeCor,
 	deriveTaskId,
+	estimateGroundingTokens,
 	parseTaskSpec,
 	runTask,
 	SpecValidationError,
+	totalInputTokens,
 } from "../src/daemon/task-runner.ts";
 import { LedgerStore } from "../src/ledger/store.ts";
 
@@ -30,6 +33,22 @@ Create a greeting file.
 - test -f hello.txt
 `;
 
+/** Deterministic SessionStats-shaped fixture shared by the daemon fakes.
+ *  Numbers chosen so the COR ratio is a clean known value: grounding is
+ *  computed by the runner from prompt+spec bytes; total input here is
+ *  1000 + 200 + 300 = 1500. */
+const FAKE_SESSION_STATS = {
+	sessionFile: undefined,
+	sessionId: "fake-session",
+	userMessages: 1,
+	assistantMessages: 1,
+	toolCalls: 2,
+	toolResults: 2,
+	totalMessages: 4,
+	tokens: { input: 1000, output: 250, cacheRead: 200, cacheWrite: 300, total: 1750 },
+	cost: 0.0123,
+} as const;
+
 /** Scriptable fake session host — the hermetic stand-in for SessionHost. */
 class FakeHandle implements SessionHandle {
 	readonly role = "worker";
@@ -38,6 +57,7 @@ class FakeHandle implements SessionHandle {
 	constructor(
 		private readonly behavior: "yield" | "settle" | "error",
 		public files: Array<{ path: string; content: string }> = [],
+		private readonly statsThrows = false,
 	) {}
 	get result() {
 		return this.behavior === "yield"
@@ -66,8 +86,9 @@ class FakeHandle implements SessionHandle {
 		}
 	}
 	async abort(): Promise<void> {}
-	async stats(): Promise<never> {
-		throw new Error("stats unavailable on the fake handle");
+	async stats() {
+		if (this.statsThrows) throw new Error("stats unavailable on the fake handle");
+		return structuredClone(FAKE_SESSION_STATS);
 	}
 	async setModel(): Promise<void> {
 		this.turns += 0; // no-op; recorded by prewalk-specific fakes
@@ -75,9 +96,9 @@ class FakeHandle implements SessionHandle {
 	close(): void {}
 }
 
-function fakeHost(behavior: "yield" | "settle" | "error", files: Array<{ path: string; content: string }> = []): SessionHost {
+function fakeHost(behavior: "yield" | "settle" | "error", files: Array<{ path: string; content: string }> = [], statsThrows = false): SessionHost {
 	return {
-		spawn: async (_config: SessionHostConfig) => new FakeHandle(behavior, files),
+		spawn: async (_config: SessionHostConfig) => new FakeHandle(behavior, files, statsThrows),
 	};
 }
 
@@ -136,6 +157,14 @@ export async function runTests(): Promise<void> {
 			});
 			check(result.receipt.verdict === "ship", "ship verdict on yield + passing verify");
 			check(result.receipt.bundleHit === null, "bundleHit null in M1");
+			// NFR-3: usage flows from the fake's deterministic SessionStats.
+			const expectedGrounding = estimateGroundingTokens(buildWorkerSystemPrompt(GOOD_SPEC), GOOD_SPEC);
+			const expectedCor = computeCor(expectedGrounding, totalInputTokens({ input: 1000, cacheRead: 200, cacheWrite: 300 }));
+			check(result.receipt.costUsd === 0.0123, `ship receipt carries real cost (got ${result.receipt.costUsd})`);
+			check(result.receipt.inputTokens === 1000 && result.receipt.outputTokens === 250 && result.receipt.cacheReadTokens === 200,
+				"ship receipt carries the fake's token counts");
+			check(result.receipt.cor > 0 && Math.abs(result.receipt.cor - expectedCor) < 1e-12,
+				`cor equals grounding / total input for known fixture sizes (got ${result.receipt.cor}, want ${expectedCor})`);
 			check(result.verificationPassed === true, "verification passed");
 			check(existsSync(join(workDir, "hello.txt")), "worker file written");
 
@@ -183,6 +212,8 @@ export async function runTests(): Promise<void> {
 				host: fakeHost("yield", [{ path: join(dir, "verifyfail", "hello.txt"), content: "hi" }]),
 			});
 			check(result.receipt.verdict === "failed", "failed verdict on failing verify");
+			check(result.receipt.costUsd === 0.0123 && result.receipt.inputTokens === 1000,
+				"verification-failure receipt still carries measured usage");
 			check(result.verificationPassed === false, "verificationPassed false");
 			check(result.yieldedResult !== undefined, "yield still captured on verify failure");
 		}
@@ -247,6 +278,28 @@ export async function runTests(): Promise<void> {
 				host: badHost,
 			});
 			check(result.receipt.verdict === "failed", "failed verdict on spawn failure");
+			check(result.receipt.costUsd === 0 && result.receipt.inputTokens === 0
+				&& result.receipt.outputTokens === 0 && result.receipt.cacheReadTokens === 0 && result.receipt.cor === 0,
+				"spawn-failure receipt carries all-zero usage (no session ever existed)");
+		}
+
+		// ─── Throwing stats() → zeroed usage, run still completes (NFR-3) ──
+		{
+			const workDir = join(dir, "statsthrow");
+			mkdirSync(workDir, { recursive: true });
+			const result = await runTask({
+				specMarkdown: GOOD_SPEC.replace("test -f hello.txt", "exit 3"), // fail fast; only the accounting matters here
+				cwd: workDir,
+				artifactsDir: join(dir, "artifacts-statsthrow"),
+				dbPath: join(dir, "statsthrow.db"),
+				model: "openrouter/stealth/ox-alpha",
+				host: fakeHost("yield", [{ path: join(workDir, "hello.txt"), content: "hi" }], true),
+			});
+			check(result.receipt.verdict === "failed" || result.receipt.verdict === "ship",
+				"throwing stats() does not throw out of runTask — valid receipt returned");
+			check(result.receipt.costUsd === 0 && result.receipt.inputTokens === 0
+				&& result.receipt.outputTokens === 0 && result.receipt.cacheReadTokens === 0 && result.receipt.cor === 0,
+				"throwing stats() zeroes every usage field on the receipt");
 		}
 	} finally {
 		rmSync(dir, { recursive: true, force: true });

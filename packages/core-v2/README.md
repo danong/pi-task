@@ -64,6 +64,17 @@ the strict gate.
   workspaces → one combine → ONE verification gate on the integrated tree
   through the EnvironmentDriver; residual conflicts escalate, never ship),
   and `start.ts` (`startDaemon`: open ledger + boot reconciliation).
+  - Measured efficiency (NFR-3): after a session settles the runner reads
+    `SessionHandle.stats()` — the SDK already prices usage — and records
+    real tokens/USD plus the COR grounding ratio on every receipt; the
+    parallel aggregate sums per-worker usage and recomputes cor from the
+    sums (never an average of ratios). The grounding numerator is an
+    approximation: ≈4 utf-8 bytes per token over system prompt + spec,
+    computed where the worker prompt is built; the denominator counts
+    everything billed as prompt (`input + cacheRead + cacheWrite`). A
+    rejecting stats() read — or a spawn failure with no session at all —
+    zeroes the usage fields instead of failing the run (`USAGE_UNAVAILABLE`).
+    Receipts stay ≈150 tokens (§5.6): flat numeric fields only.
 - `test/e2e-parity.ts` — the M1 exit gate: one real single-worker run on
   `openrouter/stealth/ox-alpha` against a temp jj repo, asserting ship
   receipt + verification + ledger rows. Manual/network gate — NOT part of

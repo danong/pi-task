@@ -9,9 +9,11 @@
  * function of the spec markdown — no timestamps, ids, or clocks are ever
  * interpolated. Ledger ids may vary; prompt bytes may not.
  *
- * Cost accounting note: the M1 session host does not surface provider
- * usage yet (M3 adds COR/token accounting), so receipts carry
- * TASK_RUNNER_COST_UNAVAILABLE until then.
+ * Cost accounting (NFR-3): after the session settles the runner reads
+ * `SessionHandle.stats()` — the SDK already prices usage — and records
+ * tokens/USD plus the COR grounding ratio on the receipt. Accounting is
+ * best-effort: a failing stats() read zeroes the usage fields instead of
+ * failing the run (see collectUsage).
  */
 
 import { createHash } from "node:crypto";
@@ -28,8 +30,111 @@ import { attachPrewalk, decidePrewalkSwap, type PrewalkPricing } from "../ground
 import { verifyThroughEnvironment } from "../verify/adapter.ts";
 import { HostEnvironmentDriver } from "../environments/drivers.ts";
 
-/** Receipt cost placeholder until M3 wires usage accounting (FR-9/NFR-3). */
-export const TASK_RUNNER_COST_UNAVAILABLE = 0;
+/**
+ * Usage sentinel (FR-9/NFR-3): every usage field on a receipt carries
+ * this when no measurement exists — stats() rejected mid-run or no
+ * session ever spawned. Accounting never fails a run.
+ */
+export const USAGE_UNAVAILABLE = 0;
+
+/** Measured session usage as it lands on a receipt, plus the COR inputs
+ *  the receipt itself does not carry (cacheWrite feeds the denominator;
+ *  groundingTokens feeds per-worker sums in the parallel aggregator). */
+export interface UsageSnapshot {
+	costUsd: number;
+	inputTokens: number;
+	outputTokens: number;
+	cacheReadTokens: number;
+	cacheWriteTokens: number;
+	groundingTokens: number;
+	cor: number;
+}
+
+/** Everything billed as prompt, cached or not — the NFR-3 denominator. */
+export function totalInputTokens(tokens: { input: number; cacheRead: number; cacheWrite: number }): number {
+	return tokens.input + tokens.cacheRead + tokens.cacheWrite;
+}
+
+/** COR grounding ratio: grounding ÷ total input (0 when nothing billed). */
+export function computeCor(groundingTokens: number, totalInput: number): number {
+	return totalInput === 0 ? 0 : groundingTokens / totalInput;
+}
+
+/**
+ * Approximate the fixed grounding prefix in tokens (NFR-3): the exact
+ * denominator wants manifest phase data that does not exist yet, so the
+ * runner approximates honestly — ≈4 utf-8 bytes per token over the
+ * worker system prompt plus the spec markdown.
+ */
+export function estimateGroundingTokens(systemPrompt: string, specMarkdown: string): number {
+	return Math.ceil(Buffer.byteLength(systemPrompt + specMarkdown, "utf-8") / 4);
+}
+
+/** All-zero snapshot for runs with no measurable session. */
+export function emptyUsage(): UsageSnapshot {
+	return {
+		costUsd: USAGE_UNAVAILABLE,
+		inputTokens: 0,
+		outputTokens: 0,
+		cacheReadTokens: 0,
+		cacheWriteTokens: 0,
+		groundingTokens: 0,
+		cor: 0,
+	};
+}
+
+/**
+ * Read a settled session's usage into a snapshot. Failure tolerance
+ * (NFR-3): a rejecting stats() yields the zeroed sentinel snapshot —
+ * accounting must never fail a run.
+ */
+export async function collectUsage(handle: SessionHandle, groundingTokens: number): Promise<UsageSnapshot> {
+	try {
+		const stats = await handle.stats();
+		return {
+			costUsd: stats.cost,
+			inputTokens: stats.tokens.input,
+			outputTokens: stats.tokens.output,
+			cacheReadTokens: stats.tokens.cacheRead,
+			cacheWriteTokens: stats.tokens.cacheWrite,
+			groundingTokens,
+			cor: computeCor(groundingTokens, totalInputTokens(stats.tokens)),
+		};
+	} catch {
+		return emptyUsage();
+	}
+}
+
+/** Sum snapshots and RECOMPUTE the aggregate cor from summed grounding
+ *  over summed total input — never average the per-worker ratios. */
+export function sumUsage(usages: readonly UsageSnapshot[]): UsageSnapshot {
+	const total = emptyUsage();
+	for (const u of usages) {
+		total.costUsd += u.costUsd;
+		total.inputTokens += u.inputTokens;
+		total.outputTokens += u.outputTokens;
+		total.cacheReadTokens += u.cacheReadTokens;
+		total.cacheWriteTokens += u.cacheWriteTokens;
+		total.groundingTokens += u.groundingTokens;
+	}
+	total.cor = computeCor(
+		total.groundingTokens,
+		totalInputTokens({ input: total.inputTokens, cacheRead: total.cacheReadTokens, cacheWrite: total.cacheWriteTokens }),
+	);
+	return total;
+}
+
+/** The flat receipt fields carrying measured usage (receipt stays ≈150
+ *  tokens, §5.6 — compact numbers only, no nested objects). */
+export function receiptUsageFields(usage: UsageSnapshot): Pick<TaskReceipt, "costUsd" | "inputTokens" | "outputTokens" | "cacheReadTokens" | "cor"> {
+	return {
+		costUsd: usage.costUsd,
+		inputTokens: usage.inputTokens,
+		outputTokens: usage.outputTokens,
+		cacheReadTokens: usage.cacheReadTokens,
+		cor: usage.cor,
+	};
+}
 
 /** Typed spec-validation failure naming what is missing (R3). */
 export class SpecValidationError extends Error {
@@ -207,7 +312,10 @@ async function runWithStore(
 		hostError: undefined,
 	};
 
-	const failRun = (cause: string): RunTaskResult => {
+	// NFR-3: when usage was already measured before the failure, carry it
+	// into the failed receipt instead of discarding it (defaults to zeroes
+	// for failures that happen before any session activity).
+	const failRun = (cause: string, usage: UsageSnapshot = emptyUsage()): RunTaskResult => {
 		writeFailureArtifact({
 			artifactsDir: options.artifactsDir,
 			runId: taskId,
@@ -225,7 +333,7 @@ async function runWithStore(
 				filesChanged: 0,
 				commitIds: [],
 				turns: observation.turns,
-				costUsd: TASK_RUNNER_COST_UNAVAILABLE,
+				...receiptUsageFields(usage),
 				bundleHit: null,
 			},
 			verificationPassed: false,
@@ -254,6 +362,10 @@ async function runWithStore(
 	store.setTaskStatus(taskId, "executing");
 
 	const host = options.host ?? createSessionHost();
+	// Grounding figure (NFR-3 approximation): fixed prefix = system prompt
+	// + spec bytes, computed once where the prompt is built.
+	const systemPrompt = buildWorkerSystemPrompt(options.specMarkdown);
+	const groundingTokens = estimateGroundingTokens(systemPrompt, options.specMarkdown);
 	const prewalkActive =
 		options.prewalk?.enabled === true &&
 		decision.planMode === "prewalk" &&
@@ -264,7 +376,7 @@ async function runWithStore(
 			role: "worker",
 			modelId: prewalkActive ? options.prewalk!.modelId : options.model,
 			cwd: options.cwd,
-			systemPrompt: buildWorkerSystemPrompt(options.specMarkdown),
+			systemPrompt,
 			...(options.sessionTimeoutMs === undefined ? {} : { timeoutMs: options.sessionTimeoutMs }),
 		});
 	} catch (err) {
@@ -320,6 +432,10 @@ async function runWithStore(
 		unsubscribeEvents();
 	}
 
+	// NFR-3: read measured usage once the session has settled (never on
+	// spawn failure — there is no session to read). A rejecting stats()
+	// zeroes the snapshot inside collectUsage.
+	const usage = await collectUsage(handle, groundingTokens);
 	const yieldPayload: Yield | undefined = handle.result;
 	handle.close();
 
@@ -327,7 +443,7 @@ async function runWithStore(
 		const cause = observation.watchdogAbort
 			? `watchdog abort: ${observation.watchdogAbort.reason}`
 			: "settled without yield";
-		return failRun(cause);
+		return failRun(cause, usage);
 	}
 
 	// ── Verify on the working tree through the environment ladder (M6). ──
@@ -355,7 +471,7 @@ async function runWithStore(
 				filesChanged: yieldPayload.files_changed.length,
 				commitIds: yieldPayload.commit_ids,
 				turns: observation.turns,
-				costUsd: TASK_RUNNER_COST_UNAVAILABLE,
+				...receiptUsageFields(usage),
 				bundleHit: null,
 			},
 			yieldedResult: yieldPayload,
@@ -373,7 +489,7 @@ async function runWithStore(
 			filesChanged: yieldPayload.files_changed.length,
 			commitIds: yieldPayload.commit_ids,
 			turns: observation.turns,
-			costUsd: TASK_RUNNER_COST_UNAVAILABLE,
+			...receiptUsageFields(usage),
 			bundleHit: null,
 		},
 		yieldedResult: yieldPayload,

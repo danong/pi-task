@@ -16,6 +16,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import type { SessionHandle, SessionHost, SessionHostConfig, SessionHostEvent } from "../src/sessions/host.ts";
+import { buildWorkerSystemPrompt, computeCor, estimateGroundingTokens, totalInputTokens } from "../src/daemon/task-runner.ts";
 import { runParallelTask } from "../src/daemon/parallel.ts";
 
 const SPEC_A = `## Goal\nFile A.\n\n## Requirements\n- R1: a.txt says A\n\n## Verification\n- test -f a.txt\n`;
@@ -25,7 +26,7 @@ class FakeHandle implements SessionHandle {
 	readonly role: string;
 	readonly model = { provider: "fake", modelId: "fake/m" };
 	result: { files_changed: string[]; summary: string; commit_ids: string[]; deviations: string[] } | undefined;
-	constructor(config: SessionHostConfig, private readonly file: string) {
+	constructor(config: SessionHostConfig, private readonly file: string, private readonly workerIndex = 0) {
 		this.role = config.role;
 	}
 	subscribe(listener: (event: SessionHostEvent) => void): () => void {
@@ -41,8 +42,26 @@ class FakeHandle implements SessionHandle {
 		this.result = { files_changed: [this.file.split("/").pop()!], summary: "done", commit_ids: ["fake"], deviations: [] };
 	}
 	async abort(): Promise<void> {}
-	async stats(): Promise<never> {
-		throw new Error("stats unavailable on the fake handle");
+	/** Deterministic per-worker usage (NFR-3): distinct numbers per worker
+	 *  so aggregate summation is provable; total input 500+100+50=650. */
+	async stats() {
+		return {
+			sessionFile: undefined,
+			sessionId: `fake-worker-${this.workerIndex}`,
+			userMessages: 1,
+			assistantMessages: 1,
+			toolCalls: 1,
+			toolResults: 1,
+			totalMessages: 4,
+			tokens: {
+				input: 500 + 100 * this.workerIndex,
+				output: 200 + 10 * this.workerIndex,
+				cacheRead: 100 + 10 * this.workerIndex,
+				cacheWrite: 50,
+				total: 0,
+			},
+			cost: 0.01 * (this.workerIndex + 1),
+		};
 	}
 	async setModel(): Promise<void> {}
 	close(): void {}
@@ -52,8 +71,9 @@ function scriptedHost(filesByCall: string[], calls: { value: number }): SessionH
 	return {
 		spawn: async (config) => {
 			const file = filesByCall[calls.value] ?? "a.txt";
+			const index = calls.value;
 			calls.value += 1;
-			return new FakeHandle(config, join(config.cwd, file));
+			return new FakeHandle(config, join(config.cwd, file), index);
 		},
 	};
 }
@@ -100,6 +120,22 @@ export async function runTests(): Promise<void> {
 			check(result.aggregate.verdict === "ship", `aggregate ship (got ${result.aggregate.verdict})`);
 			check(result.perWorker.length === 2 && result.perWorker.every((r) => r.verdict === "ship"),
 				"both worker receipts ship");
+			// NFR-3: per-worker usage matches each fake; the aggregate sums it
+			// and RECOMPUTES cor from summed grounding over summed input.
+			const groundings = [SPEC_A, SPEC_B].map((s) => estimateGroundingTokens(buildWorkerSystemPrompt(s), s));
+			for (let i = 0; i < 2; i += 1) {
+				const r = result.perWorker[i]!;
+				check(r.costUsd === 0.01 * (i + 1) && r.inputTokens === 500 + 100 * i
+					&& r.outputTokens === 200 + 10 * i && r.cacheReadTokens === 100 + 10 * i,
+					`worker ${i} receipt carries its own fake usage (got cost ${r.costUsd}, in ${r.inputTokens})`);
+			}
+			const agg = result.aggregate;
+			check(Math.abs(agg.costUsd - 0.03) < 1e-9 && agg.inputTokens === 1100 && agg.outputTokens === 410 && agg.cacheReadTokens === 210,
+				`aggregate sums per-worker usage (got cost ${agg.costUsd}, in ${agg.inputTokens})`);
+			const summedGrounding = groundings[0]! + groundings[1]!;
+			const expectedAggCor = computeCor(summedGrounding, totalInputTokens({ input: 1100, cacheRead: 210, cacheWrite: 100 }));
+			check(Math.abs(agg.cor - expectedAggCor) < 1e-12 && Math.abs(agg.cor - (result.perWorker[0]!.cor + result.perWorker[1]!.cor) / 2) > 0,
+				`aggregate cor recomputed from sums, not averaged (got ${agg.cor}, want ${expectedAggCor})`);
 			check(existsSync(join(repo, "a.txt")) && existsSync(join(repo, "b.txt")),
 				"combined tree holds both workers' files");
 			check(result.conflicts.length === 0, "no conflicts");

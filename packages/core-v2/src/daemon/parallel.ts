@@ -6,11 +6,14 @@
  * then verify ONCE on the integrated tree through the selected
  * EnvironmentDriver (FR-6's "merged tree post-merge", FR-5 ladder).
  *
- * Receipts: one TaskReceipt per attempt (verdict mirrors that attempt) plus
- * an AGGREGATE receipt whose filesChanged sums the yields and whose
- * commitIds carries the merged base commit id. Residual merge conflicts
- * after union resolution → verdict "escalated" (the contract's third
- * outcome), never silently shipped.
+ * Receipts: one TaskReceipt per attempt (verdict mirrors that attempt)
+ * plus an AGGREGATE receipt whose filesChanged sums the yields and whose
+ * commitIds carries the merged base commit id. Usage (NFR-3): every
+ * attempt's measured tokens/USD ride its own receipt; the aggregate sums
+ * them and RECOMPUTES cor from summed grounding over summed total input
+ * (never an average of ratios). Residual merge conflicts after union
+ * resolution → verdict "escalated" (the contract's third outcome), never
+ * silently shipped.
  */
 
 import { mkdirSync } from "node:fs";
@@ -29,10 +32,19 @@ import {
 	SessionHostError,
 	type SessionHost,
 } from "../sessions/host.ts";
-import { deriveTaskId, parseTaskSpec, buildWorkerSystemPrompt, resolveAttemptId, SpecValidationError } from "./task-runner.ts";
-
-/** Receipt cost placeholder until M3 wires usage accounting. */
-export const PARALLEL_COST_UNAVAILABLE = 0;
+import {
+	buildWorkerSystemPrompt,
+	collectUsage,
+	deriveTaskId,
+	emptyUsage,
+	estimateGroundingTokens,
+	parseTaskSpec,
+	receiptUsageFields,
+	resolveAttemptId,
+	SpecValidationError,
+	sumUsage,
+	type UsageSnapshot,
+} from "./task-runner.ts";
 
 export interface RunParallelOptions {
 	/** One spec markdown per worker (self-contained, per contract §5.4). */
@@ -62,8 +74,10 @@ function attemptNumberOf(taskId: string): number {
 	return m?.[1] ? Number(m[1]) : 1;
 }
 
-function makeReceipt(taskId: string, verdict: TaskReceipt["verdict"], filesChanged: number, commitIds: string[], turns: number): TaskReceipt {
-	return { taskId, verdict, filesChanged, commitIds, turns, costUsd: PARALLEL_COST_UNAVAILABLE, bundleHit: null };
+/** Receipt builder shared by every outcome path; usage comes pre-summed
+ *  or per-attempt (see sumUsage / collectUsage in task-runner). */
+function makeReceipt(taskId: string, verdict: TaskReceipt["verdict"], filesChanged: number, commitIds: string[], turns: number, usage: UsageSnapshot = emptyUsage()): TaskReceipt {
+	return { taskId, verdict, filesChanged, commitIds, turns, ...receiptUsageFields(usage), bundleHit: null };
 }
 
 export interface RunParallelResult {
@@ -177,6 +191,12 @@ async function runWithStore(store: LedgerStore, options: RunParallelOptions): Pr
 	].join("\n"));
 
 	const promptResults = await Promise.allSettled(handles.map((h, i) => h.prompt(promptTexts[i]!)));
+	// NFR-3: capture every attempt's measured usage while its session is
+	// still live — even failed attempts get their real numbers; a
+	// rejecting stats() zeroes inside collectUsage.
+	const groundings = options.subTasks.map((spec) =>
+		estimateGroundingTokens(buildWorkerSystemPrompt(spec), spec));
+	const usages = await Promise.all(handles.map((h, i) => collectUsage(h, groundings[i]!)));
 	for (const h of handles) h.close();
 	for (const w of watchdogHandles) w.dispose();
 
@@ -197,9 +217,9 @@ async function runWithStore(store: LedgerStore, options: RunParallelOptions): Pr
 				cause,
 				lastTool: "session",
 			});
-			return makeReceipt(ctx.taskId, "failed", 0, [], obs.turns);
+			return makeReceipt(ctx.taskId, "failed", 0, [], obs.turns, usages[i]!);
 		}
-		const receipt = makeReceipt(ctx.taskId, "ship", yieldPayload.files_changed.length, yieldPayload.commit_ids, obs.turns);
+		const receipt = makeReceipt(ctx.taskId, "ship", yieldPayload.files_changed.length, yieldPayload.commit_ids, obs.turns, usages[i]!);
 		store.setTaskStatus(ctx.taskId, "completed");
 		store.setSessionStatus(`${ctx.taskId}-worker`, "yielded", JSON.stringify(yieldPayload));
 		return receipt;
@@ -217,7 +237,7 @@ async function runWithStore(store: LedgerStore, options: RunParallelOptions): Pr
 		for (const ctx of contexts) await options.workspaceDriver.cleanupWorkspace?.(ctx);
 		store.setTaskStatus(aggregateId, anyFailed ? "failed" : "completed");
 		return {
-			aggregate: makeReceipt(aggregateId, anyFailed ? "failed" : "ship", 0, published, observations.reduce((a, o) => a + o.turns, 0)),
+			aggregate: makeReceipt(aggregateId, anyFailed ? "failed" : "ship", 0, published, observations.reduce((a, o) => a + o.turns, 0), sumUsage(usages)),
 			perWorker,
 			conflicts: [],
 		};
@@ -261,7 +281,7 @@ async function runWithStore(store: LedgerStore, options: RunParallelOptions): Pr
 		store.setTaskStatus(aggregateId, "failed");
 		for (const ctx of contexts) store.setTaskStatus(ctx.taskId, "failed");
 		return {
-			aggregate: makeReceipt(aggregateId, "failed", 0, [], 0),
+			aggregate: makeReceipt(aggregateId, "failed", 0, [], 0, sumUsage(usages)),
 			perWorker,
 			conflicts: [],
 		};
@@ -285,7 +305,7 @@ async function runWithStore(store: LedgerStore, options: RunParallelOptions): Pr
 		for (const ctx of healthyContexts) store.setTaskStatus(ctx.taskId, "failed");
 		store.recordRoutingFeedback(options.projectDir.split("/").pop() ?? options.projectDir, "cold", 0);
 		return {
-			aggregate: makeReceipt(aggregateId, "escalate", combineOutcome.filesChanged, [combineOutcome.commitId], 0),
+			aggregate: makeReceipt(aggregateId, "escalate", combineOutcome.filesChanged, [combineOutcome.commitId], 0, sumUsage(usages)),
 			perWorker,
 			mergedCommitId: combineOutcome.commitId,
 			conflicts: combineOutcome.conflicts,
@@ -332,7 +352,7 @@ async function runWithStore(store: LedgerStore, options: RunParallelOptions): Pr
 		store.recordRoutingFeedback(repoKey, "cold", 0);
 		for (const ctx of healthyContexts) store.setTaskStatus(ctx.taskId, "failed");
 		return {
-			aggregate: makeReceipt(aggregateId, "failed", combineOutcome.filesChanged, [combineOutcome.commitId], 0),
+			aggregate: makeReceipt(aggregateId, "failed", combineOutcome.filesChanged, [combineOutcome.commitId], 0, sumUsage(usages)),
 			perWorker,
 			mergedCommitId: combineOutcome.commitId,
 			conflicts: [],
@@ -350,6 +370,7 @@ async function runWithStore(store: LedgerStore, options: RunParallelOptions): Pr
 			perWorker.reduce((a, r) => a + r.filesChanged, 0),
 			[combineOutcome.commitId],
 			observations.reduce((a, o) => a + o.turns, 0),
+			sumUsage(usages),
 		),
 		perWorker,
 		mergedCommitId: combineOutcome.commitId,

@@ -151,6 +151,10 @@ export async function runTests(): Promise<void> {
 			commitIds: ["c1"],
 			turns: 5,
 			costUsd: 0.01,
+			inputTokens: 100,
+			outputTokens: 20,
+			cacheReadTokens: 40,
+			cor: 0.5,
 			bundleHit: null,
 		});
 		check(receipt.verdict === "ship" && receipt.bundleHit === null, "TaskReceipt round-trip");
@@ -208,8 +212,25 @@ export async function runTests(): Promise<void> {
 			commitIds: [],
 			turns: 1,
 			costUsd: 0,
+			inputTokens: 0,
+			outputTokens: 0,
+			cacheReadTokens: 0,
+			cor: 0,
 			bundleHit: null,
 		})), "unknow verdict rejected");
+
+		check(!ok(() => TaskReceiptSchema.parse({
+			taskId: "t",
+			verdict: "ship",
+			filesChanged: 0,
+			commitIds: [],
+			turns: 1,
+			costUsd: 0,
+			inputTokens: 0,
+			outputTokens: 0,
+			cacheReadTokens: 0,
+			bundleHit: null,
+		})), "receipt missing usage fields rejected");
 	}
 
 	// ─── Deterministic serialization (NFR-4 / NFR-3) ──────────────────
@@ -345,7 +366,7 @@ export async function runTests(): Promise<void> {
 			connect(_sessionId, level2) {
 				const allowed = LEVEL_EVENTS[level2];
 				const events: SurfaceEvent[] = [
-					{ type: "Receipt", receipt: { taskId: "t", verdict: "ship", filesChanged: 1, commitIds: [], turns: 1, costUsd: 0, bundleHit: null } },
+					{ type: "Receipt", receipt: { taskId: "t", verdict: "ship", filesChanged: 1, commitIds: [], turns: 1, costUsd: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cor: 0, bundleHit: null } },
 					{ type: "Escalation", taskId: "t", reason: "r", detail: "d" },
 					{ type: "StatusSnapshot", model: "m", tier: "full", activeTasks: 0 },
 				];

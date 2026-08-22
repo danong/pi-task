@@ -88,6 +88,16 @@ export type Yield = z.infer<typeof YieldSchema>;
 /**
  * ≈150-token receipt so a spec-authoring session survives many tasks
  * (§5.6). turns/costUsd/bundleHit are router feedback (FR-9/FR-10).
+ *
+ * Measured efficiency (NFR-3): costUsd and the token counters come from
+ * the pi SDK session stats (`SessionHandle.stats()`) — the SDK prices
+ * usage, the runner only records it. `cor` is the grounding ratio:
+ * groundingTokens ÷ totalInputTokens, where groundingTokens approximates
+ * the fixed grounding prefix as ceil(utf8Bytes(systemPrompt + spec)/4)
+ * (the manifest phase data NFR-3 names does not exist yet) and
+ * totalInputTokens = input + cacheRead + cacheWrite — everything billed
+ * as prompt, cached or not. When stats are unavailable (or no session
+ * ever spawned) every field below is 0 — accounting never fails a run.
  */
 export const TaskReceiptSchema = z.object({
 	taskId: z.string(),
@@ -96,6 +106,11 @@ export const TaskReceiptSchema = z.object({
 	commitIds: z.array(z.string()),
 	turns: z.number(),
 	costUsd: z.number(),
+	inputTokens: z.number(),
+	outputTokens: z.number(),
+	cacheReadTokens: z.number(),
+	/** groundingTokens ÷ totalInputTokens (0 when nothing was billed). */
+	cor: z.number(),
 	/** mode-(b) telemetry: null = bundle not used. */
 	bundleHit: z.boolean().nullable(),
 });
