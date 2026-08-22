@@ -27,7 +27,7 @@ import {
 	SessionHostError,
 	type SessionHost,
 } from "../sessions/host.ts";
-import { deriveTaskId, parseTaskSpec, buildWorkerSystemPrompt, SpecValidationError } from "./task-runner.ts";
+import { deriveTaskId, parseTaskSpec, buildWorkerSystemPrompt, resolveAttemptId, SpecValidationError } from "./task-runner.ts";
 
 /** Receipt cost placeholder until M3 wires usage accounting. */
 export const PARALLEL_COST_UNAVAILABLE = 0;
@@ -52,6 +52,12 @@ interface WorkerObservation {
 	lastEvent: unknown;
 	turns: number;
 	watchdogAbort: WatchdogEnd | undefined;
+}
+
+/** 1 for a family's first attempt; k+1 when the id carries `-a{k+1}`. */
+function attemptNumberOf(taskId: string): number {
+	const m = /-a(\d+)$/.exec(taskId);
+	return m?.[1] ? Number(m[1]) : 1;
 }
 
 function makeReceipt(taskId: string, verdict: TaskReceipt["verdict"], filesChanged: number, commitIds: string[], turns: number): TaskReceipt {
@@ -86,22 +92,32 @@ async function runWithStore(store: LedgerStore, options: RunParallelOptions): Pr
 
 	const familyBase = deriveTaskId(parsed.map((p) => p.goal).join("\n"), options.projectDir);
 
-	// Provision: fetch/guards, base, workspaces.
+	// Attempt-discriminated ids FIRST (review M1/P0): every re-run of the
+	// same specs gets fresh ledger rows and fresh jj workspace names —
+	// before any repo mutation (an orphan AI base must be impossible).
+	const aggregateId = resolveAttemptId(store, `${familyBase}-p`);
+	const attemptNumber = attemptNumberOf(aggregateId);
+	const workerIds = parsed.map((_p, i) =>
+		attemptNumber === 1 ? `${familyBase}-${i}` : `${familyBase}-${i}-a${attemptNumber}`,
+	);
+
+	store.insertTask({ id: aggregateId, goal: parsed[0]?.goal ?? "parallel", planMode: null });
+	store.setTaskStatus(aggregateId, "executing");
+	const contexts: WorkspaceContext[] = [];
+	for (let i = 0; i < options.subTasks.length; i += 1) {
+		store.insertTask({ id: workerIds[i]!, goal: parsed[i]?.goal ?? `worker ${i}` });
+		store.setTaskStatus(workerIds[i]!, "executing");
+		contexts.push(await options.workspaceDriver.createWorkspace(workerIds[i]!));
+	}
+
+	// Provision: fetch/guards, then the AI-authored base — only after the
+	// ledger accepted this attempt (a doomed run cannot litter the repo).
 	await options.workspaceDriver.prepare?.();
 	let baseChangeId: string | undefined;
 	if (options.workspaceDriver.integrationMode === undefined || options.workspaceDriver.integrationMode === "task-base") {
 		baseChangeId = await (options.workspaceDriver.prepareIntegrationBase as NonNullable<typeof options.workspaceDriver.prepareIntegrationBase>)(
 			parsed[0]?.goal ?? "parallel task",
 		);
-	}
-	store.insertTask({ id: `${familyBase}-p`, goal: parsed[0]?.goal ?? "parallel", planMode: null });
-	store.setTaskStatus(`${familyBase}-p`, "executing");
-
-	const contexts: WorkspaceContext[] = [];
-	for (let i = 0; i < options.subTasks.length; i += 1) {
-		store.insertTask({ id: `${familyBase}-${i}`, goal: parsed[i]?.goal ?? `worker ${i}` });
-		store.setTaskStatus(`${familyBase}-${i}`, "executing");
-		contexts.push(await options.workspaceDriver.createWorkspace(`${familyBase}-${i}`));
 	}
 
 	for (const ctx of contexts) {
@@ -149,7 +165,6 @@ async function runWithStore(store: LedgerStore, options: RunParallelOptions): Pr
 
 	// Per-worker receipts: failed attempts named first.
 	const perWorker: TaskReceipt[] = contexts.map((ctx, i) => {
-		void store;
 		const settled = promptResults[i]!;
 		const yieldPayload = settled.status === "fulfilled" ? handles[i]?.result : undefined;
 		const obs = observations[i]!;
@@ -182,9 +197,10 @@ async function runWithStore(store: LedgerStore, options: RunParallelOptions): Pr
 	if (!baseChangeId) {
 		// Feature-branch mode: bookmarks only; no automatic integration.
 		const published = (await options.workspaceDriver.publishBookmarks?.(contexts)) ?? [];
-		store.setTaskStatus(`${familyBase}-p`, anyFailed ? "failed" : "completed");
+		for (const ctx of contexts) await options.workspaceDriver.cleanupWorkspace?.(ctx);
+		store.setTaskStatus(aggregateId, anyFailed ? "failed" : "completed");
 		return {
-			aggregate: makeReceipt(`${familyBase}-p`, anyFailed ? "failed" : "ship", 0, published, observations.reduce((a, o) => a + o.turns, 0)),
+			aggregate: makeReceipt(aggregateId, anyFailed ? "failed" : "ship", 0, published, observations.reduce((a, o) => a + o.turns, 0)),
 			perWorker,
 			conflicts: [],
 		};
@@ -198,12 +214,13 @@ async function runWithStore(store: LedgerStore, options: RunParallelOptions): Pr
 		// everything; the operator resolves by hand (contract §3.5 rung 3).
 		writeFailureArtifact({
 			artifactsDir: options.artifactsDir,
-			runId: `${familyBase}-p`,
+			runId: aggregateId,
 			cause: `residual merge conflicts after union resolution: ${combineOutcome.conflicts.join(", ")}`,
+			lastEvent: `preserved workspaces: ${healthyContexts.map((c) => `${c.branchName} @ ${c.hostPath}`).join("; ")}`,
 		});
-		store.setTaskStatus(`${familyBase}-p`, "escalated");
+		store.setTaskStatus(aggregateId, "escalated");
 		return {
-			aggregate: makeReceipt(`${familyBase}-p`, "escalate", 0, [combineOutcome.commitId], 0),
+			aggregate: makeReceipt(aggregateId, "escalate", 0, [combineOutcome.commitId], 0),
 			perWorker,
 			mergedCommitId: combineOutcome.commitId,
 			conflicts: combineOutcome.conflicts,
@@ -220,26 +237,35 @@ async function runWithStore(store: LedgerStore, options: RunParallelOptions): Pr
 		if (result.exitCode !== 0) failures.push(`${command} (exit ${result.exitCode})`);
 	}
 
+	// Gate-ordered cleanup (v1 semantics): healthy workspaces are removed
+	// only after the consistency gate AND verification passed. Failed or
+	// escalated runs PRESERVE their workspaces and name them in the artifact.
+	const cleanupHealthy = async (): Promise<void> => {
+		for (const ctx of healthyContexts) await options.workspaceDriver.cleanupWorkspace?.(ctx);
+	};
+
 	if (anyFailed || failures.length > 0) {
 		writeFailureArtifact({
 			artifactsDir: options.artifactsDir,
-			runId: `${familyBase}-p`,
+			runId: aggregateId,
 			cause: failures.length > 0 ? `verification failed: ${failures.join("; ")}` : "one or more workers failed",
+			lastEvent: `preserved workspaces: ${healthyContexts.map((c) => `${c.branchName} @ ${c.hostPath}`).join("; ")}`,
 		});
-		store.setTaskStatus(`${familyBase}-p`, "failed");
+		store.setTaskStatus(aggregateId, "failed");
 		return {
-			aggregate: makeReceipt(`${familyBase}-p`, "failed", 0, [combineOutcome.commitId], 0),
+			aggregate: makeReceipt(aggregateId, "failed", 0, [combineOutcome.commitId], 0),
 			perWorker,
 			mergedCommitId: combineOutcome.commitId,
 			conflicts: [],
 		};
 	}
 
+	await cleanupHealthy();
 	store.recordRoutingFeedback(options.projectDir.split("/").pop() ?? options.projectDir, "task-base", 1);
-	store.setTaskStatus(`${familyBase}-p`, "completed");
+	store.setTaskStatus(aggregateId, "completed");
 	return {
 		aggregate: makeReceipt(
-			`${familyBase}-p`,
+			aggregateId,
 			"ship",
 			perWorker.reduce((a, r) => a + r.filesChanged, 0),
 			[combineOutcome.commitId],
