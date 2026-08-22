@@ -6,6 +6,7 @@
  * §3 (plugin contract), §3b (ControlSurface).
  */
 
+export * from "./gateway-events.ts";
 export * from "./payloads.ts";
 export * from "./serialize.ts";
 export * from "./workspace-driver.ts";

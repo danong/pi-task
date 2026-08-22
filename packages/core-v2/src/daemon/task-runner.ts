@@ -44,6 +44,8 @@ import { createSessionHost, SessionHostError, type SessionHandle, type SessionHo
 import { attachPrewalk, decidePrewalkSwap, type PrewalkPricing } from "../grounding/prewalk.ts";
 import { verifyThroughEnvironment } from "../verify/adapter.ts";
 import { HostEnvironmentDriver } from "../environments/drivers.ts";
+import type { TaskGateway } from "../contracts/index.ts";
+import { InMemoryTaskGateway } from "../gateway/index.ts";
 
 /**
  * Usage sentinel (FR-9/NFR-3): every usage field on a receipt carries
@@ -277,6 +279,9 @@ export interface RunTaskOptions {
 	bundle?: { targetPaths?: readonly string[] } | undefined;
 	/** Observability sink for session events (progress UIs, debugging). */
 	onEvent?: (event: SessionHostEvent) => void;
+	/** Lifecycle event sink (R4); defaults to an InMemoryTaskGateway over
+	 *  this run's ledger so getTaskState awaits the same mutations. */
+	gateway?: TaskGateway | undefined;
 	/** Wall-clock bound forwarded to the session host. */
 	sessionTimeoutMs?: number;
 }
@@ -326,6 +331,10 @@ async function runWithStore(
 ): Promise<RunTaskResult> {
 	const taskId = resolveAttemptId(store, familyId);
 	store.insertTask({ id: taskId, goal: parsed.goal });
+	// R4: events flow AFTER their ledger mutation — a subscriber reading
+	// getTaskState on task.queued already sees the queued row.
+	const gateway = options.gateway ?? new InMemoryTaskGateway({ store });
+	gateway.emit({ type: "task.queued", taskId });
 
 	const observation: RunObservation = {
 		lastEvent: undefined,
@@ -357,6 +366,7 @@ async function runWithStore(
 		});
 		store.setSessionStatus(`${taskId}-worker`, "crashed");
 		store.setTaskStatus(taskId, "failed");
+		gateway.emit({ type: "task.failed", taskId, detail: { cause } });
 		// R3: a bundled run that dies anywhere is a MISS. When the bundle was
 		// merely attempted (never grounded), the miss row was already written
 		// at build time — do not double-count it.
@@ -391,6 +401,7 @@ async function runWithStore(
 		feedback: feedbackRows,
 	});
 	store.setTaskPlanMode(taskId, decision.planMode);
+	gateway.emit({ type: "task.routed", taskId, detail: { planMode: decision.planMode } });
 
 	// ── Bundle assembly (R1): building is isolated from USING. The router's
 	// planMode gates attachment; the caller only supplies candidates.
@@ -446,6 +457,7 @@ async function runWithStore(
 			systemPrompt,
 			...(options.sessionTimeoutMs === undefined ? {} : { timeoutMs: options.sessionTimeoutMs }),
 		});
+		gateway.emit({ type: "session.spawned", taskId, sessionId: `${taskId}-worker` });
 	} catch (err) {
 		const cause = err instanceof SessionHostError
 			? `session host error (${err.code}): ${err.message}`
@@ -510,16 +522,19 @@ async function runWithStore(
 		const cause = observation.watchdogAbort
 			? `watchdog abort: ${observation.watchdogAbort.reason}`
 			: "settled without yield";
+		gateway.emit({ type: "session.exhausted", taskId, sessionId: `${taskId}-worker` });
 		return failRun(cause, usage);
 	}
 
 	// ── Verify on the working tree through the environment ladder (M6). ──
 	store.setSessionStatus(`${taskId}-worker`, "yielded", JSON.stringify(yieldPayload));
+	gateway.emit({ type: "session.yielded", taskId, sessionId: `${taskId}-worker` });
 	const verification = await verifyThroughEnvironment(
 		new HostEnvironmentDriver(),
 		options.cwd,
 		parsed.verificationCommands,
 	);
+	gateway.emit({ type: "verify.completed", taskId, detail: { passed: verification.passed } });
 
 	if (!verification.passed) {
 		const firstFailure = verification.commands.find((c) => c.exitCode !== 0);
@@ -532,6 +547,7 @@ async function runWithStore(
 		store.setTaskStatus(taskId, "failed");
 		// Same miss discipline as failRun (see above).
 		if (bundleUsed || !bundleAttempted) store.recordRoutingFeedback(repo, decision.planMode, 0);
+		gateway.emit({ type: "task.failed", taskId, detail: { cause: "verification failed" } });
 		return {
 			receipt: {
 				taskId,
@@ -562,6 +578,7 @@ async function runWithStore(
 		store.recordRoutingFeedback(repo, decision.planMode, 1);
 	}
 	store.setTaskStatus(taskId, "completed");
+	gateway.emit({ type: "task.completed", taskId, detail: { verdict: "ship" } });
 	return {
 		receipt: {
 			taskId,

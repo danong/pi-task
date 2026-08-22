@@ -7,42 +7,25 @@
  * hermetic test exercising its REAL path; no shared mutable state — all
  * interaction with the engine goes through the gateway and typed
  * transform hooks below.
+ *
+ * The lifecycle event vocabulary itself lives in
+ * contracts/gateway-events.ts — versioned, additive-only, discriminated.
  */
 
+import type {
+	EventPattern,
+	TaskLifecycleEvent,
+	Unsubscribe,
+} from "./gateway-events.ts";
 import type { ExecutionBundle, HandoffBundle } from "./payloads.ts";
 
-/** Event vocabulary (initial set; additive-only evolution, versioned). */
-export const TASK_LIFECYCLE_EVENTS = [
-	"task.queued",
-	"task.routed",
-	"session.spawned",
-	"session.yielded",
-	"session.exhausted",
-	"verify.completed",
-	"review.completed",
-	"merge.completed",
-	"merge.conflict",
-	"task.completed",
-	"task.failed",
-	"task.escalated",
-] as const;
-export type TaskLifecycleEventType = (typeof TASK_LIFECYCLE_EVENTS)[number];
-
-/** A lifecycle event crossing the gateway. Diagnostics only — never a
- *  transcript. */
-export interface TaskLifecycleEvent {
-	type: TaskLifecycleEventType;
-	taskId: string;
-	/** ms epoch; event metadata is ledger-side, never prompt-bound. */
-	atMs: number;
-	/** Capped, structural detail (e.g. affected session id). */
-	detail?: Record<string, unknown> | undefined;
-}
-
-/** Event-name pattern for on() subscriptions ("task.*", "merge.*", "*"). */
-export type EventPattern = string;
-
-export type Unsubscribe = () => void;
+export type { EventPattern, TaskLifecycleEvent, Unsubscribe };
+export {
+	TASK_LIFECYCLE_EVENTS,
+	eventMatchesPattern,
+	eventTypeOf,
+} from "./gateway-events.ts";
+export type { TaskLifecycleEventType } from "./gateway-events.ts";
 
 /** A minimal typed surface of the ledger's `tasks` table (ledger DDL §4). */
 export interface TaskLedgerRow {
@@ -67,12 +50,20 @@ export interface TaskLedgerRow {
 
 /** Typed run-manifest surface (contract NFR-3). M0 defines the minimal
  *  slice the gateway exposes; the full phase vocabulary ports with the v1
- *  metrics machinery in M1. */
+ *  metrics machinery in M1. `detail` carries capped structural metadata
+ *  assembled from LEDGER ROWS — never transcripts. */
 export interface RunManifest {
 	taskId: string;
 	runId: string;
 	totals: { costUsd: number; durationMs: number; inputTokens: number; outputTokens: number };
 	verifyPassed: boolean;
+	detail?: {
+		sessions?: Array<{
+			id: string;
+			role: "worker" | "reviewer";
+			status: "active" | "yielded" | "exhausted" | "crashed";
+		}>;
+	};
 }
 
 /** The one interaction channel plugins get: events in, narrow reads out.

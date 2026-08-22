@@ -25,6 +25,8 @@ import { writeFailureArtifact } from "../guards/artifacts.ts";
 import { attachWatchdogs, type WatchdogEnd } from "../guards/watchdog-driver.ts";
 import { workspaceCommitId } from "../workspaces/jj.ts";
 import { LedgerStore } from "../ledger/store.ts";
+import type { TaskGateway } from "../contracts/index.ts";
+import { InMemoryTaskGateway } from "../gateway/index.ts";
 import { HostEnvironmentDriver } from "../environments/drivers.ts";
 import { verifyThroughEnvironment } from "../verify/adapter.ts";
 import {
@@ -58,6 +60,9 @@ export interface RunParallelOptions {
 	environmentDriver?: EnvironmentDriver;
 	/** Dependency injection for tests. */
 	host?: SessionHost;
+	/** Lifecycle event sink (R4); defaults to an InMemoryTaskGateway over
+	 *  this run's ledger so getTaskState awaits the same mutations. */
+	gateway?: TaskGateway | undefined;
 	sessionTimeoutMs?: number;
 	onEvent?: (workerIndex: number, event: unknown) => void;
 }
@@ -101,6 +106,9 @@ export async function runParallelTask(options: RunParallelOptions): Promise<RunP
 
 async function runWithStore(store: LedgerStore, options: RunParallelOptions): Promise<RunParallelResult> {
 	const env = options.environmentDriver ?? new HostEnvironmentDriver();
+	// R4: events flow AFTER their ledger mutation — subscribers reading
+	// getTaskState already see the row the event announces.
+	const gateway = options.gateway ?? new InMemoryTaskGateway({ store });
 
 	// Validate every spec BEFORE provisioning anything (fail fast, typed).
 	const parsed = options.subTasks.map((spec) => parseTaskSpec(spec));
@@ -136,10 +144,12 @@ async function runWithStore(store: LedgerStore, options: RunParallelOptions): Pr
 
 	store.insertTask({ id: aggregateId, goal: parsed[0]?.goal ?? "parallel", planMode: null });
 	store.setTaskStatus(aggregateId, "executing");
+	gateway.emit({ type: "task.queued", taskId: aggregateId });
 	const contexts: WorkspaceContext[] = [];
 	for (let i = 0; i < options.subTasks.length; i += 1) {
 		store.insertTask({ id: workerIds[i]!, goal: parsed[i]?.goal ?? `worker ${i}` });
 		store.setTaskStatus(workerIds[i]!, "executing");
+		gateway.emit({ type: "task.queued", taskId: workerIds[i]! });
 		contexts.push(await options.workspaceDriver.createWorkspace(workerIds[i]!));
 	}
 
@@ -166,6 +176,7 @@ async function runWithStore(store: LedgerStore, options: RunParallelOptions): Pr
 			systemPrompt: buildWorkerSystemPrompt(options.subTasks[i]!),
 			...(options.sessionTimeoutMs === undefined ? {} : { timeoutMs: options.sessionTimeoutMs }),
 		});
+		gateway.emit({ type: "session.spawned", taskId: contexts[i]!.taskId, sessionId: `${contexts[i]!.taskId}-worker` });
 		handle.subscribe((event) => {
 			options.onEvent?.(i, event);
 			const obs = observations[i]!;
@@ -217,15 +228,26 @@ async function runWithStore(store: LedgerStore, options: RunParallelOptions): Pr
 				cause,
 				lastTool: "session",
 			});
+			gateway.emit({ type: "session.exhausted", taskId: ctx.taskId, sessionId: `${ctx.taskId}-worker` });
 			return makeReceipt(ctx.taskId, "failed", 0, [], obs.turns, usages[i]!);
 		}
 		const receipt = makeReceipt(ctx.taskId, "ship", yieldPayload.files_changed.length, yieldPayload.commit_ids, obs.turns, usages[i]!);
 		store.setTaskStatus(ctx.taskId, "completed");
 		store.setSessionStatus(`${ctx.taskId}-worker`, "yielded", JSON.stringify(yieldPayload));
+		gateway.emit({ type: "session.yielded", taskId: ctx.taskId, sessionId: `${ctx.taskId}-worker` });
 		return receipt;
 	});
 	for (let i = 0; i < contexts.length; i += 1) {
-		if (perWorker[i]!.verdict === "failed") store.setTaskStatus(contexts[i]!.taskId, "failed");
+		if (perWorker[i]!.verdict === "failed") {
+			store.setTaskStatus(contexts[i]!.taskId, "failed");
+		}
+	}
+	for (const receipt of perWorker) {
+		if (receipt.verdict === "ship") {
+			gateway.emit({ type: "task.completed", taskId: receipt.taskId, detail: { verdict: "ship" } });
+		} else {
+			gateway.emit({ type: "task.failed", taskId: receipt.taskId, detail: { cause: "worker attempt failed" } });
+		}
 	}
 
 	// ── Integrate. ────────────────────────────────────────────────────────
@@ -236,6 +258,11 @@ async function runWithStore(store: LedgerStore, options: RunParallelOptions): Pr
 		const published = (await options.workspaceDriver.publishBookmarks?.(contexts)) ?? [];
 		for (const ctx of contexts) await options.workspaceDriver.cleanupWorkspace?.(ctx);
 		store.setTaskStatus(aggregateId, anyFailed ? "failed" : "completed");
+		if (anyFailed) {
+			gateway.emit({ type: "task.failed", taskId: aggregateId, detail: { cause: "one or more workers failed" } });
+		} else {
+			gateway.emit({ type: "task.completed", taskId: aggregateId, detail: { verdict: "ship" } });
+		}
 		return {
 			aggregate: makeReceipt(aggregateId, anyFailed ? "failed" : "ship", 0, published, observations.reduce((a, o) => a + o.turns, 0), sumUsage(usages)),
 			perWorker,
@@ -280,6 +307,7 @@ async function runWithStore(store: LedgerStore, options: RunParallelOptions): Pr
 		});
 		store.setTaskStatus(aggregateId, "failed");
 		for (const ctx of contexts) store.setTaskStatus(ctx.taskId, "failed");
+		gateway.emit({ type: "task.failed", taskId: aggregateId, detail: { cause } });
 		return {
 			aggregate: makeReceipt(aggregateId, "failed", 0, [], 0, sumUsage(usages)),
 			perWorker,
@@ -290,6 +318,7 @@ async function runWithStore(store: LedgerStore, options: RunParallelOptions): Pr
 	// M4: yielded workers sit in `verifying` until the aggregate ships —
 	// no completed children under a failed parent.
 	for (const ctx of healthyContexts) store.setTaskStatus(ctx.taskId, "verifying");
+	gateway.emit({ type: "merge.completed", taskId: aggregateId, detail: { commitId: combineOutcome.commitId } });
 
 	if (combineOutcome.conflicts.length > 0) {
 		// Escalation: residual conflicts after deterministic union. Preserve
@@ -304,6 +333,8 @@ async function runWithStore(store: LedgerStore, options: RunParallelOptions): Pr
 		store.setTaskStatus(aggregateId, "escalated");
 		for (const ctx of healthyContexts) store.setTaskStatus(ctx.taskId, "failed");
 		store.recordRoutingFeedback(options.projectDir.split("/").pop() ?? options.projectDir, "cold", 0);
+		gateway.emit({ type: "merge.conflict", taskId: aggregateId, detail: { conflicts: combineOutcome.conflicts } });
+		gateway.emit({ type: "task.escalated", taskId: aggregateId, detail: { verdict: "escalate" } });
 		return {
 			aggregate: makeReceipt(aggregateId, "escalate", combineOutcome.filesChanged, [combineOutcome.commitId], 0, sumUsage(usages)),
 			perWorker,
@@ -321,6 +352,7 @@ async function runWithStore(store: LedgerStore, options: RunParallelOptions): Pr
 	const failures: string[] = [];
 	let verifyStderrTail: string | undefined;
 	const verification = await verifyThroughEnvironment(env, options.projectDir, allCommands);
+	gateway.emit({ type: "verify.completed", taskId: aggregateId, detail: { passed: failures.length === 0 && verification.commands.length >= allCommands.length } });
 	for (const cmd of verification.commands) {
 		if (cmd.exitCode !== 0) {
 			failures.push(`${cmd.command} (exit ${cmd.exitCode}${cmd.timedOut ? ", timed out" : ""})`);
@@ -351,6 +383,7 @@ async function runWithStore(store: LedgerStore, options: RunParallelOptions): Pr
 		const repoKey = options.projectDir.split("/").pop() ?? options.projectDir;
 		store.recordRoutingFeedback(repoKey, "cold", 0);
 		for (const ctx of healthyContexts) store.setTaskStatus(ctx.taskId, "failed");
+		gateway.emit({ type: "task.failed", taskId: aggregateId, detail: { cause: failures.length > 0 ? "verification failed" : "one or more workers failed" } });
 		return {
 			aggregate: makeReceipt(aggregateId, "failed", combineOutcome.filesChanged, [combineOutcome.commitId], 0, sumUsage(usages)),
 			perWorker,
@@ -363,6 +396,7 @@ async function runWithStore(store: LedgerStore, options: RunParallelOptions): Pr
 	for (const ctx of healthyContexts) store.setTaskStatus(ctx.taskId, "completed");
 	store.recordRoutingFeedback(options.projectDir.split("/").pop() ?? options.projectDir, "task-base", 1);
 	store.setTaskStatus(aggregateId, "completed");
+	gateway.emit({ type: "task.completed", taskId: aggregateId, detail: { verdict: "ship" } });
 	return {
 		aggregate: makeReceipt(
 			aggregateId,
