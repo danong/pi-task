@@ -22,10 +22,35 @@ export interface WorkspaceContext {
 
 export interface WorkspaceDriver {
   name: string;
+  /** The driver's integration mode when it declares one; undefined =
+   *  single-workspace driver (cannot run the parallel pipeline). */
+  readonly integrationMode?: IntegrationMode | undefined; // "task-base" | "feature-branch"
   isSupported(): Promise<boolean>;
+  /** Fetch remotes / pre-flight checks. Non-fatal failures must not throw. */
+  prepare?(): Promise<void>;
   createWorkspace(taskId: string, parentBranch?: string): Promise<WorkspaceContext>;
   mergeWorkspace(context: WorkspaceContext): Promise<{ success: boolean; conflicts?: string[] }>;
   cleanupWorkspace(context: WorkspaceContext): Promise<void>;
+  prepareIntegrationBase?(goal: string): Promise<string>; // task-base mode
+  combine?(baseChangeId: string, contexts: readonly WorkspaceContext[]): Promise<CombineOutcome>;
+  publishBookmarks?(contexts: readonly WorkspaceContext[]): Promise<string[]>; // feature-branch
+}
+
+export interface CombineOutcome {
+  commitId: string;
+  conflicts: string[];
+  filesChanged: number; // honest filesChanged for aggregate receipts
+}
+
+/** Required shape for task-base runs — runParallelTask narrows to this and
+ *  fails typed when a driver lacks the capability (never silent casts). */
+export interface TaskBaseWorkspaceDriver extends WorkspaceDriver {
+  integrationMode: IntegrationMode;
+  prepareIntegrationBase(goal: string): Promise<string>;
+  combine(baseChangeId: string, contexts: readonly WorkspaceContext[]): Promise<CombineOutcome>;
+  /** Place the main working copy on the integrated tree so FR-6's gate
+   *  runs on merged work (the FR-6 linchpin). */
+  materialize(baseChangeId: string): Promise<void>;
 }
 // JujutsuWorkspaceDriver (first): ports extensions/task/workspace.ts VERBATIM —
 // AI-authored task base, atomic revset-union squash tracked by CHANGE id,

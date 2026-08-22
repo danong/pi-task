@@ -29,6 +29,9 @@ export interface CombineOutcome {
 	commitId: string;
 	/** Repo-relative paths still conflicted after deterministic union. */
 	conflicts: string[];
+	/** Files the combine changed vs the pre-merge base — the honest
+	 *  filesChanged for aggregate receipts (review M4). */
+	filesChanged: number;
 }
 
 export interface WorkspaceDriver {
@@ -61,4 +64,19 @@ export interface WorkspaceDriver {
 	/** feature-branch mode: leave each worker's tip under a named bookmark
 	 *  for human review; returns the created bookmark names. */
 	publishBookmarks?(contexts: readonly WorkspaceContext[]): Promise<string[]>;
+}
+
+/**
+ * A driver supporting the task-base integration flow (contract FR-4/FR-6):
+ * AI-authored base, atomic combine, and MATERIALIZE — place the main
+ * working copy on the integrated tree so FR-6's gate runs on merged work.
+ * runParallelTask requires this shape for task-base runs and fails typed
+ * otherwise (a silently-skipped materialize would verify an empty tree).
+ */
+export interface TaskBaseWorkspaceDriver extends WorkspaceDriver {
+	integrationMode: IntegrationMode;
+	prepareIntegrationBase(goal: string): Promise<string>;
+	combine(baseChangeId: string, contexts: readonly WorkspaceContext[]): Promise<CombineOutcome>;
+	/** Materialize the integrated tree at projectDir. */
+	materialize(baseChangeId: string): Promise<void>;
 }

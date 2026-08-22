@@ -200,6 +200,7 @@ export async function assertWorkspacesConsumed(projectDir: string, workspaceName
 export interface CombineOutcome {
 	commitId: string;
 	conflicts: string[];
+	filesChanged: number;
 }
 
 const UNION_TOOL = "union";
@@ -278,7 +279,7 @@ export async function mergeWorkspacesAtomic(
 	into: string,
 ): Promise<CombineOutcome> {
 	if (workspaceNames.length === 0) {
-		return { commitId: await resolveCommitId(projectDir, into), conflicts: [] };
+		return { commitId: await resolveCommitId(projectDir, into), conflicts: [], filesChanged: 0 };
 	}
 	const baseCommit = await resolveCommitId(projectDir, into);
 	const wsAtIds = await Promise.all(workspaceNames.map((n) => workspaceCommitId(projectDir, n)));
@@ -291,7 +292,8 @@ export async function mergeWorkspacesAtomic(
 	}
 	await assertWorkspacesConsumed(projectDir, workspaceNames);
 	const newBase = await resolveCommitId(projectDir, into);
-	return { commitId: newBase, conflicts: await detectChangeConflicts(projectDir, into) };
+	const filesChanged = (await diffSummary(projectDir, baseCommit, newBase)).length;
+	return { commitId: newBase, conflicts: await detectChangeConflicts(projectDir, into), filesChanged };
 }
 
 /** One workspace's file changes vs the base ("A"/"M"/"D"/"R" summary lines).
@@ -347,13 +349,32 @@ export async function removeWorkspace(projectDir: string, name: string, dir?: st
 	if (dir) rmSync(dir, { recursive: true, force: true });
 }
 
-/** feature-branch mode: named bookmark at a workspace's tip. */
+/** feature-branch mode: named bookmark at a workspace's tip. Re-publish
+ *  moves an existing bookmark to the CURRENT tip (review M2/P1: the old
+ *  fallback treated any already-exists as success, silently pointing the
+ *  bookmark at a stale/hidden commit). */
 export async function createBookmarkAt(projectDir: string, name: string, wsName: string): Promise<void> {
+	// Target the workspace @'s PARENT: `jj commit` leaves @ as an empty
+	// child, so the WORK lives at @-. Pointing the bookmark at @ would
+	// publish an empty commit.
 	const wsAt = await workspaceCommitId(projectDir, wsName);
-	const result = await execJj(["bookmark", "create", name, "-r", wsAt, "--ignore-working-copy"], projectDir);
-	if (result.code !== 0) {
-		// Already-exists is idempotent-safe only if it points at the same commit.
-		const check = await execJj(["bookmark", "list", name], projectDir);
-		if (check.code !== 0) throw new Error(`jj bookmark create "${name}" failed (${result.code}): ${result.stderr.trim()}`);
+	const targetRev = `${wsAt}-`;
+	const targetCommit = await resolveCommitId(projectDir, targetRev);
+	const create = await execJj(["bookmark", "create", name, "-r", targetRev, "--ignore-working-copy"], projectDir);
+	if (create.code === 0) return;
+	// Already exists: idempotent only when it points at the SAME commit;
+	// otherwise MOVE to the current tip (review M2/P1 — never silently
+	// report success while pointing at a stale/hidden commit).
+	const existingId = await resolveCommitId(projectDir, name);
+	if (existingId === targetCommit) return;
+	const move = await execJj(
+		["bookmark", "move", name, "--to", targetRev, "--ignore-working-copy"],
+		projectDir,
+	);
+	if (move.code !== 0) {
+		throw new Error(
+			`bookmark "${name}" is stale (at ${existingId.slice(0, 12)}) and move to tip ` +
+				`${targetCommit.slice(0, 12)} failed (${move.code}): ${move.stderr.trim()}`,
+		);
 	}
 }

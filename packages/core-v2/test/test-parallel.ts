@@ -7,7 +7,7 @@
  */
 
 import { execSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -134,6 +134,81 @@ export async function runTests(): Promise<void> {
 			check(third.aggregate.taskId !== second.aggregate.taskId, "warm-ledger attempts distinct");
 		}
 
+		// ─── M5: single-workspace driver fails TYPED on the parallel lane ──
+		{
+			const repo = join(dir, "typed");
+			mkdirSync(repo, { recursive: true });
+			execSync("jj git init --colocate", { cwd: repo, stdio: "pipe" });
+			writeFileSync(join(repo, "README.md"), "# fixture\n", "utf-8");
+			execSync('JJ_EDITOR=true jj commit -m "init"', { cwd: repo, stdio: "pipe" });
+			const minimalDriver = {
+				name: "minimal",
+				isSupported: async () => true,
+				createWorkspace: async () => {
+					throw new Error("unreachable");
+				},
+				mergeWorkspace: async () => ({ success: true }),
+				cleanupWorkspace: async () => {},
+			};
+			let typedError = false;
+			try {
+				await runParallelTask({
+					subTasks: [SPEC_A], projectDir: repo,
+					artifactsDir: join(dir, "artifacts-typed"), dbPath: join(dir, "typed.db"),
+					model: "openrouter/stealth/ox-alpha",
+					workspaceDriver: minimalDriver as never,
+					host: scriptedHost(["a.txt"], { value: 0 }),
+				});
+			} catch (err) {
+				typedError = err instanceof Error && err.message.includes("task-base integration");
+			}
+			check(typedError, "single-workspace driver fails TYPED (missing task-base capabilities)");
+		}
+
+		// ─── M3: a throwing combine → recovery artifact + terminal ledger ──
+		{
+			const repo = join(dir, "throwcombine");
+			mkdirSync(repo, { recursive: true });
+			execSync("jj git init --colocate", { cwd: repo, stdio: "pipe" });
+			writeFileSync(join(repo, "README.md"), "# fixture\n", "utf-8");
+			execSync('JJ_EDITOR=true jj commit -m "init"', { cwd: repo, stdio: "pipe" });
+			const throwingDriver = {
+				name: "thrower",
+				integrationMode: "task-base" as const,
+				isSupported: async () => true,
+				prepare: async () => {},
+				createWorkspace: async (taskId: string) => ({
+					taskId, hostPath: join(dir, "throwcombine-ws"), branchName: `v2-task-${taskId}`, status: "active" as const,
+				}),
+				mergeWorkspace: async () => ({ success: true }),
+				cleanupWorkspace: async () => {},
+				prepareIntegrationBase: async () => "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+				combine: () => {
+					throw new Error("squash exploded");
+				},
+				materialize: async () => {},
+			};
+			const result = await runParallelTask({
+				subTasks: [SPEC_A], projectDir: repo,
+				artifactsDir: join(dir, "artifacts-throw"), dbPath: join(dir, "throw.db"),
+				model: "openrouter/stealth/ox-alpha",
+				workspaceDriver: throwingDriver as never,
+				host: scriptedHost(["a.txt"], { value: 0 }),
+			});
+			check(result.aggregate.verdict === "failed", "throwing combine → failed receipt (no bare escape)");
+			const artifact = JSON.parse(readFileSync(join(dir, "artifacts-throw", `${result.aggregate.taskId}.failure.json`), "utf-8"));
+			check(artifact.cause.includes("merge ladder failed"), "artifact names the ladder failure");
+			check(artifact.recovery?.baseChangeId === "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "artifact carries the base change id");
+			check(Array.isArray(artifact.recovery?.workspaces) && artifact.recovery.workspaces.length === 1,
+				"artifact lists preserved workspaces");
+			const { JujutsuWorkspaceDriver } = await import("../src/workspaces/jj-driver.ts");
+			const store = await import("../src/ledger/store.ts");
+			const ledger = new store.LedgerStore(join(dir, "throw.db"));
+			check(ledger.getTask(result.aggregate.taskId)?.status === "failed", "ledger terminal after ladder failure");
+			ledger.close();
+			void JujutsuWorkspaceDriver;
+		}
+
 		// ─── Failing worker → failed aggregate (still integrates healthy work)
 		{
 			const repo = join(dir, "mixed");
@@ -168,6 +243,12 @@ export async function runTests(): Promise<void> {
 			});
 			check(result.aggregate.verdict === "failed", "aggregate failed when a worker fails");
 			check(result.perWorker.some((r) => r.verdict !== "ship"), "the failed worker is named in receipts");
+			// M4: no completed children under a failed parent.
+			const store = await import("../src/ledger/store.ts");
+			const ledger = new store.LedgerStore(join(dir, "mixed.db"));
+			const statuses = result.perWorker.map((r) => ledger.getTask(r.taskId)?.status);
+			check(statuses.every((st) => st === "failed"), `failed run demotes children (got ${statuses.join(",")})`);
+			ledger.close();
 		}
 
 		// ─── Feature-branch mode: bookmarks, no integration ──────────────

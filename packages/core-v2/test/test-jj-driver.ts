@@ -69,7 +69,7 @@ export async function runTests(): Promise<void> {
 			const outcome = await driver.combine(base, [ws1, ws2]);
 			check(outcome.conflicts.length === 0, "clean combine has no conflicts");
 
-			await driver.checkoutMerged(base);
+			await driver.materialize(base);
 			check(existsSync(join(repo, "one.txt")) && existsSync(join(repo, "two.txt")),
 				"merged tree holds both workers' files (consistency gate passed)");
 
@@ -109,7 +109,7 @@ export async function runTests(): Promise<void> {
 			}
 
 			// The gate already ran inside combine(); the tree must hold the file.
-			await driver.checkoutMerged(base);
+			await driver.materialize(base);
 			check(existsSync(join(repo, "shared.txt")), "conflicted combine still integrates the file");
 		}
 
@@ -133,7 +133,7 @@ export async function runTests(): Promise<void> {
 				// Re-run ONLY the gate via a fresh combine-shaped assertion:
 				// assertMerged is exercised through driver.combine's internals,
 				// so simulate by calling the exported gate path indirectly —
-				// here we re-check via checkoutMerged + manual expectation.
+				// here we re-check via materialize + manual expectation.
 				const { assertMerged } = await import("../src/workspaces/jj.ts");
 				await assertMerged(repo, base, { expectedFiles: ["gone.txt"] });
 			} catch {
@@ -156,6 +156,14 @@ export async function runTests(): Promise<void> {
 			const bookmarks = execSync("jj bookmark list", { cwd: repo, encoding: "utf-8" });
 			check(bookmarks.includes("v2-task-b1"), "worker bookmark created");
 			check(driver.combine !== undefined, "combine present but mode-guarded");
+
+			// M2 regression: advance the workspace tip and re-publish — the
+			// bookmark must MOVE to the new tip, not silently stay stale.
+			writeFileSync(join(ws1.hostPath, "feat.txt"), "feat-2\n", "utf-8");
+			workerCommit(ws1.hostPath, "b1 work 2");
+			await driver.mergeWorkspace(ws1);
+			const moved = execSync("jj log -r v2-task-b1 --no-graph -T description", { cwd: repo, encoding: "utf-8" });
+			check(moved.includes("b1 work 2"), "re-publish moves the bookmark to the current tip");
 
 			let threw = false;
 			try {

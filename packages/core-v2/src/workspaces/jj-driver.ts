@@ -158,9 +158,10 @@ export class JujutsuWorkspaceDriver implements WorkspaceDriver {
 		return outcome;
 	}
 
-	/** Place the main working copy on a child of the merged base so
-	 *  verification (and the operator) see the integrated tree. */
-	async checkoutMerged(baseChangeId: string): Promise<void> {
+	/** Materialize the integrated tree (contract TaskBaseWorkspaceDriver):
+	 *  place the main working copy on a child of the merged base so
+	 *  verification (and the operator) see the integrated work. */
+	async materialize(baseChangeId: string): Promise<void> {
 		const { resolveCommitId } = await import("./jj.ts");
 		const commitId = await resolveCommitId(this.#opts.projectDir, baseChangeId);
 		const result = await execJj(["new", commitId], this.#opts.projectDir);

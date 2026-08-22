@@ -16,10 +16,11 @@
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 
-import type { EnvironmentDriver, WorkspaceContext, WorkspaceDriver } from "../contracts/index.ts";
+import type { EnvironmentDriver, TaskBaseWorkspaceDriver, WorkspaceContext, WorkspaceDriver } from "../contracts/index.ts";
 import type { TaskReceipt } from "../contracts/index.ts";
 import { writeFailureArtifact } from "../guards/artifacts.ts";
 import { attachWatchdogs, type WatchdogEnd } from "../guards/watchdog-driver.ts";
+import { workspaceCommitId } from "../workspaces/jj.ts";
 import { LedgerStore } from "../ledger/store.ts";
 import { HostEnvironmentDriver } from "../environments/drivers.ts";
 import {
@@ -92,6 +93,23 @@ async function runWithStore(store: LedgerStore, options: RunParallelOptions): Pr
 
 	const familyBase = deriveTaskId(parsed.map((p) => p.goal).join("\n"), options.projectDir);
 
+	// M5: task-base runs REQUIRE a TaskBaseWorkspaceDriver — a driver
+	// lacking prepareIntegrationBase/combine/materialize fails TYPED here
+	// instead of TypeError at combine time.
+	const isTaskBase = options.workspaceDriver.integrationMode === undefined
+		|| options.workspaceDriver.integrationMode === "task-base";
+	let taskBase: TaskBaseWorkspaceDriver | undefined;
+	if (isTaskBase) {
+		const candidate = options.workspaceDriver as Partial<TaskBaseWorkspaceDriver>;
+		if (!candidate.prepareIntegrationBase || !candidate.combine || !candidate.materialize) {
+			throw new Error(
+				`runParallelTask: workspace driver "${options.workspaceDriver.name}" does not support ` +
+					"task-base integration (missing prepareIntegrationBase/combine/materialize)",
+			);
+		}
+		taskBase = candidate as TaskBaseWorkspaceDriver;
+	}
+
 	// Attempt-discriminated ids FIRST (review M1/P0): every re-run of the
 	// same specs gets fresh ledger rows and fresh jj workspace names —
 	// before any repo mutation (an orphan AI base must be impossible).
@@ -114,10 +132,8 @@ async function runWithStore(store: LedgerStore, options: RunParallelOptions): Pr
 	// ledger accepted this attempt (a doomed run cannot litter the repo).
 	await options.workspaceDriver.prepare?.();
 	let baseChangeId: string | undefined;
-	if (options.workspaceDriver.integrationMode === undefined || options.workspaceDriver.integrationMode === "task-base") {
-		baseChangeId = await (options.workspaceDriver.prepareIntegrationBase as NonNullable<typeof options.workspaceDriver.prepareIntegrationBase>)(
-			parsed[0]?.goal ?? "parallel task",
-		);
+	if (taskBase) {
+		baseChangeId = await taskBase.prepareIntegrationBase(parsed[0]?.goal ?? "parallel task");
 	}
 
 	for (const ctx of contexts) {
@@ -207,7 +223,52 @@ async function runWithStore(store: LedgerStore, options: RunParallelOptions): Pr
 	}
 
 	const healthyContexts = contexts.filter((_c, i) => perWorker[i]!.verdict === "ship");
-	const combineOutcome = await options.workspaceDriver.combine!(baseChangeId, healthyContexts);
+
+	/** Best-effort recovery snapshot of every PRESERVED workspace (M3). */
+	const recoverySnapshot = async () => ({
+		baseChangeId,
+		workspaces: await Promise.all(contexts.map(async (c) => {
+			let commitId: string | undefined;
+			try {
+				commitId = await workspaceCommitId(options.projectDir, c.branchName);
+			} catch {
+				commitId = undefined;
+			}
+			return { name: c.branchName, path: c.hostPath, commitId };
+		})),
+		steps: [
+			"jj log -r all() --no-graph   # locate worker commits + merged base",
+			"...stack each preserved workspace onto the base (jj rebase), then squash",
+			"...resolve residual conflicts by hand, then jj new <merged base>",
+		],
+	});
+
+	// M3: hard ladder failures are CAPTURED — recovery artifact, terminal
+	// ledger rows, typed failed result — never a bare escape freezing
+	// 'executing'.
+	let combineOutcome;
+	try {
+		combineOutcome = await taskBase!.combine(baseChangeId!, healthyContexts);
+	} catch (err) {
+		const cause = `merge ladder failed: ${err instanceof Error ? err.message : String(err)}`;
+		writeFailureArtifact({
+			artifactsDir: options.artifactsDir,
+			runId: aggregateId,
+			cause,
+			recovery: await recoverySnapshot(),
+		});
+		store.setTaskStatus(aggregateId, "failed");
+		for (const ctx of contexts) store.setTaskStatus(ctx.taskId, "failed");
+		return {
+			aggregate: makeReceipt(aggregateId, "failed", 0, [], 0),
+			perWorker,
+			conflicts: [],
+		};
+	}
+
+	// M4: yielded workers sit in `verifying` until the aggregate ships —
+	// no completed children under a failed parent.
+	for (const ctx of healthyContexts) store.setTaskStatus(ctx.taskId, "verifying");
 
 	if (combineOutcome.conflicts.length > 0) {
 		// Escalation: residual conflicts after deterministic union. Preserve
@@ -217,10 +278,12 @@ async function runWithStore(store: LedgerStore, options: RunParallelOptions): Pr
 			runId: aggregateId,
 			cause: `residual merge conflicts after union resolution: ${combineOutcome.conflicts.join(", ")}`,
 			lastEvent: `preserved workspaces: ${healthyContexts.map((c) => `${c.branchName} @ ${c.hostPath}`).join("; ")}`,
+			recovery: await recoverySnapshot(),
 		});
 		store.setTaskStatus(aggregateId, "escalated");
+		for (const ctx of healthyContexts) store.setTaskStatus(ctx.taskId, "failed");
 		return {
-			aggregate: makeReceipt(aggregateId, "escalate", 0, [combineOutcome.commitId], 0),
+			aggregate: makeReceipt(aggregateId, "escalate", combineOutcome.filesChanged, [combineOutcome.commitId], 0),
 			perWorker,
 			mergedCommitId: combineOutcome.commitId,
 			conflicts: combineOutcome.conflicts,
@@ -229,12 +292,16 @@ async function runWithStore(store: LedgerStore, options: RunParallelOptions): Pr
 
 	// Materialize the merged tree and verify ONCE, through the environment
 	// driver (FR-6: the gate runs on the integrated tree, not a snapshot).
-	await (options.workspaceDriver as { checkoutMerged?(id: string): Promise<void> }).checkoutMerged?.(baseChangeId);
+	await taskBase!.materialize(baseChangeId!);
 	const allCommands = parsed.flatMap((p) => p.verificationCommands);
 	const failures: string[] = [];
+	let verifyStderrTail: string | undefined;
 	for (const command of allCommands) {
 		const result = await env.exec("/bin/bash", ["-c", command], { cwd: options.projectDir });
-		if (result.exitCode !== 0) failures.push(`${command} (exit ${result.exitCode})`);
+		if (result.exitCode !== 0) {
+			failures.push(`${command} (exit ${result.exitCode})`);
+			verifyStderrTail = result.stderr ?? verifyStderrTail;
+		}
 	}
 
 	// Gate-ordered cleanup (v1 semantics): healthy workspaces are removed
@@ -249,11 +316,14 @@ async function runWithStore(store: LedgerStore, options: RunParallelOptions): Pr
 			artifactsDir: options.artifactsDir,
 			runId: aggregateId,
 			cause: failures.length > 0 ? `verification failed: ${failures.join("; ")}` : "one or more workers failed",
-			lastEvent: `preserved workspaces: ${healthyContexts.map((c) => `${c.branchName} @ ${c.hostPath}`).join("; ")}`,
+			stderrTail: verifyStderrTail,
+			lastEvent: `stranded/preserved workspaces: ${contexts.map((c) => `${c.branchName} @ ${c.hostPath}`).join("; ")}`,
+			recovery: await recoverySnapshot(),
 		});
 		store.setTaskStatus(aggregateId, "failed");
+		for (const ctx of healthyContexts) store.setTaskStatus(ctx.taskId, "failed");
 		return {
-			aggregate: makeReceipt(aggregateId, "failed", 0, [combineOutcome.commitId], 0),
+			aggregate: makeReceipt(aggregateId, "failed", combineOutcome.filesChanged, [combineOutcome.commitId], 0),
 			perWorker,
 			mergedCommitId: combineOutcome.commitId,
 			conflicts: [],
@@ -261,6 +331,7 @@ async function runWithStore(store: LedgerStore, options: RunParallelOptions): Pr
 	}
 
 	await cleanupHealthy();
+	for (const ctx of healthyContexts) store.setTaskStatus(ctx.taskId, "completed");
 	store.recordRoutingFeedback(options.projectDir.split("/").pop() ?? options.projectDir, "task-base", 1);
 	store.setTaskStatus(aggregateId, "completed");
 	return {

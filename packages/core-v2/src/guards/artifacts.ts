@@ -33,11 +33,27 @@ export const FAILURE_STDERR_TAIL_CHARS = 2048;
 export const FAILURE_RUN_ID_MAX_CHARS = 128;
 
 /** The diagnostic payload written to `<runId>.failure.json`. */
+/** One preserved workspace in a recovery block (v1 ladder FR-4/FR-8). */
+export interface FailureArtifactWorkspace {
+	name: string;
+	path: string;
+	/** Best-effort working-copy commit id at failure time. */
+	commitId?: string | undefined;
+}
+
+/** Scripted recovery payload (FR-8): what survived and how to stack it. */
+export interface FailureArtifactRecovery {
+	baseChangeId?: string | undefined;
+	workspaces: FailureArtifactWorkspace[];
+	steps?: string[];
+}
+
 export interface FailureArtifact {
 	cause: string;
 	lastEvent?: string;
 	lastTool?: string;
 	stderrTail?: string;
+	recovery?: FailureArtifactRecovery;
 }
 
 export interface WriteFailureArtifactOptions {
@@ -51,6 +67,8 @@ export interface WriteFailureArtifactOptions {
 	lastTool?: string | undefined;
 	/** Stderr tail captured around the failure (capped). */
 	stderrTail?: string | undefined;
+	/** Scripted recovery block (FR-8): preserved workspaces + base id. */
+	recovery?: FailureArtifactRecovery;
 }
 
 /**
@@ -89,6 +107,9 @@ export function writeFailureArtifact(options: WriteFailureArtifactOptions): stri
 	}
 	if (options.stderrTail !== undefined) {
 		payload.stderrTail = capTail(options.stderrTail, FAILURE_STDERR_TAIL_CHARS);
+	}
+	if (options.recovery !== undefined) {
+		payload.recovery = options.recovery;
 	}
 
 	const fileName = `${capTail(options.runId, FAILURE_RUN_ID_MAX_CHARS)}.failure.json`;
