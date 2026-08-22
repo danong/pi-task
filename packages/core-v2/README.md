@@ -102,6 +102,22 @@ the strict gate.
   with capped output tails.
 - `src/version.ts` — the package identity (milestone `CORE_V2_MILESTONE`,
   version `CORE_V2_VERSION`).
+- `src/bench/` — the M3 suite-03 grounding-evaluation harness
+  (docs/pi-task-v2.md §7): `grounding-configs.ts` (the grounding-mode
+  vocabulary — bare / current engine / daemon cold, prewalk, bundle, fork
+  (+ pruned), with strong-model variants gated behind `--allow-strong`),
+  `grounding-plan.ts` (pure (config × spec) plan assembly against the
+  owner file's recorded baselines), `grounding-metrics.ts` (per-config
+  aggregation — COR recomputed from summed grounding over summed billed
+  input, never averaged ratios; NFR-3 cost normalization as USD per
+  changed file; NFR-4 cache-affinity violation counting; wins/loses
+  rendering), and `grounding-store.ts` (append-only JSONL evidence + the
+  summary artifact). Specs/fixtures/baselines are NOT duplicated here —
+  they live in the owner file `extensions/task/bench-regression.ts`
+  (`GROUNDING_SPECS`, `GROUNDING_LAYERS`, `baseline` tables); the CLI glue
+  is `extensions/task/grounding-eval.ts`, one command via
+  `mise run eval-grounding` (dry plan by default, zero LLM; `-- --run`
+  for real runs).
 - `test/` — hermetic tests mirroring the layout:
   - `test-contracts.ts` — schema round-trips, deterministic serialization,
     ControlSurface typing, and per-seam smoke tests over in-memory fakes
@@ -110,6 +126,10 @@ the strict gate.
   - `test-router.ts` — pure router decisions: every plan mode reachable,
     feedback switching (hit-rate/deviation thresholds), empty-feedback
     defaults, threshold overrides, and determinism
+  - `test-grounding-eval.ts` — the grounding harness: config enumeration
+    + strong-model gating, plan assembly vs owner-file baselines,
+    COR-from-sums aggregation, NFR-3/NFR-4 normalization, summary
+    rendering, and the JSONL evidence round-trip
   - `test-watchdogs.ts`, `test-watchdog-driver.ts` — the watchdog decision
     matrix and driver behavior over fake timers
   - `test-verify-run.ts`, `test-artifacts.ts` — real-bash verification
@@ -133,6 +153,14 @@ Everything below is hermetic (zero LLM, zero network); run in the repo root.
 - **Core suite directly** — `npx tsx packages/core-v2/test/run-all.ts`
   - The aggregate runs every module's exported `runTests()`; each module
     can also run standalone (`npx tsx packages/core-v2/test/<suite>.ts`).
+- **Suite-03 grounding evaluation (M3)** — `mise run eval-grounding`
+  - One command for the grounding-mode comparison (§7): dry plan render by
+    default (zero spawns, zero LLM); `mise run eval-grounding -- --run`
+    executes real runs (LLM/network gate — never part of `mise run test`).
+    Strong-model configs additionally need `--allow-strong` or
+    `PI_TASK_ALLOW_STRONG=1`. Evidence lands in
+    `<metrics-dir>/eval-grounding/` (`records.jsonl` + `summary.md`);
+    exit code 3 flags an NFR-4 deterministic-prefix violation.
 - **Parity e2e (manual, real LLM)** — `timeout 1200 npx tsx packages/core-v2/test/e2e-parity.ts`
   - One real single-worker `runTask` on openrouter/stealth/ox-alpha against
     a temp jj repo; asserts ship verdict, committed file, and ledger rows.

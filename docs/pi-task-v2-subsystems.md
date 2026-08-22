@@ -7,8 +7,10 @@ contract references it.
 
 ## 1. Kernel interfaces
 
-Six seams. Each is one file, one interface, hermetically testable in
-isolation, no shared mutable state (the FR-2/FR-11 buildability rule).
+Seven seams. Each is one file, one interface, hermetically testable in
+isolation, no shared mutable state (the FR-2/FR-11 buildability rule);
+seam 7 (continuation pruning) attaches to the handoff path without touching
+the session host.
 
 ```typescript
 // 1. Workspace isolation — v1's jj ladder ports behind this interface.
@@ -89,6 +91,47 @@ export interface VerificationDriver {
 
 // 5. Lifecycle & trigger plugins — contract in §3.
 export interface TaskPlugin { /* §3 */ }
+
+// 7. Continuation pruning — turn-limit handoffs (contract §5.3(c), FR-7).
+// One file/interface: src/continuation/pruner.ts in packages/core-v2.
+// Pure over transcript-shaped entries — no LLM, no AgentSession reach-in;
+// hermetically testable; selection is config-driven by scorer name.
+export interface ContinuationEntry {
+  role: string;
+  content?: unknown;
+  toolName?: string;
+  /** Optional pre-computed token estimate; derived from content size
+   *  when omitted (≈4 utf-8 bytes per token, matching the runner's
+   *  grounding estimate so budgets stay comparable). */
+  tokens?: number;
+}
+
+/** Second-layer signal (R3 of the continuation mode): a fork that has
+ *  ALREADY pruned once must not re-prune identically on immediate retry.
+ *  attemptNumber rides the ledger envelope (never prompt-bound). */
+export interface ScorerContext {
+  attemptNumber?: number;      // >1 = retry budget partially spent
+  alreadyPruned?: boolean;     // predecessor fork was pruned
+  retryBudgetSpent?: number;   // alternative proportional shape
+}
+
+export type ContinuationScorer = (
+  entries: readonly ContinuationEntry[],
+  budgetTokens: number,
+  context?: ScorerContext,
+) => ContinuationEntry[];
+
+// Shipped scorers (registry is config-selected via selectScorer(name);
+// unknown names fail typed instead of silently defaulting):
+//   recencyTool — recency × position + tool-use bonus (DEFAULT)
+//   uniform     — flat score, recency tie-break (oldest dropped first)
+// Both enforce shared invariants in one greedy budget pass:
+//   • total kept tokens ≤ budgetTokens
+//   • original ordering preserved (kept entries returned in order)
+//   • at least one toolResult survives whenever the input contains one
+// On the retry signal both scorers shift their keep-window forward
+// (recencyTool drops the oldest entry from candidacy outright) so the
+// second-layer fork never re-prunes byte-identically.
 ```
 
 ## 2. Payload schemas (Zod)
@@ -113,6 +156,17 @@ export const ExecutionBundleSchema = z.object({
   verificationCommands: z.array(z.string()),
   modelAssignment: ModelAssignmentSchema.optional(),
 });
+// Bundle-mode implementation (contract §5.3b implemented shape):
+// building lives in grounding/bundle.ts as a PURE one-shot operation —
+// assemble + schema-validate + content-hash over the deterministic
+// serialization (`hashExecutionBundle`, namespaced by format version),
+// with NO routing or session knowledge. Choosing to USE a bundle stays
+// in the router (per-repo hit-rate telemetry gates planMode="bundle")
+// and the runner (attaches grounding + advertises TaskReceipt.bundleHit:
+// true = shipped focused inside the target set; false = any miss — empty
+// bundle, worker drift, failed run, failing verification; null = unused).
+// Every miss lands in routing_feedback as hit=0 so a never-tried path
+// counts its failures instead of silence.
 
 export const HandoffBundleSchema = z.object({
   taskId: z.string(),
@@ -143,7 +197,11 @@ export const TaskReceiptSchema = z.object({
   commitIds: z.array(z.string()),
   turns: z.number(),            // NEW: router feedback
   costUsd: z.number(),          // NEW: router feedback
-  bundleHit: z.boolean().nullable(), // NEW: mode-(b) telemetry; null = bundle not used
+  inputTokens: z.number(),      // NFR-3 measured usage (SDK stats())
+  outputTokens: z.number(),
+  cacheReadTokens: z.number(),
+  cor: z.number(),              // grounding ÷ total input tokens
+  bundleHit: z.boolean().nullable(), // mode-(b) telemetry; null = bundle not used
 });
 
 export const ModelAssignmentSchema = z.object({
@@ -189,7 +247,63 @@ Event vocabulary (initial set; additive-only evolution, versioned):
 
 Prune profiles (continuation + review forks) are pluggable scorers with the
 same discipline: pure functions over a transcript-shaped input, returning the
-pruned form; hermetically testable; selected by config.
+pruned form; hermetically testable; selected by config. The continuation
+profile ships first (see seam 7 above); the review profile reuses the same
+`ContinuationScorer` shape once the reviewer forks move behind the gateway.
+
+### 3a. Review-fork file budget (second pluggable prune scorer)
+
+The review side of fork-and-prune: a bounded FILE budget that thins the
+diff context a reviewer fork receives so parallel reviews finish within
+the same cost envelope as execution. Implemented in
+`packages/core-v2/src/grounding/review-fork.ts`; symmetric with the
+continuation scorer (changed set + anchors/key files + caps → pruned
+subset) so both can be swapped/configured.
+
+```typescript
+export interface FileEntry { path: string; bytes: number }
+export interface FileBudget { maxFiles?: number; maxBytes?: number } // undefined = unbounded
+
+export interface ReviewForkPruneInput {
+  /** Union changed files — diff(base..merged) after the atomic squash. */
+  files: readonly FileEntry[];
+  /** Anchor / key files — never dropped when present. */
+  anchors?: readonly string[];
+  keyFiles?: readonly string[];
+  /** The attempt under review's own changed files — never hidden. */
+  attemptFiles?: readonly string[];
+  budget: FileBudget;
+}
+
+export interface ReviewForkScorer {
+  name: string;                       // config-selection key
+  prune(input: ReviewForkPruneInput): {
+    kept: FileEntry[]; dropped: FileEntry[]; keptBytes: number;
+  };
+}
+// Default implementation: defaultReviewForkScorer ("bounded-file-budget")
+// via pruneReviewFiles — mandatory files (anchors + keyFiles + attemptFiles)
+// are pinned; optional files fill remaining budget lexicographically; caps
+// bind ONLY optional files (a mandatory set alone over cap still ships).
+```
+
+Union-after-merge invariant (contract §5.5): when N workers' diffs are
+squashed into the integration base, "changed files" is diff(base..merged)
+— every worker at once. A reviewer for worker k therefore passes k's own
+diff through `attemptFiles`, and the scorer never drops those paths even
+when the union dwarfs the budget; per-worker and combined-tree views of the
+same path dedupe to one entry.
+
+Daemon wiring: `runParallelTask`
+(`packages/core-v2/src/daemon/parallel.ts`) already computes the pre-merge
+per-workspace file union (`workspaceFileChanges(base, ctx)`) for its
+consistency gate and returns `mergedCommitId` on success — the review step
+feeds exactly those inputs to the selected `ReviewForkScorer`: the union
+diff base..merged as `files`, the spec's anchor/key files, and the attempt
+under review's changed files from its receipt/yield. Budget tiers select
+the scorer by name (default off-switch: an unbounded budget keeps every
+file — graceful degradation, contract NFR-2). Hermetic suite:
+`packages/core-v2/test/test-review-fork.ts`.
 
 ## 3b. ControlSurface contract
 

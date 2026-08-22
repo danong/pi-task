@@ -25,3 +25,13 @@ run = "npx tsx extensions/task/test.ts && npx tsx packages/core-v2/test/run-all.
 [tasks.typecheck]
 description = "pi-task-v2 type gate — strict tsc over packages/core-v2 only"
 run = "npx tsc --noEmit -p packages/core-v2/tsconfig.json"
+
+# M3 grounding evaluation (docs/pi-task-v2.md §7): scores the v2 grounding
+# modes against each other on the pre-seeded suite-03 fixture. The default
+# invocation is a DRY plan render — zero LLM calls, zero spawns. Real runs
+# need `mise run eval-grounding -- --run` (LLM-gated; strong-model configs
+# additionally need --allow-strong or PI_TASK_ALLOW_STRONG=1). Evidence:
+# <metrics-dir>/eval-grounding/{records.jsonl,summary.md}.
+[tasks.eval-grounding]
+description = "Suite-03 grounding-mode evaluation (dry plan by default; --run for real LLM runs)"
+run = "npx tsx extensions/task/grounding-eval.ts"

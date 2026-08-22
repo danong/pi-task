@@ -14,17 +14,32 @@
  * tokens/USD plus the COR grounding ratio on the receipt. Accounting is
  * best-effort: a failing stats() read zeroes the usage fields instead of
  * failing the run (see collectUsage).
+ *
+ * Bundle telemetry (FR-9 mode b / NFR-2): when the ROUTER selects
+ * planMode="bundle" AND the caller supplied bundle candidates, the run is
+ * grounded on a one-shot versioned/hashed ExecutionBundle and the receipt
+ * advertises the outcome via bundleHit — true when the run shipped with
+ * every changed file inside the bundled target set, false on ANY miss
+ * (unusable bundle, worker drift outside the set, failed run, failing
+ * verification). Every miss is recorded into routing_feedback as hit=0:
+ * a never-tried path records its misses, never silence.
  */
 
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 
-import type { TaskReceipt, Yield } from "../contracts/index.ts";
+import type { ExecutionBundle, TaskReceipt, Yield } from "../contracts/index.ts";
 import { writeFailureArtifact } from "../guards/artifacts.ts";
 import { attachWatchdogs, type WatchdogEnd } from "../guards/watchdog-driver.ts";
+import {
+	buildExecutionBundle,
+	bundleGroundingSection,
+	isBundleFocused,
+	isBundleUsable,
+} from "../grounding/bundle.ts";
 import { LedgerStore } from "../ledger/store.ts";
-import { routeTask, type RoutingFeedbackRow } from "../router/route.ts";
+import { BUNDLE_FEEDBACK_MODE, routeTask, type RoutingFeedbackRow } from "../router/route.ts";
 import { createSessionHost, SessionHostError, type SessionHandle, type SessionHost, type SessionHostEvent } from "../sessions/host.ts";
 import { attachPrewalk, decidePrewalkSwap, type PrewalkPricing } from "../grounding/prewalk.ts";
 import { verifyThroughEnvironment } from "../verify/adapter.ts";
@@ -252,6 +267,14 @@ export interface RunTaskOptions {
 		/** Estimated remaining turns at the swap point. Default 12. */
 		remainingTurnsEstimate?: number;
 	};
+	/**
+	 * Bundle-mode candidates (§5.3 b): files believed relevant to the spec.
+	 * Building a bundle is isolated from using one (R1) — the runner only
+	 * attaches bundle grounding when the ROUTER selected planMode="bundle";
+	 * with any other plan mode (or when the assembled bundle comes out
+	 * empty) the candidates are ignored and the run proceeds normally.
+	 */
+	bundle?: { targetPaths?: readonly string[] } | undefined;
 	/** Observability sink for session events (progress UIs, debugging). */
 	onEvent?: (event: SessionHostEvent) => void;
 	/** Wall-clock bound forwarded to the session host. */
@@ -312,6 +335,15 @@ async function runWithStore(
 		hostError: undefined,
 	};
 
+	// Bundle telemetry state (R2/R3): resolved after routing, read by every
+	// receipt-building path below. `bundleMissRecorded` marks an ATTEMPTED
+	// but unusable bundle (already written a miss row at build time);
+	// `bundleUsed` marks grounding that actually attached to the prompt.
+	let bundleAttempted = false;
+	let bundleUsed = false;
+	let bundleMissRecorded = false;
+	let bundle: ExecutionBundle | undefined;
+
 	// NFR-3: when usage was already measured before the failure, carry it
 	// into the failed receipt instead of discarding it (defaults to zeroes
 	// for failures that happen before any session activity).
@@ -325,7 +357,10 @@ async function runWithStore(
 		});
 		store.setSessionStatus(`${taskId}-worker`, "crashed");
 		store.setTaskStatus(taskId, "failed");
-		store.recordRoutingFeedback(repo, decision.planMode, 0);
+		// R3: a bundled run that dies anywhere is a MISS. When the bundle was
+		// merely attempted (never grounded), the miss row was already written
+		// at build time — do not double-count it.
+		if (bundleUsed || !bundleAttempted) store.recordRoutingFeedback(repo, decision.planMode, 0);
 		return {
 			receipt: {
 				taskId,
@@ -334,7 +369,7 @@ async function runWithStore(
 				commitIds: [],
 				turns: observation.turns,
 				...receiptUsageFields(usage),
-				bundleHit: null,
+				bundleHit: bundleUsed || bundleMissRecorded ? false : null,
 			},
 			verificationPassed: false,
 			taskId,
@@ -357,6 +392,33 @@ async function runWithStore(
 	});
 	store.setTaskPlanMode(taskId, decision.planMode);
 
+	// ── Bundle assembly (R1): building is isolated from USING. The router's
+	// planMode gates attachment; the caller only supplies candidates.
+	bundleAttempted = decision.planMode === "bundle" && options.bundle !== undefined;
+	if (bundleAttempted) {
+		try {
+			const built = buildExecutionBundle({
+				taskId,
+				goal: parsed.goal,
+				requirements: parsed.requirements,
+				verificationCommands: parsed.verificationCommands,
+				targetPaths: options.bundle!.targetPaths ?? [],
+			});
+			if (isBundleUsable(built)) {
+				bundle = built;
+				bundleUsed = true;
+			} else {
+				// An EMPTY bundle grounds nothing: record the miss up front and
+				// proceed ungrounded rather than pretending the shortcut fired.
+				bundleMissRecorded = true;
+				store.recordRoutingFeedback(repo, BUNDLE_FEEDBACK_MODE, 0);
+			}
+		} catch {
+			bundleMissRecorded = true;
+			store.recordRoutingFeedback(repo, BUNDLE_FEEDBACK_MODE, 0);
+		}
+	}
+
 	// ── Host the worker session. ────────────────────────────────────────
 	store.insertMicroSession({ id: `${taskId}-worker`, taskId, role: "worker" });
 	store.setTaskStatus(taskId, "executing");
@@ -364,8 +426,13 @@ async function runWithStore(
 	const host = options.host ?? createSessionHost();
 	// Grounding figure (NFR-3 approximation): fixed prefix = system prompt
 	// + spec bytes, computed once where the prompt is built.
-	const systemPrompt = buildWorkerSystemPrompt(options.specMarkdown);
-	const groundingTokens = estimateGroundingTokens(systemPrompt, options.specMarkdown);
+	let systemPrompt = buildWorkerSystemPrompt(options.specMarkdown);
+	let groundingTokens = estimateGroundingTokens(systemPrompt, options.specMarkdown);
+	if (bundleUsed && bundle) {
+		const section = bundleGroundingSection(bundle);
+		systemPrompt += section;
+		groundingTokens += Math.ceil(Buffer.byteLength(section, "utf-8") / 4);
+	}
 	const prewalkActive =
 		options.prewalk?.enabled === true &&
 		decision.planMode === "prewalk" &&
@@ -463,7 +530,8 @@ async function runWithStore(
 			stderrTail: firstFailure?.stderrTail,
 		});
 		store.setTaskStatus(taskId, "failed");
-		store.recordRoutingFeedback(repo, decision.planMode, 0);
+		// Same miss discipline as failRun (see above).
+		if (bundleUsed || !bundleAttempted) store.recordRoutingFeedback(repo, decision.planMode, 0);
 		return {
 			receipt: {
 				taskId,
@@ -472,7 +540,7 @@ async function runWithStore(
 				commitIds: yieldPayload.commit_ids,
 				turns: observation.turns,
 				...receiptUsageFields(usage),
-				bundleHit: null,
+				bundleHit: bundleUsed || bundleMissRecorded ? false : null,
 			},
 			yieldedResult: yieldPayload,
 			verificationPassed: false,
@@ -480,7 +548,19 @@ async function runWithStore(
 		};
 	}
 
-	store.recordRoutingFeedback(repo, decision.planMode, 1);
+	// R2/R3: a bundled run that SHIPPED is a hit only when every changed
+	// file stayed inside the bundled target set — drift is a miss even
+	// though verification passed. Unusable bundles keep their early miss
+	// row; unbundled runs keep the generic planMode feedback untouched.
+	let shippedBundleHit: boolean | null = bundleMissRecorded ? false : null;
+	if (bundleUsed && bundle) {
+		shippedBundleHit = isBundleFocused(bundle, yieldPayload.files_changed, options.cwd);
+	}
+	if (bundleUsed) {
+		store.recordRoutingFeedback(repo, BUNDLE_FEEDBACK_MODE, shippedBundleHit === true ? 1 : 0);
+	} else if (!bundleAttempted) {
+		store.recordRoutingFeedback(repo, decision.planMode, 1);
+	}
 	store.setTaskStatus(taskId, "completed");
 	return {
 		receipt: {
@@ -490,7 +570,7 @@ async function runWithStore(
 			commitIds: yieldPayload.commit_ids,
 			turns: observation.turns,
 			...receiptUsageFields(usage),
-			bundleHit: null,
+			bundleHit: shippedBundleHit,
 		},
 		yieldedResult: yieldPayload,
 		verificationPassed: true,

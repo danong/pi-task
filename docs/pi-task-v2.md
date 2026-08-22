@@ -59,7 +59,9 @@ executed; **context flow becomes explicit** — exactly five typed artifacts
 may cross a session boundary, and forks pass through prune profiles; the
 kernel grows **pluggable seams** so environment-specific behavior
 (workspaces, containers, compression, transports) attaches without core
-changes.
+changes. Long tasks stay resumable: when a turn limit forces a session
+handoff, the continuation's inherited context is thinned by a bounded,
+config-selected prune profile instead of growing forever.
 
 ## 3. Requirements
 
@@ -285,7 +287,17 @@ What a worker session receives at spawn, in order:
    definitions, for tasks whose relevant files are predictable in advance.
 5. **Pruned continuation** *(fork mode only)* — replaces 3–4: goals, active
    specs, recent receipts, and orientation facts carried over from the
-   dispatching conversation through the continuation prune profile.
+   dispatching conversation through the continuation prune profile — a
+   pluggable scorer over transcript-shaped entries with a token budget
+   ([subsystems](pi-task-v2-subsystems.md) §1 seam 7). The scorer is pure,
+   hermetically testable, selected by config (`recencyTool` ships as the
+   default, `uniform` as the flat alternative), and enforces three
+   invariants by construction: kept tokens ≤ budget, original ordering
+   preserved, at least one tool result survives whenever one exists. A
+   fork that has already pruned once carries a second-layer retry signal
+   (ledger-only `attemptNumber` / `alreadyPruned`) into its next pruning
+   pass, so an immediate retry shifts the keep-window forward instead of
+   re-pruning identically.
 
 Grounding layers are additive optimizations with one invariant: **the live
 tools (read/grep/find/bash/edit) are never removed.** Every layer exists to
@@ -316,6 +328,19 @@ fixes in stable areas). A thin one-shot call generates the ExecutionBundle
 phase at all. Miss-path: the worker simply explores as usual, and the miss
 feeds telemetry.
 
+*Implemented shape:* building is fully isolated from choosing to use one.
+The builder (`grounding/bundle.ts`) is pure assembly + validation over the
+prompt-bound schema — no routing state, no session knowledge — and every
+bundle carries a format-version namespace plus a content hash over its
+deterministic serialization, so identical bundles are recognizable across
+runs (cache-affine retries stay possible). The ROUTER still gates use:
+bundle grounding attaches only when `routeTask` selected planMode="bundle"
+and per-repo hit-rate telemetry backs it. The outcome lands on the receipt:
+`TaskReceipt.bundleHit` is true when a bundled run shipped with every
+changed file inside the bundled target set, false on any miss (empty or
+unusable bundle, worker drift outside the set, failed run, failing
+verification), and null when no bundle was used at all.
+
 **(c) Fork — continuation of interactive work.**
 *Use case:* the main session already holds the understanding (long
 interactive debugging that now needs isolated execution). Forking the raw
@@ -341,6 +366,15 @@ fork cleanliness (from the yield's deviations field), turns, cost. The
 router consumes this, so mode selection improves from accumulated evidence
 rather than developer intuition.
 
+Miss recording is asymmetric on purpose: a never-tried path must NEVER look
+successful. Every bundle miss — empty bundle, misfocused worker, failed run,
+verification failure after bundling — is written to `routing_feedback` as
+hit=0 for the repo, while only focused shipped runs write hit=1. Runs that
+never attempted a bundle record their own plan mode's outcome instead, so
+bundle rows count exactly the shortcut's attempts. A few misses drop the
+repo below `bundleMinHitRate` and the router stops bundling until hits
+accumulate back over the threshold.
+
 ### 5.5 Review
 
 Optional, budget-gated (tiers may skip it entirely or run it on the
@@ -348,6 +382,18 @@ workhorse — both exist today). The reviewer FORKS THE WORKER SESSION after
 yield through the review prune profile: diff + requirements + compressed
 implementation rationale kept; read/tool noise dropped. Findings return
 typed (verdict, priority, category, location) and feed the bounded fix loop.
+
+The review fork's context is additionally thinned by a **bounded file
+budget** (review-fork pruning) so parallel reviews finish inside the same
+cost envelope as execution: given the changed-file set plus optional
+anchors/key files and byte/file caps, a pure pluggable scorer returns the
+pruned subset. After the parallel merge ladder squashes N workers into the
+integration base, "changed files" is `diff(base..merged)` — the union of
+every worker's diff — so the scorer also takes the attempt's own changed
+files and NEVER hides a file that changed in the attempt under review;
+anchors/key files are likewise never dropped. Caps bind only the optional
+remainder, and output is deterministic (lexicographic fill). See
+[subsystems](pi-task-v2-subsystems.md) §3 for the scorer interface.
 
 ### 5.6 Pruning inventory
 
@@ -357,7 +403,7 @@ typed (verdict, priority, category, location) and feed the bounded fix loop.
 | Exploration reads | worker session | session destroyed on yield/exhaustion | Yield payload, manifest metrics |
 | Planning output | prewalk phase / bundle fn | bundle capped ≤200 tok/file; prewalk context dies with worker | ExecutionBundle |
 | Failure detail | failed worker | capped tails per failure | HandoffBundle |
-| Review context | reviewer fork | review prune profile | typed findings |
+| Review context | reviewer fork | review prune profile + bounded file budget (anchors/attempt files pinned, caps on the rest) | typed findings |
 | Long-term insight | nobody's context | content-hash invalidation, retest circuit-breakers | episodic store (future doc) |
 
 Each artifact is simultaneously the interface AND the collection mechanism:
@@ -410,6 +456,33 @@ verification rate, cache hits on retried prefixes, bundle hit rate, fork
 cleanliness. Configurations compared: bare long-context session, the current
 in-process engine, and the v2 daemon — production default model pinned;
 stronger models are additional configurations, never baseline changes.
+
+**Reproducing the M3 grounding comparison (one command).** The suite-03
+harness enumerates the grounding configurations (bare / current engine /
+daemon cold, prewalk, bundle, fork, fork-with-prune-profile — see
+`packages/core-v2/src/bench/grounding-configs.ts`) and scores them against
+the RECORDED baselines. Specs, seeded fixtures, and baselines live ONLY in
+the owner file `extensions/task/bench-regression.ts` (`GROUNDING_SPECS`,
+`GROUNDING_LAYERS`, per-spec `baseline` tables) — never re-derived elsewhere.
+
+- **Dry plan (zero LLM, default):** `mise run eval-grounding` — prints the
+  (config × spec) plan with recorded-baseline expectations and exits.
+- **Real runs (LLM-gated):** `mise run eval-grounding -- --run` executes the
+  plan through each config's real pipeline. Fork/bundle configs fail typed
+  until their hosts can serve them from batch context — the harness never
+  fabricates telemetry. Strong-model configs are excluded unless
+  `--allow-strong` (or `PI_TASK_ALLOW_STRONG=1`) is passed; they are pinned
+  configurations, not baseline changes.
+- **Flags/env:** `--config <id>` (repeatable), `--spec <id>` (repeatable),
+  `--tier <name>` (baseline key; env `PI_TASK_EVAL_TIER`),
+  `--metrics-dir <p>`, `--summary-out <p>`, `--allow-strong`.
+- **Evidence:** every real run appends one JSON line to
+  `<metrics-dir>/eval-grounding/records.jsonl`; the summary artifact
+  (`summary.md`, or `--summary-out`) carries the normalized metric table
+  (USD per changed file per NFR-3), the NFR-4 cache-affinity accounting,
+  and the wins/loses table. Exit code 3 means a deterministic-prefix
+  violation was recorded — treat as a correctness bug, not a benchmark
+  number.
 
 Reference points from the current engine that motivate the design constants
 (all reproducible via the bench harness): ~3.5k-token fixed worker prefix;
