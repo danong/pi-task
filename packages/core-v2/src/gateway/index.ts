@@ -7,6 +7,11 @@
  *
  * Reads are LEDGER-ONLY (tasks / micro_sessions / routing_feedback rows
  * via LedgerStore) — never transcripts.
+ *
+ * Surfaces entrypoint: the ControlSurface contract (seam 6, §3b) is
+ * canonically declared at contracts/control-surface.ts and re-exported
+ * here so surface adapters import the whole seam from one module. The
+ * headless adapter lives in surfaces/null-surface.ts.
  */
 
 export type { TaskGateway } from "./surface.ts";
@@ -27,3 +32,13 @@ export {
 	eventTypeOf,
 } from "../contracts/gateway-events.ts";
 export type { TaskLifecycleEventType } from "../contracts/gateway-events.ts";
+
+// Seam 6 — ControlSurface contract (canonical declaration in contracts/).
+export type {
+	ControlSurface,
+	SurfaceCapabilities,
+	SurfaceCommand,
+	SurfaceEvent,
+	SurfaceStream,
+	SubscriptionLevel,
+} from "../contracts/control-surface.ts";

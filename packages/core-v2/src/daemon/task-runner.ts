@@ -29,7 +29,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 
-import type { ExecutionBundle, TaskReceipt, Yield } from "../contracts/index.ts";
+import type { ExecutionBundle, HandoffBundle, TaskReceipt, Yield } from "../contracts/index.ts";
 import { writeFailureArtifact } from "../guards/artifacts.ts";
 import { attachWatchdogs, type WatchdogEnd } from "../guards/watchdog-driver.ts";
 import {
@@ -45,6 +45,12 @@ import { attachPrewalk, decidePrewalkSwap, type PrewalkPricing } from "../ground
 import { verifyThroughEnvironment } from "../verify/adapter.ts";
 import { HostEnvironmentDriver } from "../environments/drivers.ts";
 import type { TaskGateway } from "../contracts/index.ts";
+import type { TaskPlugin } from "../contracts/task-plugin.ts";
+import {
+	emitLifecycleEventToPlugins,
+	transformExecutionBundleThrough,
+	transformHandoffThrough,
+} from "../plugins/index.ts";
 import { InMemoryTaskGateway } from "../gateway/index.ts";
 
 /**
@@ -277,6 +283,10 @@ export interface RunTaskOptions {
 	 * empty) the candidates are ignored and the run proceeds normally.
 	 */
 	bundle?: { targetPaths?: readonly string[] } | undefined;
+	/** Config-loaded lifecycle plugins (subsystems §3): transform hooks
+	 *  fire on the bundle/handoff paths, onLifecycleEvent fans out per emit
+	 *  — each call isolated, never fatal (R4). */
+	plugins?: readonly TaskPlugin[] | undefined;
 	/** Observability sink for session events (progress UIs, debugging). */
 	onEvent?: (event: SessionHostEvent) => void;
 	/** Lifecycle event sink (R4); defaults to an InMemoryTaskGateway over
@@ -290,6 +300,9 @@ export interface RunTaskOptions {
 export interface RunTaskResult {
 	receipt: TaskReceipt;
 	yieldedResult?: Yield | undefined;
+	/** Schema-revalidated, plugin-transformed handoff for the caller's
+	 *  retry attempt (present only when verification failed). */
+	handoff?: HandoffBundle | undefined;
 	verificationPassed: boolean;
 	taskId: string;
 }
@@ -332,8 +345,21 @@ async function runWithStore(
 	const taskId = resolveAttemptId(store, familyId);
 	store.insertTask({ id: taskId, goal: parsed.goal });
 	// R4: events flow AFTER their ledger mutation — a subscriber reading
-	// getTaskState on task.queued already sees the queued row.
-	const gateway = options.gateway ?? new InMemoryTaskGateway({ store });
+	// getTaskState on task.queued already sees the queued row. Every emit
+	// ALSO fans out to the plugins' onLifecycleEvent, each call isolated
+	// (a throwing plugin never breaks dispatch — same handler-throw rule
+	// as the gateway itself).
+	const baseGateway = options.gateway ?? new InMemoryTaskGateway({ store });
+	const plugins = options.plugins ?? [];
+	const gateway: TaskGateway = {
+		emit: (event) => {
+			baseGateway.emit(event);
+			if (plugins.length > 0) emitLifecycleEventToPlugins(event, plugins);
+		},
+		on: (pattern, handler) => baseGateway.on(pattern, handler),
+		getTaskState: (taskId) => baseGateway.getTaskState(taskId),
+		getManifest: (taskId) => baseGateway.getManifest(taskId),
+	};
 	gateway.emit({ type: "task.queued", taskId });
 
 	const observation: RunObservation = {
@@ -416,7 +442,10 @@ async function runWithStore(
 				targetPaths: options.bundle!.targetPaths ?? [],
 			});
 			if (isBundleUsable(built)) {
-				bundle = built;
+				// Plugin transform (R3): BEFORE grounding attaches. The helper
+				// re-validates through ExecutionBundleSchema, so a plugin cannot
+				// inject an invalid bundle into the prompt prefix.
+				bundle = await transformExecutionBundleThrough(built, plugins);
 				bundleUsed = true;
 			} else {
 				// An EMPTY bundle grounds nothing: record the miss up front and
@@ -538,6 +567,25 @@ async function runWithStore(
 
 	if (!verification.passed) {
 		const firstFailure = verification.commands.find((c) => c.exitCode !== 0);
+		// Retry-handoff transform (R3): the handoff the fix-loop/retry driver
+		// consumes passes through the plugins FIRST — awaited sequentially,
+		// schema-revalidated, throw-isolated (a failing plugin yields the
+		// untransformed value).
+		const handoffForRetry = await transformHandoffThrough(
+			{
+				taskId,
+				uncommittedDiffSummary: (firstFailure?.stderrTail ?? "").slice(0, 60_000),
+				filesTouched: [...yieldPayload.files_changed],
+				verificationFailures: verification.commands
+					.filter((c) => c.exitCode !== 0)
+					.map((c) => ({
+						command: c.command,
+						...(c.timedOut ? { reason: "timed out" } : {}),
+						stderrTail: c.stderrTail,
+					})),
+				},
+			plugins,
+		);
 		writeFailureArtifact({
 			artifactsDir: options.artifactsDir,
 			runId: taskId,
@@ -559,6 +607,7 @@ async function runWithStore(
 				bundleHit: bundleUsed || bundleMissRecorded ? false : null,
 			},
 			yieldedResult: yieldPayload,
+			handoff: handoffForRetry,
 			verificationPassed: false,
 			taskId,
 		};

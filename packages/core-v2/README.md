@@ -102,6 +102,15 @@ the strict gate.
   with capped output tails.
 - `src/version.ts` — the package identity (milestone `CORE_V2_MILESTONE`,
   version `CORE_V2_VERSION`).
+- `src/plugins/` — the config-driven plugin kernel (subsystems §3):
+  `loader.ts` reads `[plugins]` paths from task.toml (resolved against
+  cwd) and imports each file's default export, failing typed
+  (`PluginLoadError`: not_found / invalid_config / invalid_export /
+  import_failed, each with recoverable guidance — never a silent skip);
+  `hooks.ts` runs transform/lifecycle/register hooks per-call isolated
+  (a throwing plugin is reported through a sink and the untransformed
+  value proceeds) and re-validates every transformed bundle through its
+  zod schema so an invalid bundle can never reach a prompt prefix.
 - `src/bench/` — the M3 suite-03 grounding-evaluation harness
   (docs/pi-task-v2.md §7): `grounding-configs.ts` (the grounding-mode
   vocabulary — bare / current engine / daemon cold, prewalk, bundle, fork
@@ -135,6 +144,11 @@ the strict gate.
   - `test-verify-run.ts`, `test-artifacts.ts` — real-bash verification
     semantics (pass/fail/timeout/wall/grace, capped tails) and failure-
     artifact shape/caps/never-throw
+  - `test-gateway-plugins.ts` — the plugin kernel over REAL plugin files:
+    loader typed failures + valid round-trips, sequential transform
+    ordering, schema re-validation surfacing, throw isolation (name +
+    hook attribution), and daemon wiring (bundle transform before
+    grounding attach, handoff transform before retry)
   - `run-all.ts` — the aggregator (see below)
 
 ## Gates
