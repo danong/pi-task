@@ -181,6 +181,26 @@ export async function runTests(): Promise<void> {
 			check(result.yieldedResult !== undefined, "yield still captured on verify failure");
 		}
 
+		// ─── Re-run collision (review C1/P0): same spec+cwd twice ────────
+		{
+			const rerunDir = join(dir, "rerun");
+			mkdirSync(rerunDir, { recursive: true });
+			const dbPath = join(dir, "rerun.db");
+			const first = await runTask({
+				specMarkdown: GOOD_SPEC, cwd: rerunDir, artifactsDir: join(dir, "artifacts-rerun"),
+				dbPath, model: "openrouter/stealth/ox-alpha",
+				host: fakeHost("yield", [{ path: join(rerunDir, "hello.txt"), content: "hi" }]),
+			});
+			const second = await runTask({
+				specMarkdown: GOOD_SPEC, cwd: rerunDir, artifactsDir: join(dir, "artifacts-rerun"),
+				dbPath, model: "openrouter/stealth/ox-alpha",
+				host: fakeHost("yield", [{ path: join(rerunDir, "hello.txt"), content: "hi" }]),
+			});
+			check(first.receipt.verdict === "ship" && second.receipt.verdict === "ship",
+				"re-running the same spec must not collide on the PK");
+			check(first.taskId !== second.taskId, "attempts get distinct ids (family + discriminator)");
+		}
+
 		// ─── Boot reconciliation wiring (R4) ─────────────────────────────
 		{
 			const dbPath = join(dir, "reconcile.db");

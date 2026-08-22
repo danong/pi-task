@@ -98,10 +98,11 @@ export const HandoffBundleSchema = z.object({
     reason: z.string().optional(),
     stderrTail: z.string(),
   })),
-  attemptNumber: z.number().int().min(1),
 });
-// precedingSessionId removed from the serialized schema — ledger-only field
-// (deterministic-prefix rule, contract NFR-4).
+// precedingSessionId AND attemptNumber are ledger-only fields (carried on
+// the envelope, never prompt-bound): a retried handoff appends byte-
+// identical content to an identical prefix (deterministic-prefix rule,
+// contract NFR-4).
 
 export const YieldSchema = z.object({
   files_changed: z.array(z.string()),

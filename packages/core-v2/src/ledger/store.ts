@@ -172,6 +172,9 @@ export class LedgerStore {
 	constructor(readonly path: string) {
 		this.db = new DatabaseSync(path);
 		this.db.exec("PRAGMA foreign_keys = ON");
+		// WAL: the daemon (and future parallel writers) get reader-friendly
+		// snapshots instead of whole-db write locks.
+		this.db.exec("PRAGMA journal_mode = WAL");
 		migrate(this.db);
 	}
 
@@ -276,23 +279,14 @@ export class LedgerStore {
 		this.db.prepare("INSERT INTO routing_feedback (repo, mode, hit) VALUES (?, ?, ?)").run(repo, mode, hit);
 	}
 
-	/** Aggregate hit counts per mode for a repo (bundle_hit_rate /
-	 *  fork_deviation_rate feeding, §5.4). */
-	routingSummary(repo: string): Map<string, { total: number; hits: number }> {
+	/** Raw per-observation feedback rows for a repo, oldest first — the
+	 *  router's aggregateRoutingFeedback consumes these directly (§5.4);
+	 *  never feed aggregated counts back into the aggregator. */
+	routingRows(repo: string): Array<{ repo: string; mode: string; hit: number }> {
 		const rows = this.db
-			.prepare("SELECT mode, hit, COUNT(*) AS n FROM routing_feedback WHERE repo = ? GROUP BY mode, hit")
-			.all(repo) as Record<string, unknown>[];
-		const out = new Map<string, { total: number; hits: number }>();
-		for (const row of rows) {
-			const mode = String(row.mode);
-			const isHit = Number(row.hit) === 1;
-			const count = Number(row.n);
-			const cur = out.get(mode) ?? { total: 0, hits: 0 };
-			cur.total += count;
-			if (isHit) cur.hits += count;
-			out.set(mode, cur);
-		}
-		return out;
+			.prepare("SELECT repo, mode, hit FROM routing_feedback WHERE repo = ? ORDER BY rowid")
+			.all(repo) as Array<{ repo: string; mode: string; hit: number }>;
+		return rows.map((r) => ({ repo: String(r.repo), mode: String(r.mode), hit: Number(r.hit) }));
 	}
 
 	// ─── workspaces ────────────────────────────────────────────────────

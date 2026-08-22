@@ -72,7 +72,7 @@ export interface SessionHostConfig {
 }
 
 /** Default tool allowlist: the four built-ins plus the two custom tools. */
-export const DEFAULT_TOOLS = ["read", "bash", "edit", "write", "yield", "checklist"];
+export const DEFAULT_TOOLS = ["read", "grep", "find", "ls", "bash", "edit", "write", "yield", "checklist"];
 
 /** Settle/turn/tool lifecycle event the host streams to listeners. */
 export type SessionHostEvent =
@@ -241,6 +241,15 @@ class LiveSession implements SessionHandle {
 	/** Map SDK agent events to the host's typed event stream. */
 	#forward(event: AgentSessionEvent): void {
 		switch (event.type) {
+			case "agent_settled":
+				// Yield BEFORE settle: downstream guards treat settled-without-
+				// yield as a failure signal, so the ordering here is contract.
+				if (this.#yielder.payload && !this.#result) {
+					this.#result = this.#yielder.payload;
+					this.#emit({ type: "yielded", payload: this.#result });
+				}
+				this.#emit({ type: "settled" });
+				break;
 			case "turn_start":
 				this.#emit({ type: "turnStart" });
 				break;
@@ -249,9 +258,6 @@ class LiveSession implements SessionHandle {
 				break;
 			case "tool_execution_end":
 				this.#emit({ type: "toolEnd", toolName: event.toolName, toolCallId: event.toolCallId, isError: event.isError });
-				break;
-			case "agent_settled":
-				this.#emit({ type: "settled" });
 				break;
 			default:
 				break;
@@ -265,9 +271,12 @@ class LiveSession implements SessionHandle {
 
 	async prompt(text: string): Promise<void> {
 		// If a previous run already yielded, surface that result immediately.
-		if (this.#yielder.payload) {
+		if (this.#yielder.payload && !this.#result) {
 			this.#result = this.#yielder.payload;
 			this.#emit({ type: "yielded", payload: this.#result });
+			return;
+		}
+		if (this.#result) {
 			return;
 		}
 
@@ -291,7 +300,7 @@ class LiveSession implements SessionHandle {
 			throw new SessionHostError(outcome === "timeout" ? "timed_out" : "prompt_failed", message, err);
 		}
 
-		if (this.#yielder.payload) {
+		if (this.#yielder.payload && !this.#result) {
 			this.#result = this.#yielder.payload;
 			this.#emit({ type: "yielded", payload: this.#result });
 		}

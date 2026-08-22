@@ -100,9 +100,23 @@ export function buildWorkerSystemPrompt(specMarkdown: string): string {
 	].join("\n");
 }
 
-/** Derive a stable task id from the spec content + cwd (prompt-independent). */
+/**
+ * Derive the stable task FAMILY id from the spec content + cwd
+ * (prompt-independent). Attempts append a discriminator — retries, fix
+ * loops, and reconciliation requeues must never collide on the PK.
+ */
 export function deriveTaskId(specMarkdown: string, cwd: string): string {
 	return createHash("sha256").update(`${cwd}\n${specMarkdown}`).digest("hex").slice(0, 12);
+}
+
+/** First free attempt id for a family: `family`, then `family-a2`,
+ *  `family-a3`, … Reads existing rows so re-runs never hit the PK. */
+export function resolveAttemptId(store: LedgerStore, familyId: string): string {
+	if (store.getTask(familyId) === null) return familyId;
+	for (let attempt = 2; ; attempt += 1) {
+		const candidate = `${familyId}-a${attempt}`;
+		if (store.getTask(candidate) === null) return candidate;
+	}
 }
 
 export interface RunTaskOptions {
@@ -148,10 +162,24 @@ export async function runTask(options: RunTaskOptions): Promise<RunTaskResult> {
 		throw new Error(`runTask: cwd does not exist: ${options.cwd}`);
 	}
 	const parsed = parseTaskSpec(options.specMarkdown);
-	const taskId = deriveTaskId(options.specMarkdown, options.cwd);
+	const familyId = deriveTaskId(options.specMarkdown, options.cwd);
 	mkdirSync(options.artifactsDir, { recursive: true });
 
 	const store = new LedgerStore(options.dbPath);
+	try {
+		return await runWithStore(store, options, familyId, parsed);
+	} finally {
+		store.close();
+	}
+}
+
+async function runWithStore(
+	store: LedgerStore,
+	options: RunTaskOptions,
+	familyId: string,
+	parsed: ParsedTaskSpec,
+): Promise<RunTaskResult> {
+	const taskId = resolveAttemptId(store, familyId);
 	store.insertTask({ id: taskId, goal: parsed.goal });
 
 	const observation: RunObservation = {
@@ -189,11 +217,7 @@ export async function runTask(options: RunTaskOptions): Promise<RunTaskResult> {
 
 	// ── Route (§5.4): feedback comes from this repo's ledger rows. ──────
 	const repo = options.cwd.split("/").filter(Boolean).pop() ?? options.cwd;
-	const feedbackRows: RoutingFeedbackRow[] = [];
-	for (const [mode, rate] of store.routingSummary(repo)) {
-		feedbackRows.push({ repo, mode, hit: rate.hits });
-		feedbackRows.push({ repo, mode, hit: rate.total - rate.hits });
-	}
+	const feedbackRows: RoutingFeedbackRow[] = store.routingRows(repo);
 	const decision = routeTask({
 		spec: {
 			requirementCount: parsed.requirements.length,
@@ -235,6 +259,12 @@ export async function runTask(options: RunTaskOptions): Promise<RunTaskResult> {
 		observation.lastEvent = event;
 	});
 	const watchdogs = attachWatchdogs(handle, {
+		// One wall, not two: when the host carries a per-session timeout,
+		// the watchdog wall mirrors it so the tighter bound always wins
+		// (review C6 — shadowed wall budgets never fire).
+		...(options.sessionTimeoutMs === undefined
+			? {}
+			: { limits: { wallTimeoutMs: options.sessionTimeoutMs } }),
 		onAction: (action) => {
 			if (action.kind === "abort") observation.watchdogAbort = action;
 		},

@@ -426,7 +426,7 @@ grounding-heavy measurement) come before polish:
 | Phase | Scope | Exit criterion |
 | :---- | :---- | :---- |
 | M0 | Engineering bar: typecheck gate, real-path smoke tests per seam, bench harness extended with suite 03 (run against CURRENT configurations only — cold-start baselines; the grounding modes themselves arrive in M3) | gate red→green; suite 03 baselines recorded |
-| M1 | Core daemon: ledger + boot reconciliation, in-process SDK sessions, watchdog/gate/artifact port, router skeleton | current-engine-equivalent single-worker runs through the daemon |
+| M1 | Core daemon: ledger + boot reconciliation, in-process SDK sessions, watchdog/gate/artifact port, router skeleton | current-engine-equivalent single-worker runs through the daemon (single-attempt: the bounded HandoffBundle retry of FR-7 lands with M2's dispatch loop) |
 | M2 | Workspaces & merge: JujutsuWorkspaceDriver (existing ladder verbatim), environment drivers (host, mise), parallel combine | parallel parity; suites 01/02 |
 | M3 | Grounding modes: prewalk port → bundle path + miss telemetry → fork + prune profiles; COR accounting | suite 03 across all modes, with numbers |
 | M4 | Plugin kernel: gateway event vocabulary, plugin contract, first plugins extracted from core | core shrinks; plugins carry real-path tests |

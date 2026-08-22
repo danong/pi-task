@@ -100,10 +100,10 @@ export async function runTests(): Promise<void> {
 			store.recordRoutingFeedback("repo/a", "bundle", 1);
 			store.recordRoutingFeedback("repo/a", "bundle", 0);
 			store.recordRoutingFeedback("repo/a", "fork", 1);
-			const summary = store.routingSummary("repo/a");
-			check(summary.get("bundle")?.total === 2 && summary.get("bundle")?.hits === 1, "bundle 1/2 hit rate");
-			check(summary.get("fork")?.hits === 1 && summary.get("fork")?.total === 1, "fork clean rate");
-			check(store.routingSummary("repo/other").size === 0, "per-repo isolation");
+			const rows = store.routingRows("repo/a");
+			check(rows.length === 3, "raw feedback rows returned in order");
+			check(rows[0]?.mode === "bundle" && rows[0]?.hit === 1, "first bundle row is a hit");
+			check(rows[2]?.mode === "fork", "per-repo isolation + ordering");
 
 			// ON DELETE CASCADE: dropping a task removes its sessions.
 			store.close();
