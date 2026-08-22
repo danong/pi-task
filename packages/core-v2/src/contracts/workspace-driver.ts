@@ -33,6 +33,9 @@ export interface CombineOutcome {
 
 export interface WorkspaceDriver {
 	name: string;
+	/** The driver's integration mode when it declares one (task-base |
+	 *  feature-branch); undefined = single-workspace driver. */
+	readonly integrationMode?: IntegrationMode | undefined;
 	/** Probe the host for this driver's requirements (e.g. a jj binary). */
 	isSupported(): Promise<boolean>;
 	/** Fetch remotes / pre-flight checks before provisioning. Non-fatal

@@ -35,14 +35,18 @@ function cap(value: string): string {
 	return value.length > ENV_OUTPUT_TAIL_CHARS ? value.slice(-ENV_OUTPUT_TAIL_CHARS) : value;
 }
 
-/** Shared bash execution: `bash -c "<command> <args…>"` under a timeout. */
-function execBash(command: string, args: string[], options: ExecOptions | undefined, cwd: string): Promise<ExecResult> {
+/**
+ * Shared execution under a timeout. argv is preserved EXACTLY — callers
+ * wanting shell semantics pass ("/bin/bash", ["-c", script]) themselves;
+ * the driver never re-wraps (a flattened `bash -c a b c` would run only
+ * `a` and silently drop every argument boundary).
+ */
+function execArgv(command: string, args: string[], options: ExecOptions | undefined, cwd: string): Promise<ExecResult> {
 	const timeoutMs = options?.timeoutMs ?? DEFAULT_ENV_COMMAND_TIMEOUT_MS;
-	const fullCommand = [command, ...args].join(" ");
 	return new Promise((resolve) => {
 		execFile(
-			"/bin/bash",
-			["-c", fullCommand],
+			command,
+			args,
 			{
 				cwd,
 				timeout: timeoutMs,
@@ -72,7 +76,7 @@ export class HostEnvironmentDriver implements EnvironmentDriver {
 	}
 
 	async exec(command: string, args: string[], options?: ExecOptions): Promise<ExecResult> {
-		return execBash(command, args, options, options?.cwd ?? process.cwd());
+		return execArgv(command, args, options, options?.cwd ?? process.cwd());
 	}
 }
 
@@ -103,7 +107,7 @@ export class MiseEnvironmentDriver implements EnvironmentDriver {
 	}
 
 	async exec(command: string, args: string[], options?: ExecOptions): Promise<ExecResult> {
-		return execBash("mise", ["exec", "--", command, ...args], options, options?.cwd ?? this.#envDir ?? process.cwd());
+		return execArgv("mise", ["exec", "--", command, ...args], options, options?.cwd ?? this.#envDir ?? process.cwd());
 	}
 }
 

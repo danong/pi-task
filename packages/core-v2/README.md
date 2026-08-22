@@ -43,15 +43,36 @@ the strict gate.
 - `src/verify/run.ts` — the M1.3 verification runner: per-command timeout,
   suite wall with bounded grace, typed per-command results with capped
   output tails.
+- `src/environments/` — the M2.b environment ladder's first rungs:
+  `HostEnvironmentDriver` (bare exec, hard per-command timeout → exit 124,
+  capped tails) and `MiseEnvironmentDriver` (`mise exec --` for project-
+  pinned tools; capability-detected, null when absent). argv is preserved
+  exactly — the driver never re-wraps through a shell.
+- `src/workspaces/` — the M2.c workspace seam: `jj.ts` ports v1's ladder
+  primitives verbatim (change-id-tracked atomic revset-union squash,
+  per-file union resolution via git merge-file --union, consistency gate
+  over the pre-merge file union, clean-WC guard, fetch-if-remote,
+  bounded every-call timeouts), and `jj-driver.ts` implements the
+  WorkspaceDriver seam on top with two integration modes: `task-base`
+  (AI-authored base + atomic combine + checkoutMerged) and
+  `feature-branch` (per-worker bookmarks; integration is the operator's
+  act). The driver NEVER pushes.
 - `src/daemon/` — the M1.4 assembly: `task-runner.ts` (`runTask`: validate
   → route → guarded session → yield → verify → ledger → receipt;
-  deterministic worker prompt; injectable host for tests), and
-  `start.ts` (`startDaemon`: open ledger + boot reconciliation).
+  deterministic worker prompt; injectable host for tests),
+  `parallel.ts` (`runParallelTask`: N workers across driver-created
+  workspaces → one combine → ONE verification gate on the integrated tree
+  through the EnvironmentDriver; residual conflicts escalate, never ship),
+  and `start.ts` (`startDaemon`: open ledger + boot reconciliation).
 - `test/e2e-parity.ts` — the M1 exit gate: one real single-worker run on
   `openrouter/stealth/ox-alpha` against a temp jj repo, asserting ship
   receipt + verification + ledger rows. Manual/network gate — NOT part of
   `mise run test`; run it with
   `timeout 1200 npx tsx packages/core-v2/test/e2e-parity.ts`.
+- `test/e2e-parallel.ts` — the M2 exit gate: TWO real ox-alpha workers
+  through the real jj driver in a temp jj repo (disjoint files, atomic
+  combine, aggregate receipt). Same manual-gate rules:
+  `timeout 1800 npx tsx packages/core-v2/test/e2e-parallel.ts`.
 - `src/guards/` — M1.3 operational hardening (FR-7/FR-8):
   - `watchdogs.ts` — pure watchdog decisions over observed session events
     + elapsed time (`continue` / `nudge(text)` / `abort(reason)`), every

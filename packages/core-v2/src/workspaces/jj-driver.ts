@@ -54,6 +54,7 @@ const DEFAULT_AUTHOR_EMAIL = "noreply@pi-task-v2.local";
 
 export class JujutsuWorkspaceDriver implements WorkspaceDriver {
 	readonly name = "jj";
+	readonly integrationMode: IntegrationMode;
 	readonly #opts: Required<Pick<JujutsuDriverOptions, "projectDir" | "authorName" | "authorEmail" | "integrationMode" | "namePrefix">>;
 	#prepared = false;
 	readonly #contexts = new Map<string, WorkspaceContext>();
@@ -63,17 +64,15 @@ export class JujutsuWorkspaceDriver implements WorkspaceDriver {
 		if (!existsSync(options.projectDir)) {
 			throw new Error(`JujutsuWorkspaceDriver: projectDir does not exist: ${options.projectDir}`);
 		}
+		const mode: IntegrationMode = options.integrationMode ?? "task-base";
 		this.#opts = {
 			projectDir: options.projectDir,
 			authorName: options.authorName ?? DEFAULT_AUTHOR_NAME,
 			authorEmail: options.authorEmail ?? DEFAULT_AUTHOR_EMAIL,
-			integrationMode: options.integrationMode ?? "task-base",
+			integrationMode: mode,
 			namePrefix: options.namePrefix ?? "v2-task",
 		};
-	}
-
-	get integrationMode(): IntegrationMode {
-		return this.#opts.integrationMode;
+		this.integrationMode = mode;
 	}
 
 	async isSupported(): Promise<boolean> {

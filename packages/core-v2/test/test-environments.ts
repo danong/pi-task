@@ -39,7 +39,7 @@ export async function runTests(): Promise<void> {
 		{
 			const ok = await host.exec("true", [], { cwd: dir });
 			check(ok.exitCode === 0 && !ok.timedOut, "true exits 0");
-			const fail = await host.exec("exit", ["3"], { cwd: dir });
+			const fail = await host.exec("/bin/bash", ["-c", "exit 3"], { cwd: dir });
 			check(fail.exitCode === 3, "exit code propagates");
 			writeFileSync(join(dir, "marker.txt"), "x", "utf-8");
 			const cwd = await host.exec("pwd", [], { cwd: dir });
