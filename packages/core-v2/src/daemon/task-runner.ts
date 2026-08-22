@@ -24,6 +24,7 @@ import { attachWatchdogs, type WatchdogEnd } from "../guards/watchdog-driver.ts"
 import { LedgerStore } from "../ledger/store.ts";
 import { routeTask, type RoutingFeedbackRow } from "../router/route.ts";
 import { createSessionHost, SessionHostError, type SessionHandle, type SessionHost, type SessionHostEvent } from "../sessions/host.ts";
+import { attachPrewalk, decidePrewalkSwap, type PrewalkPricing } from "../grounding/prewalk.ts";
 import { verifyThroughEnvironment } from "../verify/adapter.ts";
 import { HostEnvironmentDriver } from "../environments/drivers.ts";
 
@@ -131,6 +132,21 @@ export interface RunTaskOptions {
 	tierName?: string;
 	/** Dependency injection for tests — defaults to a real in-process host. */
 	host?: SessionHost;
+	/**
+	 * Prewalk policy (§5.3 mode a) — OFF by default (undefined). When
+	 * enabled AND the router selects planMode=prewalk AND the tier's
+	 * models differ, the worker spawns on prewalkModel and swaps to
+	 * `model` on the first successful edit IF the break-even cost model
+	 * says the uncached swap penalty amortizes over the remaining turns.
+	 */
+	prewalk?: {
+		enabled: boolean;
+		/** The strong model to explore on (execute model = options.model). */
+		modelId: string;
+		pricing: PrewalkPricing;
+		/** Estimated remaining turns at the swap point. Default 12. */
+		remainingTurnsEstimate?: number;
+	};
 	/** Observability sink for session events (progress UIs, debugging). */
 	onEvent?: (event: SessionHostEvent) => void;
 	/** Wall-clock bound forwarded to the session host. */
@@ -238,11 +254,15 @@ async function runWithStore(
 	store.setTaskStatus(taskId, "executing");
 
 	const host = options.host ?? createSessionHost();
+	const prewalkActive =
+		options.prewalk?.enabled === true &&
+		decision.planMode === "prewalk" &&
+		options.prewalk.modelId !== options.model;
 	let handle: SessionHandle;
 	try {
 		handle = await host.spawn({
 			role: "worker",
-			modelId: options.model,
+			modelId: prewalkActive ? options.prewalk!.modelId : options.model,
 			cwd: options.cwd,
 			systemPrompt: buildWorkerSystemPrompt(options.specMarkdown),
 			...(options.sessionTimeoutMs === undefined ? {} : { timeoutMs: options.sessionTimeoutMs }),
@@ -260,6 +280,19 @@ async function runWithStore(
 		if (event.type === "toolEnd") observation.lastTool = event.toolName;
 		observation.lastEvent = event;
 	});
+	if (prewalkActive && options.prewalk) {
+		const pricing: PrewalkPricing = options.prewalk.pricing;
+		const remainingTurnsEstimate = options.prewalk.remainingTurnsEstimate ?? 12;
+		void attachPrewalk(handle, {
+			executeModelId: options.model,
+			decide: ({ contextTokensAtSwap }) =>
+				decidePrewalkSwap({ contextTokensAtSwap, remainingTurnsEstimate, pricing }),
+			onSwap: ({ decision: d }) => {
+				store.recordRoutingFeedback(repo, "prewalk", 1);
+				console.error(`prewalk: swapped to ${options.model} (${d.reason})`);
+			},
+		});
+	}
 	const watchdogs = attachWatchdogs(handle, {
 		// One wall, not two: when the host carries a per-session timeout,
 		// the watchdog wall mirrors it so the tighter bound always wins

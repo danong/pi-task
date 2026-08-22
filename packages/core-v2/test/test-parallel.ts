@@ -41,6 +41,10 @@ class FakeHandle implements SessionHandle {
 		this.result = { files_changed: [this.file.split("/").pop()!], summary: "done", commit_ids: ["fake"], deviations: [] };
 	}
 	async abort(): Promise<void> {}
+	async stats(): Promise<never> {
+		throw new Error("stats unavailable on the fake handle");
+	}
+	async setModel(): Promise<void> {}
 	close(): void {}
 }
 

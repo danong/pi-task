@@ -13,6 +13,7 @@ import { runTests as runDaemonTests } from "./test-daemon.ts";
 import { runTests as runEnvironmentTests } from "./test-environments.ts";
 import { runTests as runJjDriverTests } from "./test-jj-driver.ts";
 import { runTests as runParallelTests } from "./test-parallel.ts";
+import { runTests as runPrewalkTests } from "./test-prewalk.ts";
 import { runTests as runLedgerTests } from "./test-ledger.ts";
 import { runTests as runRouterTests } from "./test-router.ts";
 import { runTests as runVerifyRunTests } from "./test-verify-run.ts";
@@ -30,6 +31,7 @@ const SUITES: Array<{ name: string; run: () => Promise<void> }> = [
 	{ name: "environments", run: runEnvironmentTests },
 	{ name: "jj-driver", run: runJjDriverTests },
 	{ name: "parallel", run: runParallelTests },
+	{ name: "prewalk", run: runPrewalkTests },
 	{ name: "daemon", run: runDaemonTests },
 ];
 

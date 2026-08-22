@@ -22,7 +22,7 @@
  */
 
 import { createAgentSession, DefaultResourceLoader, getAgentDir, ModelRuntime, resolveCliModel } from "@earendil-works/pi-coding-agent";
-import type { AgentSession, AgentSessionEvent } from "@earendil-works/pi-coding-agent";
+import type { AgentSession, AgentSessionEvent, SessionStats } from "@earendil-works/pi-coding-agent";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 
 import type { Yield } from "../contracts/index.ts";
@@ -100,6 +100,12 @@ export interface SessionHandle {
 	subscribe(listener: SessionHostEventListener): () => void;
 	/** Abort the current run and wait for the agent to become idle. */
 	abort(): Promise<void>;
+	/** Cumulative token usage (input/output/cacheRead/cacheWrite) — the
+	 *  grounding/cost-policy input surface (FR-9, NFR-3). */
+	stats(): Promise<SessionStats>;
+	/** Switch the session's model mid-flight (prewalk policy mechanism).
+	 *  Resolves the id against the registry; typed error on failure. */
+	setModel(modelId: string): Promise<void>;
 	/** Tear down the underlying session and free resources. */
 	close(): void;
 }
@@ -185,6 +191,7 @@ export class DefaultSessionHost implements SessionHost {
 			{ provider: model.provider, modelId: model.id },
 			yielder,
 			config.timeoutMs,
+			runtime,
 		);
 	}
 }
@@ -208,19 +215,36 @@ class LiveSession implements SessionHandle {
 	readonly #timeoutMs: number;
 	readonly #yielder: { payload: Yield | undefined };
 
+	readonly #runtime: ModelRuntime | undefined;
+
 	constructor(
 		config: SessionHostConfig,
 		session: AgentSession,
 		model: { provider: string; modelId: string },
 		yielder: { payload: Yield | undefined },
 		timeoutMs: number | undefined,
+		runtime?: ModelRuntime,
 	) {
 		this.role = config.role;
 		this.model = model;
 		this.#session = session;
 		this.#timeoutMs = timeoutMs ?? DEFAULT_WALL_TIMEOUT_MS;
 		this.#yielder = yielder;
+		this.#runtime = runtime;
 		this.#unsubscribe = session.subscribe((event) => this.#forward(event));
+	}
+
+	async stats(): Promise<SessionStats> {
+		return this.#session.getSessionStats();
+	}
+
+	async setModel(modelId: string): Promise<void> {
+		const runtime = this.#runtime ?? await ModelRuntime.create();
+		const resolved = resolveCliModel({ cliModel: modelId, modelRuntime: runtime });
+		if (!resolved.model || resolved.error) {
+			throw new SessionHostError("bad_model", resolved.error ?? `Model "${modelId}" not found.`);
+		}
+		await this.#session.setModel(resolved.model);
 	}
 
 	/** Schema-valid yield from the yield tool, once the session yields. */

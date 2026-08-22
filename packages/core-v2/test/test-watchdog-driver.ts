@@ -84,6 +84,10 @@ function makeFakeHandle(): FakeRig {
 		role: "fake",
 		model: { provider: "p", modelId: "m" },
 		result: undefined,
+		stats: () => Promise.reject(new Error("no stats in watchdog tests")),
+		setModel: () => {
+			throw new Error("setModel not expected in watchdog tests");
+		},
 		prompt: async (text: string) => {
 			prompts.push(text);
 		},

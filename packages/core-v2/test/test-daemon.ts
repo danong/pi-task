@@ -66,6 +66,12 @@ class FakeHandle implements SessionHandle {
 		}
 	}
 	async abort(): Promise<void> {}
+	async stats(): Promise<never> {
+		throw new Error("stats unavailable on the fake handle");
+	}
+	async setModel(): Promise<void> {
+		this.turns += 0; // no-op; recorded by prewalk-specific fakes
+	}
 	close(): void {}
 }
 
