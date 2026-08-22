@@ -30,6 +30,8 @@ no `add`/stage step.
 ## Default workflow
 
 ```sh
+# 0. Pick up remote work before starting (skip if no git remote).
+jj git fetch
 # 1. Edit files — @ accumulates the changes automatically.
 jj st                          # review what changed
 # 2. Finalize the change with a message; also starts a fresh empty @.
@@ -44,6 +46,23 @@ jj squash                      # see Squashing for ranges
 jj bookmark move main --to @-
 jj git push --bookmark main
 ```
+
+### Integration modes (who pushes what)
+
+The steps above assume the **solo-main** workflow: one author, finished work
+lands on `main`, `jj git push --bookmark main`. In a **multi-author** repo,
+never move `main` yourself — publish a named bookmark per unit of work and
+let the review process advance main:
+
+```sh
+jj bookmark create feat/my-change -r @-   # named bookmark on the finished commit
+jj git push --bookmark feat/my-change     # PR-style; remote review advances main
+```
+
+`jj git push --change @-` is the anonymous alternative (creates/updates
+`push-<changeid>`) — right for quick shares, clutter for durable work.
+Never rewrite commits visible on a remote you don't own: immutable-by-default
+(`immutable_heads()`) already protects `main@origin`.
 
 Commit format: `type(scope): summary` + body + trailing `#PI` (scope required).
 `jj commit` = `jj describe -m` + `jj new`. **Don't run `jj new` after `jj commit`**
@@ -178,6 +197,15 @@ the cheatsheet above applies everywhere).
 
 ## How the engine uses jj
 
+- **Fetch before work**: workspace provisioning runs `jj git fetch` when a
+  git remote exists (non-fatal when it doesn't — local-only repos must
+  work), so workers never build on stale remote state.
+- **Integration modes** (config, default `task-base`): `task-base` combines
+  every worker's commits into the AI-authored task base in ONE atomic
+  operation; `feature-branch` skips the combine and leaves each worker's
+  commits stacked on the base under named bookmarks for human review. The
+  engine NEVER pushes — publishing is always the operator's act, under
+  whichever integration mode the repo uses.
 - **Parallel workers run in isolated workspaces** (`jj workspace add` per
   worker, rooted at the task base). Each worker commits per requirement in its
   own workspace; afterwards the engine combines every workspace's commits into
