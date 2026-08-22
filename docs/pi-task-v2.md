@@ -88,9 +88,14 @@ intent first; named implementations are examples, never the requirement.
 > core.* Six kernel interfaces — WorkspaceDriver, EnvironmentDriver,
 > ContextCompressor, VerificationDriver, TaskPlugin, ControlSurface —
 > isolate everything environment- and surface-specific behind
-> config-selected implementations. The plugin contract and gateway event
-> vocabulary are specified
-> ([subsystems](pi-task-v2-subsystems.md) §3) BEFORE any plugin code.
+> config-selected implementations. As built, every seam is one file under
+> `packages/core-v2/src/contracts/` (`task-plugin.ts` declares TaskGateway
+> beside TaskPlugin; `gateway-events.ts` owns the versioned, additive-only
+> `TASK_LIFECYCLE_EVENTS` vocabulary; `control-surface.ts` declares seam 6),
+> re-exported through `contracts/index.ts`. Plugins load by path from the
+> `[plugins] paths = [...]` table in task.toml via
+> `src/plugins/loader.ts`, failing typed (`PluginLoadError`). Exact
+> signatures: ([subsystems](pi-task-v2-subsystems.md) §3, §3b).
 >
 > **FR-3 (Typed boundary artifacts).** *Intent: context crosses boundaries
 > only as small typed payloads, never implicitly.* Exactly five artifact
@@ -502,12 +507,14 @@ grounding-heavy measurement) come before polish:
 | M1 | Core daemon: ledger + boot reconciliation, in-process SDK sessions, watchdog/gate/artifact port, router skeleton | current-engine-equivalent single-worker runs through the daemon (single-attempt: the bounded HandoffBundle retry of FR-7 lands with M2's dispatch loop) |
 | M2 | Workspaces & merge: JujutsuWorkspaceDriver (existing ladder verbatim), environment drivers (host, mise), parallel combine | parallel parity; suites 01/02 |
 | M3 | Grounding modes: prewalk port → bundle path + miss telemetry → fork + prune profiles; COR accounting | suite 03 across all modes, with numbers |
-| M4 | Plugin kernel: gateway event vocabulary, plugin contract, first plugins extracted from core | core shrinks; plugins carry real-path tests |
+| M4 | Plugin kernel: as-built in core-v2 — `TaskPlugin`/`TaskGateway` (`src/contracts/task-plugin.ts`), additive-only event vocabulary guarded by `eventTypeOf` (`src/contracts/gateway-events.ts`), path-based loader + typed failures (`src/plugins/loader.ts`, `errors.ts`), per-call-isolated hooks (`src/plugins/hooks.ts`), `InMemoryTaskGateway` (`src/gateway/in-memory.ts`), headless `NullSurface` (`src/surfaces/null-surface.ts`) | core shrinks; plugins carry real-path tests |
 | M5 | Workflow modes: /plan (planning-only + human gate), /build DAG executor, /survey; cutover | parity check passes |
 
 Migration is four-phase: inventory → shadow/dry-run beside the current
-engine → flip defaults → delete superseded plumbing. M0's smoke tests are
-what the shadow phase's parity checks run.
+engine → flip defaults → delete superseded plumbing. The behavior-by-behavior
+inventory mapping each v1 module to its v2 home and owning phase lives in
+[subsystems](pi-task-v2-subsystems.md) §5. M0's smoke tests are what the
+shadow phase's parity checks run.
 
 ## 9. Non-goals (this document)
 

@@ -23,6 +23,22 @@
  * (unusable bundle, worker drift outside the set, failed run, failing
  * verification). Every miss is recorded into routing_feedback as hit=0:
  * a never-tried path records its misses, never silence.
+ *
+ * Plugin extractions (R1/R2/R4/R5): two former INLINE core behaviors now
+ * live behind the TaskPlugin seam as one-file one-default-export modules
+ * loaded by path from task.toml [plugins] (M4b) and invoked exclusively
+ * through the M4b hooks below:
+ *
+ *   | Behavior                    | Before (lived here)                | After (plugin)                          |
+ *   |-----------------------------|------------------------------------|-----------------------------------------|
+ *   | handoff 60 kB tail capping  | inline slice-to-60k on             | plugins/builtin/handoff-cap.ts          |
+ *   |                             | firstFailure.stderrTail            | (transformHandoff, schema-revalidated)  |
+ *   | toolEnd descriptor +        | `describeTool()` helper + ad-hoc   | plugins/builtin/lifecycle-collector.ts  |
+ *   | lifecycle event journaling  | observation bookkeeping            | (registerTriggers/onLifecycleEvent)     |
+ *
+ * The runner only builds the UNCAPPED handoff and emits lifecycle events;
+ * both behaviors are reachable ONLY through transformHandoffThrough /
+ * emitLifecycleEventToPlugins — there is no second inline copy in core.
  */
 
 import { createHash } from "node:crypto";
@@ -315,11 +331,9 @@ interface RunObservation {
 	hostError: string | undefined;
 }
 
-function describeTool(toolName: string | undefined): string | undefined {
-	return toolName === undefined ? undefined : `tool:${toolName}`;
-}
-
-/** Run one task end-to-end (R1). See module docstring for the pipeline. */
+/** Run one task end-to-end (R1). See module docstring for the pipeline.
+ *  Note: the former inline describeTool() helper moved verbatim to
+ *  plugins/builtin/lifecycle-collector.ts (R2 — no duplicated copy). */
 export async function runTask(options: RunTaskOptions): Promise<RunTaskResult> {
 	if (!existsSync(options.cwd)) {
 		throw new Error(`runTask: cwd does not exist: ${options.cwd}`);
@@ -571,10 +585,15 @@ async function runWithStore(
 		// consumes passes through the plugins FIRST — awaited sequentially,
 		// schema-revalidated, throw-isolated (a failing plugin yields the
 		// untransformed value).
+		// R2: the 60 kB tail capping that used to sit INLINE on the next
+		// lines (a slice-to-60k over firstFailure.stderrTail) lives in
+		// plugins/builtin/handoff-cap.ts, reached only through this
+		// transformHandoffThrough call. The runner hands over the raw tails;
+		// the plugin owns the cap policy.
 		const handoffForRetry = await transformHandoffThrough(
 			{
 				taskId,
-				uncommittedDiffSummary: (firstFailure?.stderrTail ?? "").slice(0, 60_000),
+				uncommittedDiffSummary: firstFailure?.stderrTail ?? "",
 				filesTouched: [...yieldPayload.files_changed],
 				verificationFailures: verification.commands
 					.filter((c) => c.exitCode !== 0)

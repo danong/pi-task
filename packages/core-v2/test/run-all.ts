@@ -21,6 +21,8 @@ import { runTests as runParallelTests } from "./test-parallel.ts";
 import { runTests as runPrewalkTests } from "./test-prewalk.ts";
 import { runTests as runReviewForkTests } from "./test-review-fork.ts";
 import { runTests as runLedgerTests } from "./test-ledger.ts";
+import { runTests as runLifecycleCollectorPluginTests } from "./test-plugins-lifecycle.ts";
+import { runTests as runHandoffCapPluginTests } from "./test-plugins-handoff-cap.ts";
 import { runTests as runRouterTests } from "./test-router.ts";
 import { runTests as runSurfacesTests } from "./test-surfaces.ts";
 import { runTests as runVerifyRunTests } from "./test-verify-run.ts";
@@ -41,6 +43,8 @@ const SUITES: Array<{ name: string; run: () => Promise<void> }> = [
 	{ name: "gateway", run: runGatewayTests },
 	{ name: "surfaces", run: runSurfacesTests },
 	{ name: "gateway-plugins", run: runGatewayPluginsTests },
+	{ name: "plugin-handoff-cap", run: runHandoffCapPluginTests },
+	{ name: "plugin-lifecycle-collector", run: runLifecycleCollectorPluginTests },
 	{ name: "grounding-eval", run: runGroundingEvalTests },
 	{ name: "jj-driver", run: runJjDriverTests },
 	{ name: "parallel", run: runParallelTests },

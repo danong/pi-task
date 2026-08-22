@@ -111,6 +111,23 @@ the strict gate.
   (a throwing plugin is reported through a sink and the untransformed
   value proceeds) and re-validates every transformed bundle through its
   zod schema so an invalid bundle can never reach a prompt prefix.
+
+## How to write a plugin
+
+1. Create ONE file with ONE default export implementing `TaskPlugin`
+   (`src/contracts/task-plugin.ts`): a `name` string plus any subset of
+   `registerTriggers`, `transformExecutionBundle`, `transformHandoff`,
+   `onLifecycleEvent`.
+2. List the path under `[plugins] paths = [...]` in your task.toml
+   (relative entries resolve against cwd). Bad entries fail typed with a
+   `PluginLoadError` from `src/plugins/errors.ts` — see its codes for the
+   failure taxonomy; nothing loads silently.
+3. Write one HERMETIC test exercising the real load path — import your
+   file via `loadPluginsFromToml` / `importPluginAt`
+   (`src/plugins/loader.ts`) and drive the hook you implement through
+   `src/plugins/hooks.ts`. A test that only covers pure helpers does not
+   pass review (FR-11). See `test/test-gateway-plugins.ts` for the
+   pattern over real plugin files.
 - `src/bench/` — the M3 suite-03 grounding-evaluation harness
   (docs/pi-task-v2.md §7): `grounding-configs.ts` (the grounding-mode
   vocabulary — bare / current engine / daemon cold, prewalk, bundle, fork

@@ -221,11 +221,54 @@ The buildability contract — specified BEFORE any plugin code exists. A plugin:
 3. **No shared mutable state**: all interaction with the engine goes through
    the gateway events and the typed transform hooks below.
 
+Canonical declarations (copy-pastable — do not re-derive):
+
+- `packages/core-v2/src/contracts/task-plugin.ts` — `TaskLedgerRow`, `RunManifest`, `TaskGateway`, `TaskPlugin`
+- `packages/core-v2/src/contracts/gateway-events.ts` — `TASK_LIFECYCLE_EVENTS`, `TaskLifecycleEvent`, `EventPattern`, `Unsubscribe`, `eventTypeOf`, `eventMatchesPattern`
+- `packages/core-v2/src/gateway/surface.ts` — thin re-export of `TaskGateway` (impl lives in `packages/core-v2/src/gateway/in-memory.ts`)
+- `packages/core-v2/src/gateway/in-memory.ts` — `InMemoryTaskGateway` (daemon default; tests construct with `{ store }` or `{ rows }`)
+- `packages/core-v2/src/plugins/loader.ts` — `readPluginPathsFromToml(tomlPath, cwd)`, `importPluginAt(absolutePath)`, `loadPluginsFromToml(tomlPath, cwd)`
+- `packages/core-v2/src/plugins/errors.ts` — `PluginLoadError` with `code: "not_found" | "invalid_config" | "invalid_export" | "import_failed"`
+- `packages/core-v2/src/plugins/hooks.ts` — `transformExecutionBundleThrough`, `transformHandoffThrough`, `emitLifecycleEventToPlugins`, `registerPluginTriggers` (per-call isolated, schema re-validated)
+- `packages/core-v2/src/gateway/errors.ts` — `GatewayError` with `code: "unknown_task" | "no_ledger"`
+
+Loader config key (the only supported grammar — see `readPluginPathsFromToml`):
+
+```toml
+# task.toml — paths resolved against cwd; absolute entries pass through
+[plugins]
+paths = ["./plugins/my-plugin.ts", "/abs/other-plugin.mjs"]
+```
+
+Copy-pastable surface (from `task-plugin.ts` + `gateway-events.ts`):
+
 ```typescript
+import type { ExecutionBundle, HandoffBundle } from "packages/core-v2/src/contracts/payloads.ts";
+import type { EventPattern, TaskLifecycleEvent, Unsubscribe } from "packages/core-v2/src/contracts/gateway-events.ts";
+
+export interface TaskLedgerRow {
+  id: string;
+  status: "queued" | "planning" | "executing" | "verifying" | "reviewing" | "completed" | "failed" | "escalated";
+  goal: string;
+  parentBranch: string | null;
+  planMode: "prewalk" | "bundle" | "fork" | "cold" | null;
+  retryCount: number;
+  maxRetries: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface RunManifest {
+  taskId: string;
+  runId: string;
+  totals: { costUsd: number; durationMs: number; inputTokens: number; outputTokens: number };
+  verifyPassed: boolean;
+  detail?: { sessions?: Array<{ id: string; role: "worker" | "reviewer"; status: "active" | "yielded" | "exhausted" | "crashed" }> };
+}
+
 export interface TaskGateway {
   emit(event: TaskLifecycleEvent): void;
   on(pattern: EventPattern, handler: (event: TaskLifecycleEvent) => void): Unsubscribe;
-  // Narrow, typed reads — never transcripts:
   getTaskState(taskId: string): Promise<TaskLedgerRow>;
   getManifest(taskId: string): Promise<RunManifest>;
 }
@@ -239,11 +282,18 @@ export interface TaskPlugin {
 }
 ```
 
-Event vocabulary (initial set; additive-only evolution, versioned):
-`task.queued`, `task.routed`, `session.spawned`, `session.yielded`,
-`session.exhausted`, `verify.completed`, `review.completed`,
-`merge.completed`, `merge.conflict`, `task.completed`, `task.failed`,
-`task.escalated`.
+Event vocabulary — additive-only, versioned; authoritative list is `TASK_LIFECYCLE_EVENTS` in `packages/core-v2/src/contracts/gateway-events.ts` (see `TaskLifecycleEvent` for the discriminated payload per type; `eventTypeOf` is the exhaustive-switch guard, `eventMatchesPattern` matches `"*"` / `"prefix.*"` / exact):
+
+```typescript
+export const TASK_LIFECYCLE_EVENTS = [
+  "task.queued", "task.routed", "session.spawned", "session.yielded",
+  "session.exhausted", "verify.completed", "review.completed",
+  "merge.completed", "merge.conflict", "task.completed", "task.failed",
+  "task.escalated",
+] as const;
+```
+
+Hook isolation: every transform/lifecycle/register call in `hooks.ts` is per-call `try/catch` — a throwing plugin is reported via the configured sink (`onHookError` / `onHandlerError`, default `console.error`) and the pipeline continues on the untransformed value; transformed bundles are re-validated through `ExecutionBundleSchema` / `HandoffBundleSchema` so an invalid bundle never reaches the prompt prefix.
 
 Prune profiles (continuation + review forks) are pluggable scorers with the
 same discipline: pure functions over a transcript-shaped input, returning the
@@ -312,6 +362,13 @@ adapters over hosted sessions — never session owners. Separate from
 TaskPlugin because the lifecycle differs: long-lived bidirectional streaming
 vs task-scoped hooks.
 
+Canonical declaration (copy-pastable): `packages/core-v2/src/contracts/control-surface.ts`
+— `SubscriptionLevel`, `SurfaceCapabilities`, `SurfaceEvent`, `SurfaceCommand`,
+`SurfaceStream`, `ControlSurface`; re-exported by `src/gateway/index.ts`. The
+shipped adapter is `NullSurface` / `createNullSurface(gateway, name?)` in
+`packages/core-v2/src/surfaces/null-surface.ts` (headless ControlSurface over
+a TaskGateway).
+
 ```typescript
 export type SubscriptionLevel = "delta" | "digest" | "receipts";
 
@@ -324,24 +381,28 @@ export interface SurfaceCapabilities {
   latencyToleranceMs: number;
 }
 
+/** Downstream event union a surface may receive per level. */
+export type SurfaceEvent =
+  | { type: "TurnDelta"; text: string }
+  | { type: "ToolActivity"; tool: string; argsPreview: string; phase: "start" | "done"; durationMs?: number }
+  | { type: "PermissionRequest"; requestId: string; action: string; detail: string }
+  | { type: "Receipt"; receipt: TaskReceipt }
+  | { type: "Escalation"; taskId: string; reason: string; detail: string }
+  | { type: "StatusSnapshot"; model: string; tier: string; activeTasks: number };
+
+/** Upstream command union a surface may publish. */
+export type SurfaceCommand =
+  | { type: "UserMessage"; text: string; attachments?: string[] }
+  | { type: "Approve"; requestId: string; grant: boolean }
+  | { type: "Interrupt"; scope: "turn" | "task" }
+  | { type: "InvokeCommand"; name: string; args?: Record<string, unknown> };
+
 /** A live subscription: typed events downstream, commands upstream.
- *  Events are the union described below; each subscription level delivers
- *  a coarsening view of the SAME stream (delta ⊃ digest ⊃ receipts). */
+ *  Each subscription level delivers a coarsening view of the SAME stream
+ *  (delta ⊃ digest ⊃ receipts). */
 export interface SurfaceStream {
-  events: AsyncIterable<
-    | { type: "TurnDelta"; text: string }
-    | { type: "ToolActivity"; tool: string; argsPreview: string; phase: "start" | "done"; durationMs?: number }
-    | { type: "PermissionRequest"; requestId: string; action: string; detail: string }
-    | { type: "Receipt"; receipt: TaskReceipt }
-    | { type: "Escalation"; taskId: string; reason: string; detail: string }
-    | { type: "StatusSnapshot"; model: string; tier: string; activeTasks: number }
-  >;
-  send(command:
-    | { type: "UserMessage"; text: string; attachments?: string[] }
-    | { type: "Approve"; requestId: string; grant: boolean }
-    | { type: "Interrupt"; scope: "turn" | "task" }
-    | { type: "InvokeCommand"; name: string; args?: Record<string, unknown> }
-  ): void;
+  events: AsyncIterable<SurfaceEvent>;
+  send(command: SurfaceCommand): void;
   close(): void;
 }
 
@@ -415,7 +476,38 @@ CREATE TABLE routing_feedback (
 (`workspaces` table as in v3.1; timestamps/session ids live here, not in
 prompt-bound payloads.)
 
-## 5. Alternatives considered
+## 5. Migration inventory (four-phase cutover)
+
+Every v1 behavior that must move before the v1 plumbing can be deleted,
+mapped to its v2 home and the phase that owns it. Phases follow the plan's
+four-phase migration (contract §8): **inventory** → **shadow** (v2 runs
+dry-run beside v1; parity = M0's real-path smoke tests) → **flip** (defaults
+switch) → **delete** (superseded v1 code removed — M4d owns `src/plugins`
+deletions in the v1 tree).
+
+| v1 behavior (owner today) | v2 home | Phase |
+| :---- | :---- | :---- |
+| Engine inside the extension process (`extensions/task/index.ts`) | daemon assembly (`src/daemon/task-runner.ts`, `start.ts`) | shadow → flip (M1/M5) |
+| Worker spawn over JSON-RPC child processes (`extensions/task/worker.ts`) | in-process SDK sessions (`src/sessions/host.ts`) | shadow → flip (M1) |
+| Spec parsing / split / aggregation (`extensions/task/orchestrator.ts`, `schemas/`) | spec validation in the runner + payload schemas (`src/contracts/payloads.ts`) | inventory → shadow (M1) |
+| jj merge ladder (`extensions/task/workspace.ts`) | ported verbatim (`src/workspaces/jj.ts`, `jj-driver.ts`) | shadow → flip (M2) |
+| Verification runner (`extensions/task/runner.ts` verify path) | `src/verify/run.ts` behind the EnvironmentDriver | shadow → flip (M1/M2) |
+| Watchdogs + failure artifacts (`extensions/task/progress.ts`, sandbox watchdogs) | `src/guards/watchdogs.ts`, `watchdog-driver.ts`, `artifacts.ts` | shadow → flip (M1) |
+| Budget tiers & lanes config (`extensions/task/config.ts`) | tier/lane config consumed by router (`src/router/route.ts`) | shadow → flip (M1/M3) |
+| Prewalk planning (`extensions/task/prewalk.ts`) | grounding prewalk (`src/grounding/prewalk.ts`) | shadow (M3) → flip |
+| Repo map / bundle grounding (`extensions/task/repo-map.ts`) | ExecutionBundle builder (`src/grounding/bundle.ts`) + router gating | shadow (M3) → flip |
+| Prune profiles (`extensions/task/prune.ts`) | continuation pruner (`src/continuation/pruner.ts`) + review-fork scorer (`src/grounding/review-fork.ts`) | shadow (M3) → flip |
+| Review + fix loop (`extensions/task/review.ts`) | reviewer fork behind the gateway over TaskGateway events | flip (M4/M5) → delete |
+| Metrics/manifests (`extensions/task/metrics.ts`) | `RunManifest` via gateway reads + NFR-3 usage on receipts (`src/daemon/*`) | shadow → flip (M1) |
+| Batch processing (`extensions/task/batch.ts`) | headless dispatchers over the gateway (future-doc client modes) | flip (M5) → delete |
+| Scheduler/cron (`extensions/task/scheduler.ts`) | headless dispatcher surface (ControlSurface consumer) | flip (M5) → delete |
+| Discord bridge (v1 bridge) | ControlSurface adapter implementing `contracts/control-surface.ts` | last surface to flip (M5) → delete |
+| In-process extension hook points that plugins replace (`extensions/task/tools/`, tool guards) | TaskPlugin hooks loaded via `[plugins]` (`src/plugins/loader.ts`, `hooks.ts`) | M4d deletes superseded plumbing |
+
+A row leaves this table only when its v2 home carries a real-path test AND
+the owning phase's exit criterion (contract §8) has passed.
+
+## 6. Alternatives considered
 
 | Approach | Rejection reason |
 | :---- | :---- |
