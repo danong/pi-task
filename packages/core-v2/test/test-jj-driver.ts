@@ -142,6 +142,27 @@ export async function runTests(): Promise<void> {
 			check(threw, "consistency gate fails when the union file is missing");
 		}
 
+		// ─── Binary conflict: union tool fails → residual escalation ─────
+		{
+			const repo = join(dir, "binary");
+			newRepo(repo);
+			writeFileSync(join(repo, "blob.bin"), Buffer.from([0x00, 0x01, 0x02, 0xff]), "utf-8");
+			execSync('JJ_EDITOR=true jj commit -m "binary base"', { cwd: repo, stdio: "pipe" });
+
+			const driver = new JujutsuWorkspaceDriver({ projectDir: repo });
+			const base = await driver.prepareIntegrationBase("binary ladder");
+			const ws1 = await driver.createWorkspace("bin1");
+			const ws2 = await driver.createWorkspace("bin2");
+			writeFileSync(join(ws1.hostPath, "blob.bin"), Buffer.from([0xaa, 0xbb]), "utf-8");
+			workerCommit(ws1.hostPath, "bin1 edit");
+			writeFileSync(join(ws2.hostPath, "blob.bin"), Buffer.from([0xcc, 0xdd]), "utf-8");
+			workerCommit(ws2.hostPath, "bin2 edit");
+
+			const outcome = await driver.combine(base, [ws1, ws2]);
+			check(outcome.conflicts.includes("blob.bin"),
+				"binary conflict escalates through the real union ladder (git merge-file exits 255)");
+		}
+
 		// ─── Feature-branch mode: bookmarks, no squash ───────────────────
 		{
 			const repo = join(dir, "branches");

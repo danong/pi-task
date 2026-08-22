@@ -1,9 +1,12 @@
 /**
- * Hermetic tests for the M2.d parallel pipeline: two fake workers with
- * disjoint files combine cleanly; a failing worker fails the aggregate;
- * residual conflicts escalate (fake workspace driver); feature-branch mode
- * bookmarks instead of combining. Uses the REAL JujutsuWorkspaceDriver for
- * the clean-combine path (real jj, real repos) and fakes elsewhere. No LLM.
+ * Hermetic tests for the M2.d parallel pipeline: two REAL-jj workers with
+ * disjoint files combine cleanly; a failing worker fails the aggregate and
+ * demotes children; residual conflicts ESCALATE end-to-end (verdict,
+ * artifact, ledger); a throwing combine produces a recovery artifact;
+ * re-runs never collide; feature-branch mode bookmarks instead of
+ * combining. Real jj repos throughout; fakes only for session handles and
+ * adversarial drivers. No LLM. (The e2e-parallel manual gate covers what
+ * fakes cannot: real model workers and live op-log behavior.)
  */
 
 import { execSync } from "node:child_process";
@@ -132,6 +135,46 @@ export async function runTests(): Promise<void> {
 			check(third.aggregate.taskId !== second.aggregate.taskId, "warm-ledger attempts distinct");
 			check(third.aggregate.verdict === "ship", "third run on a warm ledger still ships");
 			check(third.aggregate.taskId !== second.aggregate.taskId, "warm-ledger attempts distinct");
+		}
+
+		// ─── Escalate path end-to-end (review M8): verdict+artifact+ledger ──
+		{
+			const repo = join(dir, "escalate");
+			mkdirSync(repo, { recursive: true });
+			execSync("jj git init --colocate", { cwd: repo, stdio: "pipe" });
+			writeFileSync(join(repo, "README.md"), "# fixture\n", "utf-8");
+			execSync('JJ_EDITOR=true jj commit -m "init"', { cwd: repo, stdio: "pipe" });
+
+			const conflictDriver = {
+				name: "conflicter",
+				integrationMode: "task-base" as const,
+				isSupported: async () => true,
+				prepare: async () => {},
+				createWorkspace: async (taskId: string) => ({
+					taskId, hostPath: join(dir, `esc-ws-${taskId}`), branchName: `v2-task-${taskId}`, status: "active" as const,
+				}),
+				mergeWorkspace: async () => ({ success: false, conflicts: ["x.txt"] }),
+				cleanupWorkspace: async () => {},
+				prepareIntegrationBase: async () => "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+				combine: async () => ({ commitId: "cccccccccccccccccccccccccccccccc", conflicts: ["x.txt"], filesChanged: 3 }),
+				materialize: async () => {},
+			};
+			const result = await runParallelTask({
+				subTasks: [SPEC_A], projectDir: repo,
+				artifactsDir: join(dir, "artifacts-escalate"), dbPath: join(dir, "escalate.db"),
+				model: "openrouter/stealth/ox-alpha",
+				workspaceDriver: conflictDriver as never,
+				host: scriptedHost(["a.txt"], { value: 0 }),
+			});
+			check(result.aggregate.verdict === "escalate", `escalate verdict (got ${result.aggregate.verdict})`);
+			check(result.conflicts.includes("x.txt"), "conflicts surfaced on the result");
+			const artifact = JSON.parse(readFileSync(join(dir, "artifacts-escalate", `${result.aggregate.taskId}.failure.json`), "utf-8"));
+			check(artifact.cause.includes("x.txt"), "escalation artifact names the conflicted file");
+			check(artifact.recovery?.baseChangeId === "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "escalation artifact carries recovery data");
+			const store = await import("../src/ledger/store.ts");
+			const ledger = new store.LedgerStore(join(dir, "escalate.db"));
+			check(ledger.getTask(result.aggregate.taskId)?.status === "escalated", "ledger row escalated");
+			ledger.close();
 		}
 
 		// ─── M5: single-workspace driver fails TYPED on the parallel lane ──

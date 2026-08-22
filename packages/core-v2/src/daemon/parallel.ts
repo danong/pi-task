@@ -23,6 +23,7 @@ import { attachWatchdogs, type WatchdogEnd } from "../guards/watchdog-driver.ts"
 import { workspaceCommitId } from "../workspaces/jj.ts";
 import { LedgerStore } from "../ledger/store.ts";
 import { HostEnvironmentDriver } from "../environments/drivers.ts";
+import { verifyThroughEnvironment } from "../verify/adapter.ts";
 import {
 	createSessionHost,
 	SessionHostError,
@@ -282,6 +283,7 @@ async function runWithStore(store: LedgerStore, options: RunParallelOptions): Pr
 		});
 		store.setTaskStatus(aggregateId, "escalated");
 		for (const ctx of healthyContexts) store.setTaskStatus(ctx.taskId, "failed");
+		store.recordRoutingFeedback(options.projectDir.split("/").pop() ?? options.projectDir, "cold", 0);
 		return {
 			aggregate: makeReceipt(aggregateId, "escalate", combineOutcome.filesChanged, [combineOutcome.commitId], 0),
 			perWorker,
@@ -292,16 +294,21 @@ async function runWithStore(store: LedgerStore, options: RunParallelOptions): Pr
 
 	// Materialize the merged tree and verify ONCE, through the environment
 	// driver (FR-6: the gate runs on the integrated tree, not a snapshot).
+	// M6: the runner's full semantics (suite wall, bounded grace, capped
+	// tails) now execute THROUGH the environment ladder.
 	await taskBase!.materialize(baseChangeId!);
 	const allCommands = parsed.flatMap((p) => p.verificationCommands);
 	const failures: string[] = [];
 	let verifyStderrTail: string | undefined;
-	for (const command of allCommands) {
-		const result = await env.exec("/bin/bash", ["-c", command], { cwd: options.projectDir });
-		if (result.exitCode !== 0) {
-			failures.push(`${command} (exit ${result.exitCode})`);
-			verifyStderrTail = result.stderr ?? verifyStderrTail;
+	const verification = await verifyThroughEnvironment(env, options.projectDir, allCommands);
+	for (const cmd of verification.commands) {
+		if (cmd.exitCode !== 0) {
+			failures.push(`${cmd.command} (exit ${cmd.exitCode}${cmd.timedOut ? ", timed out" : ""})`);
+			verifyStderrTail = verifyStderrTail ?? cmd.stderrTail;
 		}
+	}
+	if (verification.commands.length < allCommands.length) {
+		failures.push(`suite wall expired — ${allCommands.length - verification.commands.length} command(s) never ran`);
 	}
 
 	// Gate-ordered cleanup (v1 semantics): healthy workspaces are removed
@@ -321,6 +328,8 @@ async function runWithStore(store: LedgerStore, options: RunParallelOptions): Pr
 			recovery: await recoverySnapshot(),
 		});
 		store.setTaskStatus(aggregateId, "failed");
+		const repoKey = options.projectDir.split("/").pop() ?? options.projectDir;
+		store.recordRoutingFeedback(repoKey, "cold", 0);
 		for (const ctx of healthyContexts) store.setTaskStatus(ctx.taskId, "failed");
 		return {
 			aggregate: makeReceipt(aggregateId, "failed", combineOutcome.filesChanged, [combineOutcome.commitId], 0),

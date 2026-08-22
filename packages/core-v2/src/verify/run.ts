@@ -32,9 +32,21 @@ export const VERIFY_OUTPUT_TAIL_CHARS = 2048;
 /** Conventional exit code for a timed-out command (matches `timeout(1)`). */
 export const VERIFY_TIMEOUT_EXIT_CODE = 124;
 
+/** Injectable execution — the EnvironmentDriver seam (FR-5/FR-6). When
+ *  provided, commands run through it instead of a hardcoded /bin/bash, so
+ *  every lane gets the environment ladder AND full runner semantics
+ *  (wall/grace/tails) from one implementation. */
+export type VerifyExec = (
+	command: string,
+	args: string[],
+	options: { cwd: string; timeoutMs: number },
+) => Promise<{ exitCode: number; stdout: string; stderr: string; timedOut?: boolean }>;
+
 export interface VerifyOptions {
 	/** Working directory the commands run in (the merged workspace). */
 	cwd: string;
+	/** Execution backend. Default: direct /bin/bash on the host. */
+	exec?: VerifyExec | undefined;
 	/** Per-command budget in ms. Default {@link DEFAULT_VERIFY_COMMAND_TIMEOUT_MS}. */
 	commandTimeoutMs?: number;
 	/** Wall-clock budget for the whole suite in ms. Default {@link DEFAULT_VERIFY_WALL_TIMEOUT_MS}. */
@@ -99,8 +111,27 @@ export async function runVerification(commands: string[], options: VerifyOptions
 		const remainingWallMs = wallTimeoutMs - (Date.now() - startedAtMs);
 		if (remainingWallMs <= 0) break; // wall expired between commands — no new work starts
 		const timeoutMs = Math.min(commandTimeoutMs, remainingWallMs + graceMs);
-		const result = await runBash(command, options.cwd, timeoutMs);
-		executed.push({ command, ...result });
+		let result: { exitCode: number; stdout: string; stderr: string; timedOut: boolean };
+		if (options.exec) {
+			const r = await options.exec("/bin/bash", ["-c", command], { cwd: options.cwd, timeoutMs });
+			result = { exitCode: r.exitCode, stdout: r.stdout, stderr: r.stderr, timedOut: r.timedOut === true };
+		} else {
+			const r = await runBash(command, options.cwd, timeoutMs);
+			result = {
+				exitCode: r.exitCode,
+				stdout: r.stdoutTail,
+				stderr: r.stderrTail,
+				timedOut: r.timedOut,
+			};
+		}
+		executed.push({
+			command,
+			exitCode: result.exitCode,
+			stdoutTail: capTail(result.stdout, VERIFY_OUTPUT_TAIL_CHARS),
+			stderrTail: capTail(result.stderr, VERIFY_OUTPUT_TAIL_CHARS),
+			durationMs: 0,
+			timedOut: result.timedOut,
+		});
 	}
 
 	const failures = executed.filter((c) => c.exitCode !== 0);

@@ -24,7 +24,8 @@ import { attachWatchdogs, type WatchdogEnd } from "../guards/watchdog-driver.ts"
 import { LedgerStore } from "../ledger/store.ts";
 import { routeTask, type RoutingFeedbackRow } from "../router/route.ts";
 import { createSessionHost, SessionHostError, type SessionHandle, type SessionHost, type SessionHostEvent } from "../sessions/host.ts";
-import { runVerification } from "../verify/run.ts";
+import { verifyThroughEnvironment } from "../verify/adapter.ts";
+import { HostEnvironmentDriver } from "../environments/drivers.ts";
 
 /** Receipt cost placeholder until M3 wires usage accounting (FR-9/NFR-3). */
 export const TASK_RUNNER_COST_UNAVAILABLE = 0;
@@ -200,6 +201,7 @@ async function runWithStore(
 		});
 		store.setSessionStatus(`${taskId}-worker`, "crashed");
 		store.setTaskStatus(taskId, "failed");
+		store.recordRoutingFeedback(repo, decision.planMode, 0);
 		return {
 			receipt: {
 				taskId,
@@ -295,9 +297,13 @@ async function runWithStore(
 		return failRun(cause);
 	}
 
-	// ── Verify on the working tree (FR-6 semantics via verify runner). ──
+	// ── Verify on the working tree through the environment ladder (M6). ──
 	store.setSessionStatus(`${taskId}-worker`, "yielded", JSON.stringify(yieldPayload));
-	const verification = await runVerification(parsed.verificationCommands, { cwd: options.cwd });
+	const verification = await verifyThroughEnvironment(
+		new HostEnvironmentDriver(),
+		options.cwd,
+		parsed.verificationCommands,
+	);
 
 	if (!verification.passed) {
 		const firstFailure = verification.commands.find((c) => c.exitCode !== 0);
@@ -308,6 +314,7 @@ async function runWithStore(
 			stderrTail: firstFailure?.stderrTail,
 		});
 		store.setTaskStatus(taskId, "failed");
+		store.recordRoutingFeedback(repo, decision.planMode, 0);
 		return {
 			receipt: {
 				taskId,
