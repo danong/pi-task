@@ -11,6 +11,7 @@ import { runTests as runArtifactTests } from "./test-artifacts.ts";
 import { runTests as runContractTests } from "./test-contracts.ts";
 import { runTests as runDaemonTests } from "./test-daemon.ts";
 import { runTests as runEnvironmentTests } from "./test-environments.ts";
+import { runTests as runJjDriverTests } from "./test-jj-driver.ts";
 import { runTests as runLedgerTests } from "./test-ledger.ts";
 import { runTests as runRouterTests } from "./test-router.ts";
 import { runTests as runVerifyRunTests } from "./test-verify-run.ts";
@@ -26,6 +27,7 @@ const SUITES: Array<{ name: string; run: () => Promise<void> }> = [
 	{ name: "watchdogs", run: runWatchdogTests },
 	{ name: "watchdog-driver", run: runWatchdogDriverTests },
 	{ name: "environments", run: runEnvironmentTests },
+	{ name: "jj-driver", run: runJjDriverTests },
 	{ name: "daemon", run: runDaemonTests },
 ];
 

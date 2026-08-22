@@ -20,10 +20,24 @@ export interface WorkspaceContext {
 	status: "provisioning" | "active" | "merging" | "cleaning_up" | "released" | "orphaned";
 }
 
+/** How finished worker work integrates back (config-selected). */
+export type IntegrationMode = "task-base" | "feature-branch";
+
+/** Result of an atomic combine across all workers' workspaces. */
+export interface CombineOutcome {
+	/** The merged base's COMMIT id (post-squash). */
+	commitId: string;
+	/** Repo-relative paths still conflicted after deterministic union. */
+	conflicts: string[];
+}
+
 export interface WorkspaceDriver {
 	name: string;
 	/** Probe the host for this driver's requirements (e.g. a jj binary). */
 	isSupported(): Promise<boolean>;
+	/** Fetch remotes / pre-flight checks before provisioning. Non-fatal
+	 *  failures must not throw (local-only repos are supported). */
+	prepare?(): Promise<void>;
 	/** Provision an isolated workspace off `parentBranch` (default = base). */
 	createWorkspace(taskId: string, parentBranch?: string): Promise<WorkspaceContext>;
 	/**
@@ -35,4 +49,13 @@ export interface WorkspaceDriver {
 	mergeWorkspace(context: WorkspaceContext): Promise<{ success: boolean; conflicts?: string[] }>;
 	/** Remove the workspace after a verifiably-complete merge. */
 	cleanupWorkspace(context: WorkspaceContext): Promise<void>;
+	/** AI-authored empty integration base; returns its CHANGE id
+	 *  (task-base mode). Optional: single-workspace drivers may not need it. */
+	prepareIntegrationBase?(goal: string): Promise<string>;
+	/** ONE atomic operation combining every worker's commits into the base
+	 *  (v1 ladder R1 — never per-workspace incremental squashes). */
+	combine?(baseChangeId: string, contexts: readonly WorkspaceContext[]): Promise<CombineOutcome>;
+	/** feature-branch mode: leave each worker's tip under a named bookmark
+	 *  for human review; returns the created bookmark names. */
+	publishBookmarks?(contexts: readonly WorkspaceContext[]): Promise<string[]>;
 }
