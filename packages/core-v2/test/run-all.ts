@@ -32,6 +32,7 @@ import { runTests as runWorkflowPlanTests } from "./test-workflow-plan.ts";
 import { runTests as runWorkflowBuildTests } from "./test-workflow-build.ts";
 import { runTests as runWorkflowReceiptsTests } from "./test-workflow-receipts.ts";
 import { runTests as runWorkflowSurveyTests } from "./test-workflow-survey.ts";
+import { runTests as runParityM5Tests } from "./test-parity-m5.ts";
 
 const SUITES: Array<{ name: string; run: () => Promise<void> }> = [
 	{ name: "contracts", run: runContractTests },
@@ -50,6 +51,7 @@ const SUITES: Array<{ name: string; run: () => Promise<void> }> = [
 	{ name: "workflow-build", run: runWorkflowBuildTests },
 	{ name: "workflow-receipts", run: runWorkflowReceiptsTests },
 	{ name: "workflow-survey", run: runWorkflowSurveyTests },
+	{ name: "parity-m5", run: runParityM5Tests },
 	{ name: "gateway-plugins", run: runGatewayPluginsTests },
 	{ name: "plugin-handoff-cap", run: runHandoffCapPluginTests },
 	{ name: "plugin-lifecycle-collector", run: runLifecycleCollectorPluginTests },
