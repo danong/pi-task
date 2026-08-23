@@ -29,6 +29,8 @@ import { runTests as runVerifyRunTests } from "./test-verify-run.ts";
 import { runTests as runWatchdogDriverTests } from "./test-watchdog-driver.ts";
 import { runTests as runWatchdogTests } from "./test-watchdogs.ts";
 import { runTests as runWorkflowPlanTests } from "./test-workflow-plan.ts";
+import { runTests as runWorkflowBuildTests } from "./test-workflow-build.ts";
+import { runTests as runWorkflowReceiptsTests } from "./test-workflow-receipts.ts";
 import { runTests as runWorkflowSurveyTests } from "./test-workflow-survey.ts";
 
 const SUITES: Array<{ name: string; run: () => Promise<void> }> = [
@@ -45,6 +47,8 @@ const SUITES: Array<{ name: string; run: () => Promise<void> }> = [
 	{ name: "gateway", run: runGatewayTests },
 	{ name: "surfaces", run: runSurfacesTests },
 	{ name: "workflow-plan", run: runWorkflowPlanTests },
+	{ name: "workflow-build", run: runWorkflowBuildTests },
+	{ name: "workflow-receipts", run: runWorkflowReceiptsTests },
 	{ name: "workflow-survey", run: runWorkflowSurveyTests },
 	{ name: "gateway-plugins", run: runGatewayPluginsTests },
 	{ name: "plugin-handoff-cap", run: runHandoffCapPluginTests },
