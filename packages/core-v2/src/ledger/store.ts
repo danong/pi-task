@@ -17,7 +17,7 @@
 
 import { DatabaseSync } from "node:sqlite";
 
-export const LEDGER_SCHEMA_VERSION = 1;
+export const LEDGER_SCHEMA_VERSION = 2;
 
 export type TaskStatus =
 	| "queued"
@@ -151,7 +151,18 @@ interface Migration {
 
 /** Additive migrations, oldest first. Every later migration must not
  *  conflict with earlier ones (the ledger is append-only in shape). */
-const MIGRATIONS: Migration[] = [{ version: 1, sql: V1_DDL }];
+const V2_DDL = `
+CREATE TABLE IF NOT EXISTS workflow_approvals (
+    dag_id TEXT PRIMARY KEY,
+    approved INTEGER NOT NULL CHECK (approved IN (0, 1)),
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+`;
+
+const MIGRATIONS: Migration[] = [
+	{ version: 1, sql: V1_DDL },
+	{ version: 2, sql: V2_DDL },
+];
 
 function migrate(db: DatabaseSync): void {
 	const row = db.prepare("PRAGMA user_version").get() as { user_version: number };
@@ -327,6 +338,48 @@ export class LedgerStore {
 		return rows.map(rowToWorkspace);
 	}
 
+	// ─── workflow approvals (human gate, FR-2/FR-7 planning-only workflow) ──
+
+	getWorkflowApproval(dagId: string): WorkflowApprovalRow | null {
+		const row = this.db.prepare("SELECT dag_id, approved, updated_at FROM workflow_approvals WHERE dag_id = ?").get(dagId) as
+			| Record<string, unknown>
+			| undefined;
+		if (!row) return null;
+		return {
+			dagId: String(row.dag_id),
+			approved: Number(row.approved) === 1,
+			updatedAt: String(row.updated_at),
+		};
+	}
+
+	isWorkflowApproved(dagId: string): boolean {
+		const row = this.getWorkflowApproval(dagId);
+		return row !== null && row.approved;
+	}
+
+	setWorkflowApproval(dagId: string, approved: boolean): void {
+		this.db
+			.prepare(
+				`INSERT INTO workflow_approvals (dag_id, approved, updated_at)
+				 VALUES (?, ?, CURRENT_TIMESTAMP)
+				 ON CONFLICT(dag_id) DO UPDATE SET approved = excluded.approved, updated_at = CURRENT_TIMESTAMP`,
+			)
+			.run(dagId, approved ? 1 : 0);
+	}
+
+	clearWorkflowApproval(dagId: string): void {
+		this.db.prepare("DELETE FROM workflow_approvals WHERE dag_id = ?").run(dagId);
+	}
+
+	listWorkflowApprovals(): Array<{ dagId: string; approved: boolean; updatedAt: string }> {
+		const rows = this.db.prepare("SELECT dag_id, approved, updated_at FROM workflow_approvals ORDER BY dag_id").all() as Record<string, unknown>[];
+		return rows.map((r) => ({
+			dagId: String(r.dag_id),
+			approved: Number(r.approved) === 1,
+			updatedAt: String(r.updated_at),
+		}));
+	}
+
 	// ─── boot reconciliation (NFR-1) ──────────────────────────────────
 
 	/**
@@ -399,6 +452,15 @@ function rowToWorkspace(row: Record<string, unknown>): WorkspaceRow {
 		createdAt: String(row.created_at),
 		updatedAt: String(row.updated_at),
 	};
+}
+
+// ─── Workflow approvals (human gate, planning-only workflow) ──────────
+
+/** One workflow_approvals row (dagId → approved flag + last update). */
+export interface WorkflowApprovalRow {
+	dagId: string;
+	approved: boolean;
+	updatedAt: string;
 }
 
 // ─── Boot reconciliation policy (pure, unit-testable) ────────────────
