@@ -1,302 +1,258 @@
-# Architecture review: pi-task (VCS-churn hotspot scan)
+# Architecture review: the worker no-yield failure handling
 
-A hotspot survey of the pi-task codebase looking for deepening
-opportunities: where the code is shallow, tangled, or under-tested, and
-where one localized change would buy the most. The scan is churn-driven —
-the files the project keeps rewriting are the files whose structure costs
-the most. Context was read first: `docs/pi-task-design.md` (the design
-doc, the project's closest thing to ADRs) and `docs/workflow.md` (the
-agent-facing surface), per the survey contract.
+An adversarial review of the three-layer fix for the "worker ended without
+calling yield()" failure class — commits `qknrrwxysyup` (`0ab3c58e`, advertise /
+salvage / prompt) and `tkwwlnqryxku` (`d5338b52`, diagnostics.cause matching).
+The question: is the layered design good architecture, or three patches over
+one missing interface?
 
-## Method
+**Verdict up front.** Tactically the fix is excellent — each layer is small,
+tested, and independently justified, and the verified-salvage gate refuses to
+claim success without evidence. Strategically it is papering. All three layers
+treat symptoms of a single interface gap: **the worker's completion protocol is
+not a first-class typed contract**. The prompt references yield() in prose
+(`WORKER_SYSTEM_PROMPT_BASE`, extensions/task/worker.ts:365-387), the tool's
+visibility depends on an optional string field filtered silently in another
+package (extensions/task/tools/yield.ts:40-46; pi's
+`dist/core/system-prompt.js:39-41`), and the orchestrator recognizes the
+failure by matching a string constant smuggled through an `Error.diagnostics`
+property (extensions/task/orchestrator.ts:198-201,
+extensions/task/worker.ts:354). The second commit exists precisely because the
+third seam broke silently: `buildAbortError` decorates the message into a
+multi-line diagnostic (worker.ts:572-597), strict message equality never
+matched, and the salvage path stayed dead in production while looking tested.
+That is the signature of a string-typed interface: it compiles, it tests green
+against synthetic inputs, and it still fails against the real shape.
 
-**Churn scan.** The request was open-ended, so hotspots were located by
-VCS churn: every commit in the look-back window was walked and the number
-of commits touching each file was counted. The exact commands (run from
-the repo root; jj 0.43):
-
-```sh
-# Commits touching each file, most-churned first
-for c in $(jj log -r 'all() ~ root() ~ @' --no-graph -T 'commit_id ++ "\n"'); do
-  jj diff --summary -r "$c" 2>/dev/null | awk '{print $2}'
-done | sort | uniq -c | sort -rn
-
-# Line-weighted churn (insertions/deletions per file across the same range)
-for c in $(jj log -r 'all() ~ root() ~ @' --no-graph -T 'commit_id ++ "\n"'); do
-  jj diff --git -r "$c" 2>/dev/null
-done | awk '/^diff --git /{f=substr($3,3);next} /^\+\+\+/||/^---/{next}
-            /^\+/{ins[f]++} /^-/{del[f]++}
-            END{for(f in ins) printf "%6d %6d  %s\n",ins[f],del[f],f}' \
-     | sort -k1,1 -rn
-```
-
-**Look-back window.** The spec asked for roughly two months; the repo is
-younger than that, so the window is the entire history — 33 commits from
-2026-08-05 (first commit) to 2026-08-13 (`all() ~ root() ~ @` excludes
-the root and the working copy). Nearly all of it touches
-`extensions/task/`.
-
-**Reading the hotspots.** The highest-churn code files, in commit-count
-order: `extensions/task/index.ts` (12 commits, ~1175 lines added),
-`extensions/task/orchestrator.ts` (10, ~2434 added — the largest code
-churn), `extensions/task/test-index.ts` (10), `extensions/task/metrics.ts`
-(8), `extensions/task/workspace.ts` (6, ~917 added), and
-`extensions/task/worker.ts` (5, ~1258 added). README and design-doc churn
-(12 and 11 commits) is documentation tracking that code and was not
-scored as candidates. Each hotspot file was read in full; the candidates
-below are what the reading surfaced.
-
-**Context check.** No candidate conflicts with a documented design
-decision in `docs/pi-task-design.md` in a way that warrants reopening it:
-the design principles (code orchestrates / typed contracts / tools
-enforce / graceful degradation) are orthogonal to every proposal here,
-and the file-structure section describes module boundaries the candidates
-sharpen rather than cross.
+Grounding read: `docs/pi-task-design.md` principles (typed contracts, tools
+enforce behavior) and the prior `docs/architecture-review.md` survey vocabulary.
+No CONTEXT.md exists in the repo.
 
 ## Vocabulary
 
-Every candidate is scored with the shared survey vocabulary:
+Shared definition set used by every candidate below:
 
 - **Module** — an implementation unit whose interface hides its complexity.
 - **Interface** — the contract a module presents; good design pushes
   complexity behind it.
-- **Depth** — a powerful implementation behind a simple interface; shallow
+- **Depth** — a powerful implementation behind a simple surface; shallow
   modules expose nearly as much complexity as they hide.
-- **Seam** — a clean line where the code can be split or restructured
-  without widespread change.
-- **Adapter** — a thin translation layer at a seam isolating two
-  otherwise-incompatible interfaces.
-- **Leverage** — how much behavior change one localized change buys.
-- **Locality** — how little context a change needs; good locality means a
-  change touches few nearby places.
-- **The deletion test** — if this module or abstraction were deleted, how
-  much value disappears with it? Little surviving value means it is
-  shallow. Deleting something that merely *moves* complexity is shallow
-  work; deleting something whose complexity *concentrates* into a deeper
+- **Seam** — a clean split line where code can be restructured without
+  widespread change.
+- **Adapter** — a thin translation layer at a seam isolating two otherwise-
+  incompatible interfaces.
+- **Leverage** — behavior change per localized edit.
+- **Locality** — context needed per change; good locality means a change
+  touches few nearby places.
+- **Deletion test** — how much value disappears if this module, constant, or
+  abstraction were deleted? Deleting something that merely moves complexity is
+  shallow; deleting something whose complexity concentrates into a deeper
   module is deepening.
 
 ## Candidates
 
-### 1. A shared pi-RPC session runner for workers and reviewers — Strong
+### 1. Replace the string-matched failure cause with a typed failure hierarchy — Strong
 
-**Files.** `extensions/task/worker.ts` (~1260 lines; `spawnWorkerSession`
-is a ~480-line closure) and `extensions/task/review.ts`
-(`forkedReview`, ~275 lines of the same machinery).
+**Files:** extensions/task/worker.ts (`NO_YIELD_FAILURE` :354,
+`failWorker` :1212, `buildAbortError` :583-597, `WorkerFailureDiagnostics`
+:562-568); extensions/task/orchestrator.ts (`isNoYieldFailure` :198-201,
+import of `NO_YIELD_FAILURE` :33, gate at :2829-2830);
+extensions/task/test-orchestrator.ts :391-408;
+extensions/task/test-worker.ts :709-725.
 
-**Problem.** `forkedReview` re-implements the imperative shell of
-`spawnWorkerSession`: the JSONL event loop, stderr capture, the
-settle-without-payload idle watchdog, the no-progress watchdog, the wall
-timer, the abort → SIGTERM → SIGKILL ladder, AbortSignal wiring, the
-`buildAbortError` unified failure path, and the close/error handlers with
-their per-timer cleanup blocks (duplicated *within* each file, too — the
-close and error handlers repeat the same three-timer teardown). The pure
-decision cores were already shared (`decideIdleAction`,
-`decideNoProgressAction`, `reduceWorkerEvent`, `attachJsonlReader` — all
-from worker.ts), which is exactly why the remaining duplication stands
-out: the two runners are the same module wearing two costumes. The design
-doc's todo trail shows the cost — every lifecycle fix has been made twice
-and the second site cites the first: the SIGKILL dead-code fix
-("same fix as worker.ts (R4)") and the todo-#86 unified failure path
-("same contract as worker.ts's failWorker"). Watchdog races are this
-project's recurring bug class (todos #74, #80, #86; design-doc Rs), so
-two copies of the wiring is two places for the next one to land.
+**Problem.** The worker→orchestrator failure seam is a string. `failWorker`
+stores a human-readable sentence, `buildAbortError` bakes it into a multi-line
+message and attaches it as an undeclared `diagnostics` property on a plain
+`Error`, and `isNoYieldFailure` recovers it with a cast-and-compare
+(`diag?.cause === NO_YIELD_FAILURE`). This *is* an adapter — a thin translation
+isolating the orchestrator from the abort-error shape — and adapters are fine;
+what is not fine is that the adapted contract has no compiler-visible
+existence. Commit `d5338b52` is the proof: the message-decoration change in
+worker.ts broke the orchestrator's equality check, the salvage net went dead,
+and nothing failed until a real free-tier run threw away verified work. Two
+modules now coordinate through a sentence. The deletion test on
+`NO_YIELD_FAILURE`: delete it and four sites break immediately (worker.ts:1080,
+orchestrator.ts:33/:200, both test files) — so the constant carries genuine
+cross-module coordination value and is *not* shallow decoration. But its value
+is exactly the value a type would carry, with none of a type's guarantees:
+rename the sentence today and `tsc` passes, the hermetic suite still passes
+(tests construct errors *from the same constant*, test-orchestrator.ts:391, so
+they can never drift), and only production discovers the silence. Note also
+the asymmetry at the gate (orchestrator.ts:2829-2830): the no-yield branch
+classifies from the error object while the sibling branch classifies from
+session side-state (`checklistCtrl.latest`) — two orthogonal signals OR'd at
+the call site because neither channel was designed to carry a structured
+outcome.
 
-**Solution.** Extract one **session-runner module** — an adapter over a
-pi RPC subprocess with a simple interface: spawn (invocation + env),
-capture (which tool payload settles the run — `yield` for workers,
-`report_findings` for reviewers), and a watchdog set (wall / no-progress /
-idle / first-event / tool-timeout, each with its own window). Worker and
-reviewer become configurations of it; `buildWorkerArgs` and the review
-arg builder stay as their parameterizers. The seam already exists — the
-pure deciders and the reducer are shared; only the imperative shell
-moves.
+**Solution.** Introduce a discriminated union of worker failure codes
+(e.g. `WorkerFailureCode = "no-yield" | "wall-timeout" | "no-progress" |
+"tool-timeout" | "turn-budget" | …` — derive the full set from the `failWorker`
+call sites, worker.ts:1042/:1080/:1272/:1280/:1308/:1337). Attach the code as a
+declared field on a `WorkerAbortError extends Error` (or keep
+`WorkerFailureDiagnostics` but add `code` next to `cause`). `isNoYieldFailure`
+shrinks to `err.code === "no-yield"`; the human sentence stays for messages and
+failure artifacts. Hermetically testable with zero LLM: the existing
+test-orchestrator.ts checks convert mechanically.
 
-**Benefits.** *Locality:* lifecycle correctness lives in one module; the
-next watchdog fix is written once. *Leverage:* high — future session
-types (the design doc's reviewer personas note "personas differ only in
-prompt and output shape; the context mechanism is shared") inherit the
-full watchdog suite for free, and the historical bug class (raced
-rejections swallowing causes) is eliminated structurally instead of
-patched per-site. *Tests:* the runner's wiring is today exercised only by
-the real-LLM e2e; one runner means one fake-process harness can cover
-spawn/settle/abort/watchdog interactions hermetically for both consumers.
-*Deletion test:* deleting review.ts's bespoke plumbing and running the
-reviewer through the shared runner concentrates all session-lifecycle
-complexity into one deeper module — deepening, not relocation.
+**Benefits.**
+- *Locality:* adding a new watchdog failure mode becomes one place in
+  worker.ts plus one union member, instead of prose-plus-matcher coordinated
+  across two files.
+- *Leverage:* every future consumer (failure artifacts, parallel-run
+  `classifyWorkerFailures` at orchestrator.ts:217, metrics tagging) gets
+  machine-readable causes for free.
+- *Tests:* the current tests are tautological against string constants; a
+  union makes drift a compile error, which is the regression test `d5338b52`
+  actually needed.
 
-### 2. Split orchestrator.ts: one jj seam, one metrics finalize — Strong
+### 2. Extract the salvaged-success synthesis block — Worth exploring
 
-**Files.** `extensions/task/orchestrator.ts` (2268 lines — the largest
-module and the largest code churn: 10 commits, ~2434 lines added),
-`extensions/task/workspace.ts`, `extensions/task/metrics.ts`.
+**Files:** extensions/task/orchestrator.ts, salvage block :2823-2892 vs the
+review-disabled success path :2931-3006; `abortedWorkerResult` :355-370;
+`finalizeMetrics` call sites at :2862, :2946, :3146.
 
-**Problem.** The orchestrator is a deep module doing four jobs at once:
-(a) pure decision functions (fix-loop, spec split, overlap
-classification, finalization triage — well tested), (b) jj access, (c)
-metrics assembly, and (d) two ~480-line run closures (`executeTask`'s
-parallel path, `executeSingle`). Jobs (b) and (c) leak complexity into
-the interface:
+**Problem.** Commit `0ab3c58e` created the ~70-line salvaged-success block by
+cloning the existing success tail: rescue (:2831), `runVerification` (:2832),
+commit-id recovery, diff stat, `finalizeMetrics({…assemble…})` (:2862-2888),
+and the big return object — all mirrored at :2932-3006 with the yield-payload
+fields substituted. Commit `d5338b52` changed none of that structure. The clone
+is mostly faithful, which is the problem: the `assemble` payloads (:2862-2888
+vs :2946-2972) are ~26 near-identical lines where the meaningful deltas (zeroed
+`worker` from `abortedWorkerResult()` vs the real payload, recovered
+`commitIds` vs `worker.yield.commit_ids`, synthesized `filesChanged` via
+`filesChangedBetween` vs the reported list) sit inline among boilerplate. The
+seams show: a stray trailing space inside the caveat template literal
+(orchestrator.ts:2900) and the mis-indented `shape:` line (:2866, same glitch
+in both blocks) are classic copy-paste fossils. Is the extraction clean?
+Partially — the *metrics assembly* half extracts trivially (a
+`buildAssembleInput(...)` helper absorbing the identical ~25 lines); the
+*return-object* half differs more (disputes, defect adjudication, and
+suspected-spec-defect fields exist only in the non-salvage path), and forcing
+one function over both risks a flag-riddled shallow abstraction that fails the
+deletion test. There is also a third sibling at :3146 (fix-loop path) that
+would anchor the helper.
 
-- **A broken jj seam.** workspace.ts owns the bounded jj adapter
-  (`execJj`: timeout bound, `JJ_EDITOR=true`, timeout detection) — but
-  the orchestrator bypasses it with two raw `execFile("jj", …)` helpers,
-  `headCommitId` and `computeDiff`, which carry *none* of that
-  discipline (no timeout bound, no editor guard). The review-diff path
-  (`computeDiff`) can hang indefinitely while every other jj call in the
-  system is bounded. The `-ignore-working-copy` op-log discipline is
-  documented in both files separately.
-- **Triple metrics assembly.** `finalizeMetrics` is called from three
-  sites in `executeSingle` (finalization-incomplete recovery, no-review
-  path, review path), each spelling out a ~25-field `assemble` object
-  whose fields are nearly identical; `finalizeParallelMetrics` is a
-  fourth near-copy of the same shape.
-- **Duplicated identity setup.** The AI-identity temp-config block
-  (`mkdtemp` + `aiIdentityToml` + `createAiTaskBase`) is written out in
-  both the parallel path and `executeSingle`, and a third copy of the
-  identity file is written inside worker.ts's spawn. The parallel path
-  already extracted its restore (`restoreParallelWorkingCopy`); the
-  single path still inlines its own.
+**Solution.** Extract only the stable core: a `finalizeRunMetrics(...)`
+helper owning the `assemble` payload construction, parameterized by
+`(worker, verification, commits/filesChanged/diffStat, caveat)`. Leave the two
+return objects separate — their divergent fields are real information, not
+duplication. Do this *after* candidate 1, so the helper can key off a typed
+failure code instead of the `noYieldFailure` boolean threaded through the
+block.
 
-**Solution.** Move `headCommitId`/`computeDiff` into workspace.ts through
-`execJj` (the bounded adapter becomes the *only* jj seam); collapse the
-three `finalizeMetrics` call sites into one call fed by a single
-run-state record accumulated as the run progresses; extract the
-identity-base setup/restore into one helper used by both paths and by
-worker.ts. The pure decision functions stay where they are.
+**Benefits.**
+- *Locality:* manifest-shape changes (which happen — see the
+  `suspectedSpecDefects`/`disputes` fields added between the two copies)
+  touch one site instead of three.
+- *Leverage:* moderate; the payoff grows every time a fourth success path
+  appears.
+- *Tests:* test-metrics.ts already pins `buildRunManifest` purely, so the
+  helper inherits hermetic coverage with no new harness.
 
-**Benefits.** *Locality:* jj-call discipline (timeouts, snapshot-op
-rules) is enforced in one module by construction instead of by
-remembering at each call site; identity mechanics live once. *Leverage:*
-one finalize path feeds every outcome (single, parallel, caveat,
-failure) — every future manifest field is added in one place, which is
-the change the module's churn history says happens most. *Tests:* the
-collapsed finalize becomes hermetically testable with fake
-`WorkerResult`s across all four outcomes (today only the e2e exercises
-the wiring). *Deletion test:* deleting the three raw/triplicated paths
-concentrates jj and metrics complexity into their existing deep modules
-— the orchestrator keeps only orchestration and gets deeper as its
-interface shrinks.
+### 3. Make the promptSnippet enumeration contract explicit — Worth exploring
 
-### 3. Extract index.ts's pure core from the extension wiring — Worth exploring
+**Files:** extensions/task/tools/yield.ts :40-46 (snippet + contract comment);
+pi's `node_modules/@earendil-works/pi-coding-agent/dist/core/system-prompt.js`
+:39-41 (`visibleTools = tools.filter((name) => !!toolSnippets?.[name])`);
+extensions/task/tools/checklist.ts :172; extensions/task/test-worker.ts
+:715-725.
 
-**Files.** `extensions/task/index.ts` (1133 lines; the most-touched file
-— 12 commits) and `extensions/task/test-index.ts` (1189 lines, 10
-commits — the second-largest test file).
+**Problem.** Layer 1 of the fix (advertise) works by adding an optional string
+field. The mechanism is silent omission: register a tool without
+`promptSnippet` and it remains fully functional — callable, schema-validated —
+yet invisible in the system prompt's Available-tools list. Nothing warns;
+the only enforcement is a comment in yield.ts explaining the trap, plus a
+hermetic assertion that *this one* tool has the field (test-worker.ts:724-725).
+Where does locality break? To understand why a worker ignores yield(), a reader
+must hold three facts from three places: the prose instruction in
+`WORKER_SYSTEM_PROMPT_BASE` (worker.ts:365-368), the registration detail in
+yield.ts:45, and pi's filter behavior in another package's compiled dist. That
+is exactly the failure `0ab3c58e` shipped with: the prompt said "call yield()
+when complete" while the enumerated toolset omitted yield, and weak models
+concluded the tool did not exist. The interface is shallow in the vocabulary's
+sense — the complexity (visibility rules) leaks out of the module entirely.
 
-**Problem.** index.ts mixes two jobs: pi-runtime wiring (tool
-registration, flags, `/task-budget`, session-start hooks, map injection)
-and a large pure core (budget resolution chain, `taskToolSchema`,
-`taskResultToToolReturn`, `summarizeResult`, `completionSummaryLine`,
-`deriveRunMetrics`, `readBudgetOverride`, `readSessionTokensBefore`,
-workflow-contract text). The pure core is hermetically tested *through*
-the wiring file, so test-index.ts has grown to mirror it. Two concrete
-frictions: every feature (tiers, personas, summaries, pre-dispatch
-tokens) lands in the same file, making it the likeliest overlap-conflict
-point for parallel sub_specs workers; and the file's interface (what the
-extension runtime needs) is buried under logic the runtime never sees.
-The codebase already proved the pattern works: progress.ts was extracted
-the same way and stayed clean.
+**Solution.** Options in ascending scope: (a) a local registration wrapper in
+this extension that throws (or logs loudly) when a tool marked as
+completion-critical lacks a `promptSnippet`; (b) extend the hermetic suite to
+enumerate every tool file under `tools/` and assert a snippet, so the next
+tool cannot regress; (c) upstream: make `promptSnippet` required in
+`registerTool`, converting silent omission into a load-time error. (a)+(b) are
+an afternoon; (c) is the deep fix and belongs in pi itself, since the
+filter-at-a-distance design burns every embedding, not just this one.
 
-**Solution.** Move the pure core into one or two leaf modules (e.g.
-budget resolution + tool schema in one, result mapping + summary
-rendering in another) with zero pi imports; index.ts keeps only the
-`default export` wiring and re-exports. No behavior change.
+**Benefits.**
+- *Locality:* tool visibility becomes decidable inside the tool's own file.
+- *Leverage:* one guard protects all future worker-side tools (checklist,
+  dispute, findings already carry snippets — checklist.ts:172 — so the pattern
+  is established but unenforced).
+- *Tests:* option (b) is a pure fs+assert addition to test-worker.ts; zero
+  LLM, microseconds.
 
-**Benefits.** *Locality:* summary/budget changes stop touching the
-extension entry point; parallel workers dispatching against disjoint
-scopes collide less often on the hottest file. *Leverage:* moderate —
-this is mostly risk reduction and clarity, not new capability. *Tests:*
-the pure suite imports leaf modules directly; wiring-shape tests shrink
-to the registration surface. *Deletion test:* borderline — the logic
-moves rather than concentrates, so this is the weakest of the three
-"Strong/Worth exploring" candidates by the deletion test; its value is
-churn-risk reduction on the most-touched file, not depth.
+### 4. Move the nudge-once-then-fail policy out of the session runner — Speculative
 
-### 4. Delete the legacy single-workspace merge path — Worth exploring
+**Files:** extensions/task/worker.ts (`decideIdleAction` :440-448, dispatch in
+the event loop :1069-1083, `WORKER_IDLE_NUDGE_PROMPT` :347-348,
+`AGENT_SETTLED_EVENT` :338-344); consumer at orchestrator.ts:2823-2830.
 
-**Files.** `extensions/task/workspace.ts` (`mergeWorkspace`, ~50 lines)
-and `extensions/task/test-workspace.ts` (its only caller).
+**Problem.** Detection and policy are fused. Detection genuinely belongs in
+worker.ts: only the RPC event stream observes `agent_settled` without a
+captured payload (worker.ts:338-344 documents why the watchdog must exist —
+settled sessions otherwise hang the orchestrator forever). But the *policy* —
+nudge exactly once with a specific prose reminder, then fail the run — is a
+workflow decision, and it lives inline in `spawnWorkerSession`'s event loop
+beside stdin writes and listener dispatch (:1073-1081). Meanwhile the
+compensating policy (salvage instead of accept the failure) lives in the
+orchestrator, reachable only through the string-matching adapter of candidate
+1. The session-lifecycle concern and the run-management concern meet at the
+worst possible point: a thrown, decorated `Error`. The pure
+`decideIdleAction` extraction is good (hermetically tested, cited in the
+comment at :1069-1071) — the residual leak is that its output drives a hard
+`failWorker(NO_YIELD_FAILURE)` instead of surfacing a structured terminal
+outcome the caller could weigh.
 
-**Problem.** `mergeWorkspace` (one workspace squashed per call) was
-superseded by `mergeWorkspacesAtomic` (R1: every workspace's commits
-land in ONE jj operation — the design doc explicitly retired the
-incremental shape because a mid-loop squash failure leaves a partial
-merge). Production calls only the atomic variant; `mergeWorkspace`
-survives solely inside test-workspace.ts scenarios. Two merge entry
-points sharing `assertWorkspacesConsumed` means merge invariants are
-exercised through a shape production never runs — a shallow module whose
-interface promises behavior nobody consumes.
+**Solution.** Give `WorkerSession` a typed terminal outcome — a union such as
+`{ kind: "yielded", payload } | { kind: "failed", code: WorkerFailureCode, diagnostics }` —
+consumed by the orchestrator, with `throw` reserved for truly exceptional
+transport failures. The idle-watchdog policy (nudge count, prompt text) becomes
+a `WorkerOptions` knob defaulting to current behavior, so future tiers can
+tighten or loosen it without touching the event loop. Note honestly: this is
+candidate 1's type hierarchy carried one level up the stack; on its own it is
+rearrangement, which is why it is Speculative alone and Strong as the second
+half of candidate 1.
 
-**Solution.** Delete `mergeWorkspace`; re-express its test scenarios
-(conflict surfacing, id re-resolution, stale-target divergence) as
-one-workspace calls through `mergeWorkspacesAtomic` (the atomic variant
-accepts a single workspace unchanged).
-
-**Benefits.** *Locality:* one merge entry point, one set of invariants
-to reason about. *Leverage:* small but structural — future merge changes
-can no longer drift between two implementations. *Tests:* the test
-suite exercises the production shape exclusively (its churn — 8 commits,
-third-highest among tests — partly reflects maintaining both).
-*Deletion test:* clean pass — deleting it removes duplicated invariant
-surface and its scenarios survive on the real path; nothing of value
-disappears.
-
-### 5. Collapse the options-plumbing chain into a resolved run config — Speculative
-
-**Files.** `extensions/task/index.ts` → `extensions/task/orchestrator.ts`
-(`ExecuteTaskOptions`, ~30 fields) → `extensions/task/worker.ts`
-(`WorkerOptions`).
-
-**Problem.** Every new knob (tier wall, tool timeout, verification
-grace, AI identity, sandbox, lifecycle timestamps) is hand-threaded as
-optional fields through three or four layers, re-mapped at each hop
-(index.ts maps `tierConfig` → `ExecuteTaskOptions`; `executeTask`
-re-maps ~20 of them into `executeSingle`'s opts). This plumbing is a
-contributor to the orchestrator/index churn ranking — it is the part of
-those files that grows even when no logic changes.
-
-**Solution.** Resolve one immutable run-config object at the top
-(tier + defaults + overrides, all fields required) and pass it down;
-layers read fields instead of re-mapping them.
-
-**Benefits.** *Locality:* a new knob is added once, at resolution.
-*Leverage:* moderate; mostly removes boilerplate. *Tests:* resolution
-becomes one pure function with a hermetic golden shape. *Deletion test:*
-weak — the threading is explicit and typed, and the design doc's "code
-orchestrates" principle favors visible plumbing over clever indirection;
-deleting it concentrates little complexity because the copies are
-mechanical. Listed because the churn data points at it, but it should be
-done only *as part of* candidate 2 — standalone, it risks a premature
-abstraction.
+**Benefits.**
+- *Locality:* retry/nudge policy edits stop requiring comprehension of the
+  JSONL pump.
+- *Leverage:* the same outcome union serves parallel workers
+  (packages/core-v2/src/daemon/parallel.ts consumes failures today) and the
+  review fork (review.ts), which currently re-derive failure meaning from
+  error objects.
+- *Tests:* `decideIdleAction` tests survive unchanged; outcome mapping adds
+  pure cases.
 
 ## Top recommendation
 
-**Do candidate 1 first — the shared pi-RPC session runner**
-(worker.ts + review.ts).
+**Do candidate 1 first — the typed failure-code hierarchy**, folded forward
+into candidate 4's terminal-outcome union when time allows.
 
-Why this one over the others:
+Why this one:
 
-- **It attacks the project's recurring bug class.** The design doc's
-  failure-path history (todo #74 no-progress, todo #80 first-event,
-  todo #86 unified diagnostics, the R4 SIGKILL dead-code fix, the R7/R8
-  cleanup rules) is almost entirely session-lifecycle bugs — and every
-  fix was implemented twice, once per runner, with the second site
-  citing the first. Two copies of error-prone wiring is not a style
-  issue; it is the demonstrated failure mode.
-- **The seam is already half built.** The pure cores (`decideIdleAction`,
-  `decideNoProgressAction`, `reduceWorkerEvent`, `attachJsonlReader`,
-  `buildAbortError`) are shared today; only the imperative shell
-  duplicates. That makes the refactor bounded and reviewable — and the
-  shared deciders' hermetic tests already pin the decision logic, so the
-  extraction can be verified against them.
-- **It unlocks the documented next step for free.** Personas are the
-  design doc's stated extension point ("personas differ only in prompt
-  and output shape; the context mechanism is shared"). A shared runner
-  is exactly that shared context mechanism; every future reviewer or
-  specialized session inherits the full watchdog suite instead of
-  re-deriving it.
-- **Candidate 2 can run alongside it.** The two touch disjoint files
-  (worker.ts/review.ts vs orchestrator.ts/workspace.ts/metrics.ts), so
-  they can be dispatched as parallel sub_specs; candidate 2's
-  finalize-consolidation is the natural second ticket. Candidates 3-4
-  are smaller follow-ups; candidate 5 waits for candidate 2.
+- **It is the seam that demonstrably broke.** `d5338b52` is not a hypothetical:
+  the string-matched salvage net was dead in production while the hermetic
+  suite stayed green, because tests built their errors from the same constant
+  they asserted against (test-orchestrator.ts:391-397). Every other candidate
+  improves code that already works; this one removes a proven silent-failure
+  mode from the critical path between a worker's death and the run's verdict.
+- **Everything else hangs off it.** The salvage gate
+  (orchestrator.ts:2829-2830), the failure artifact, the caveat wording
+  (:2886-2890), and any future parallel-run classification
+  (`classifyWorkerFailures`, :217) all consume the failure's identity. Making
+  identity a union member raises the floor for all of them at once — maximum
+  leverage per localized edit.
+- **It matches the project's own stated principle.** The design doc's "typed
+  contracts" rule is applied rigorously everywhere else (YieldSchema,
+  BatchOutputContract, RunManifest); the failure channel is the one boundary
+  still negotiated in prose. Candidate 2 should follow immediately (its
+  extraction is cleaner once keyed on a code, not a boolean), candidates 3 and
+  4 queue behind them.
