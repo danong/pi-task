@@ -557,12 +557,27 @@ export function summarizeToolArgs(args: unknown): string {
 }
 
 export interface WorkerFailureDiagnostics {
+	/** Human-readable cause line (the message's first section). */
 	cause: string;
+	/**
+	 * Structured failure identity — the contract consumers must match on
+	 * (architecture-review candidate 1): the message is multi-line and
+	 * decorative, so string-matching it is how the no-yield salvage went
+	 * silently dead. Null = external/generic abort (no watchdog fired).
+	 */
+	code: WorkerFailureCode | null;
 	turns: number;
 	idleMs: number;
 	lastTool: { name: string; args: string } | null;
 	stderrTail: string;
 }
+
+/**
+ * The watchdog failure classes a worker run can die of. Consumers
+ * (orchestrator salvage/artifacts) switch on this union instead of
+ * matching cause text — adding a class is a compile-guided change.
+ */
+export type WorkerFailureCode = "no_yield" | "wall_timeout" | "no_progress" | "tool_timeout";
 
 /**
  * The failure message a worker abort produces (todo #86): the cause line
@@ -579,14 +594,17 @@ export function workerFailureMessage(d: WorkerFailureDiagnostics): string {
 /**
  * Build the abort rejection: the message plus a structured `diagnostics`
  * property the orchestrator reads for the failure artifact (todo #86).
+ * `code` is the structured identity (null = generic/external abort); the
+ * cause is display text only.
  */
 export function buildAbortError(
-	opts: Omit<WorkerFailureDiagnostics, "cause"> & { cause: string | null },
+	opts: Omit<WorkerFailureDiagnostics, "cause" | "code"> & { code: WorkerFailureCode | null; cause: string | null },
 ): Error {
 	const diagnostics: WorkerFailureDiagnostics = {
 		cause: opts.cause ?? "Worker was aborted",
+		code: opts.code,
 		turns: opts.turns,
-		idleMs: opts.idleMs,
+ 		idleMs: opts.idleMs,
 		lastTool: opts.lastTool,
 		stderrTail: opts.stderrTail,
 	};
@@ -967,6 +985,7 @@ export function spawnWorkerSession(opts: WorkerOptions): WorkerSession {
 	// Failure diagnostics (todo #86): the cause recorded by whichever watchdog
 	// fired first, plus the last observed tool call for the abort message.
 	let failureCause: string | null = null;
+	let failureCode: WorkerFailureCode | null = null;
 	let lastTool: { name: string; args: string } | null = null;
 
 	// Request/response correlation for RPC commands (e.g. get_state, used to
@@ -1039,7 +1058,7 @@ export function spawnWorkerSession(opts: WorkerOptions): WorkerSession {
 				if (action === "abort") {
 					clearTimeout(wallGraceTimer);
 					wallGraceTimer = null;
-					failWorker(wallTimeoutErrorMessage(wallTimeoutMs));
+					failWorker("wall_timeout", wallTimeoutErrorMessage(wallTimeoutMs));
 				}
 			}
 		}
@@ -1077,7 +1096,7 @@ export function spawnWorkerSession(opts: WorkerOptions): WorkerSession {
 					// stdin may already be closed — the close handler reports the exit.
 				}
 			} else if (action === "fail") {
-				failWorker(NO_YIELD_FAILURE);
+				failWorker("no_yield", NO_YIELD_FAILURE);
 			}
 		}
 
@@ -1138,6 +1157,7 @@ export function spawnWorkerSession(opts: WorkerOptions): WorkerSession {
 			// "Worker was aborted" could swallow the specific cause.
 			rejectResult(
 				buildAbortError({
+					code: failureCode,
 					cause: failureCause,
 					turns: state.usage.turns,
 					idleMs: Math.max(0, Date.now() - lastActivityMs),
@@ -1209,7 +1229,8 @@ export function spawnWorkerSession(opts: WorkerOptions): WorkerSession {
 	// deterministic rejection with diagnostics. Previously each watchdog
 	// rejected directly, racing the close handler — the generic "Worker was
 	// aborted" (settleWorker) could swallow the specific cause.
-	const failWorker = (cause: string): void => {
+	const failWorker = (code: WorkerFailureCode, cause: string): void => {
+		failureCode = code;
 		failureCause = cause;
 		failed = true;
 		abort();
@@ -1270,6 +1291,7 @@ export function spawnWorkerSession(opts: WorkerOptions): WorkerSession {
 			wallGraceTimer = setTimeout(() => {
 				wallGraceTimer = null;
 				failWorker(
+					"wall_timeout",
 					`worker wall-clock budget (${formatDuration(wallTimeoutMs)}) expired during verification; ` +
 						`the verification grace (${formatDuration(wallGraceMs)}) was also exhausted — aborting. ` +
 						`A verification suite that consistently outruns the tier wall needs a larger wall_timeout_ms.`,
@@ -1277,7 +1299,7 @@ export function spawnWorkerSession(opts: WorkerOptions): WorkerSession {
 			}, wallGraceMs);
 			return;
 		}
-		failWorker(wallTimeoutErrorMessage(wallTimeoutMs));
+		failWorker("wall_timeout", wallTimeoutErrorMessage(wallTimeoutMs));
 	}, wallTimeoutMs);
 
 	// ─── No-progress watchdog (R1, todo #74) ────────────────────
@@ -1305,7 +1327,7 @@ export function spawnWorkerSession(opts: WorkerOptions): WorkerSession {
 			noProgressFired = true;
 			if (noProgressTimer) clearInterval(noProgressTimer);
 			noProgressTimer = null;
-			failWorker(noProgressErrorMessage(noProgressTimeoutMs, wallTimeoutMs));
+			failWorker("no_progress", noProgressErrorMessage(noProgressTimeoutMs, wallTimeoutMs));
 		}
 	}, NO_PROGRESS_CHECK_INTERVAL_MS);
 
@@ -1334,7 +1356,7 @@ export function spawnWorkerSession(opts: WorkerOptions): WorkerSession {
 			toolTimeoutFired = true;
 			if (toolTimeoutTimer) clearInterval(toolTimeoutTimer);
 			toolTimeoutTimer = null;
-			failWorker(toolTimeoutErrorMessage(toolTimeoutMs, oldest.name, oldest.args));
+			failWorker("tool_timeout", toolTimeoutErrorMessage(toolTimeoutMs, oldest.name, oldest.args));
 		}
 	}, TOOL_TIMEOUT_CHECK_INTERVAL_MS);
 

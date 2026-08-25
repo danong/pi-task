@@ -439,6 +439,7 @@ export async function forkedReview(opts: ForkReviewOptions): Promise<ReviewOutco
 			// close handler is the single rejection point for watchdog aborts.
 			rejectOutcome(
 				buildAbortError({
+					code: null,
 					cause: failureCause,
 					turns: state.usage.turns,
 					idleMs: Math.max(0, Date.now() - lastActivityMs),

@@ -835,7 +835,14 @@ idle, external abort) records its CAUSE and aborts; the process-close handler
 produces the single, deterministic rejection carrying the cause plus the
 worker's final state — turn count, idle time, the last tool call (name +
 truncated args), and the stderr tail (`buildAbortError` in worker.ts; the
-review runner mirrors it). The old watchdogs rejected directly, racing the
+review runner mirrors it). Each rejection also carries a structured
+`diagnostics.code` (`WorkerFailureCode`: "no_yield" | "wall_timeout" |
+"no_progress" | "tool_timeout", null for generic/external aborts) —
+consumers (the orchestrator's verified-salvage classification via
+`isNoYieldFailure`, failure artifacts) must match on this union, never on
+the cause text: the message is multi-line and decorative, and string-
+matching it is how the no-yield salvage once went silently dead while the
+hermetic suite stayed green. The old watchdogs rejected directly, racing the
 close handler, so the generic "Worker was aborted" could swallow the specific
 cause. The task tool appends the last progress view to the failure text
 (`failureMessageWithProgress`), and — when a metricsDir is configured — the

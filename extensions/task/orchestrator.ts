@@ -30,7 +30,6 @@ import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import {
 	CHECKLIST_EXTENSION_PATH,
-	NO_YIELD_FAILURE,
 	buildWorkerSystemPrompt,
 	spawnWorkerSession,
 	spawnWorkerSessionResilient,
@@ -191,13 +190,13 @@ export function isFinalizationIncomplete(progress: ChecklistProgress | null): bo
 /**
  * True when a worker failure is the idle-watchdog no-yield class (the
  * worker settled twice without calling yield()). Matches the structured
- * `diagnostics.cause` that buildAbortError attaches — the raw message is
- * MULTI-LINE (cause + turns/idle + last tool + stderr tail), so equality
- * on the message never matches. Pure — hermetically tested.
+ * `diagnostics.code` union member — NOT the cause text (multi-line,
+ * decorative) and not the message. Null-code failures (external aborts)
+ * are never classified. Pure — hermetically tested.
  */
 export function isNoYieldFailure(err: unknown): boolean {
-	const diag = (err as { diagnostics?: { cause?: unknown } } | null)?.diagnostics;
-	return diag?.cause === NO_YIELD_FAILURE;
+	const diag = (err as { diagnostics?: { code?: unknown } } | null)?.diagnostics;
+	return diag?.code === "no_yield";
 }
 
 /**

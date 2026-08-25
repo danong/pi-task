@@ -388,23 +388,33 @@ function testNoYieldFailureClass(errors: string[]): void {
 	// message itself is multi-line (cause + turns/idle + last tool), so the
 	// salvage trigger must match diagnostics.cause, never the message.
 	const err = buildAbortError({
+		code: "no_yield",
 		cause: NO_YIELD_FAILURE,
 		turns: 11,
 		idleMs: 8000,
 		lastTool: { name: "bash", args: "cat /tmp/x" },
 		stderrTail: "",
 	});
-	check(isNoYieldFailure(err), "abort error with NO_YIELD_FAILURE diagnostics.cause → no-yield class");
-	check(err.message.includes("turns: 11"), "abort error message is decorated (multi-line) — message equality cannot match");
+	check(isNoYieldFailure(err), "abort error with code no_yield → no-yield class");
+	check(err.message.includes("turns: 11"), "abort error message is decorated (multi-line) — message matching cannot be the contract");
 	check(!isNoYieldFailure(new Error(NO_YIELD_FAILURE)),
 		"bare Error with matching text is NOT classified (no diagnostics)");
 	check(isNoYieldFailure(buildAbortError({
-		cause: "wall-timeout: exceeded 30m",
+		code: "wall_timeout",
+		cause: "worker wall-clock budget expired",
 		turns: 50,
 		idleMs: 0,
 		lastTool: null,
 		stderrTail: "",
-	})) === false, "other watchdog failures → not no-yield class");
+	})) === false, "other failure codes → not no-yield class");
+	check(isNoYieldFailure(buildAbortError({
+		code: null,
+		cause: null,
+		turns: 3,
+		idleMs: 0,
+		lastTool: null,
+		stderrTail: "",
+	})) === false, "null-code external abort → not no-yield class");
 	console.log("✓ isNoYieldFailure: structured diagnostics.cause matching (message-decorated abort rejections)");
 }
 

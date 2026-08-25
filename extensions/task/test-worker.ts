@@ -569,6 +569,7 @@ export async function runTests(): Promise<void> {
 	// empty sections are omitted.
 	{
 		const msg = workerFailureMessage({
+			code: "wall_timeout",
 			cause: "Worker wall-timeout: ...",
 			turns: 47,
 			idleMs: 9 * 60_000,
@@ -579,17 +580,17 @@ export async function runTests(): Promise<void> {
 		check(msg.includes("turns: 47 | idle: 9m"), `turns+idle line, got: ${msg}`);
 		check(msg.includes("last tool: bash("), "message carries the last tool");
 		check(msg.includes("stderr (last 2048 chars):"), "message carries the stderr tail");
-		const bare = workerFailureMessage({ cause: "c", turns: 0, idleMs: 0, lastTool: null, stderrTail: "" });
+		const bare = workerFailureMessage({ code: null, cause: "c", turns: 0, idleMs: 0, lastTool: null, stderrTail: "" });
 		check(!bare.includes("last tool") && !bare.includes("stderr"), "empty sections are omitted");
 	}
 	// buildAbortError: message + structured diagnostics on the error.
 	{
-		const err = buildAbortError({ cause: null, turns: 3, idleMs: 1000, lastTool: null, stderrTail: "x" });
+		const err = buildAbortError({ code: null, cause: null, turns: 3, idleMs: 1000, lastTool: null, stderrTail: "x" });
 		check(err.message.startsWith("Worker was aborted"),
 			`null cause defaults to the generic message, got: ${err.message}`);
-		const d = (err as unknown as { diagnostics?: { cause: string; turns: number } }).diagnostics;
-		check(d?.cause === "Worker was aborted" && d?.turns === 3, "diagnostics carry cause + turns");
-		const specific = buildAbortError({ cause: "no progress", turns: 1, idleMs: 0, lastTool: null, stderrTail: "" });
+		const d = (err as unknown as { diagnostics?: { code: string | null; cause: string; turns: number } }).diagnostics;
+		check(d?.cause === "Worker was aborted" && d?.turns === 3 && d?.code === null, "diagnostics carry cause + code + turns");
+		const specific = buildAbortError({ code: "no_progress", cause: "no progress", turns: 1, idleMs: 0, lastTool: null, stderrTail: "" });
 		check(specific.message.startsWith("no progress"), "specific cause wins over the generic");
 	}
 
