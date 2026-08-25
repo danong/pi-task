@@ -189,6 +189,18 @@ export function isFinalizationIncomplete(progress: ChecklistProgress | null): bo
 }
 
 /**
+ * True when a worker failure is the idle-watchdog no-yield class (the
+ * worker settled twice without calling yield()). Matches the structured
+ * `diagnostics.cause` that buildAbortError attaches — the raw message is
+ * MULTI-LINE (cause + turns/idle + last tool + stderr tail), so equality
+ * on the message never matches. Pure — hermetically tested.
+ */
+export function isNoYieldFailure(err: unknown): boolean {
+	const diag = (err as { diagnostics?: { cause?: unknown } } | null)?.diagnostics;
+	return diag?.cause === NO_YIELD_FAILURE;
+}
+
+/**
  * R2: decide a parallel run's response to worker failures from the failed
  * workers' checklist progress. Every failed worker finalization-incomplete
  * → "merge": the committed work is complete, so the run proceeds to the
@@ -2814,7 +2826,7 @@ async function executeSingle(
 			// that settled twice without calling yield() often FINISHED the work
 			// (weak models end turns with prose instead of yielding) — the tree,
 			// not the missing payload, decides via the same gate.
-			const noYieldFailure = err instanceof Error && err.message === NO_YIELD_FAILURE;
+			const noYieldFailure = isNoYieldFailure(err);
 			if (noYieldFailure || isFinalizationIncomplete(checklistCtrl.latest)) {
 				await rescueAbortedWorkBestEffort(cwd, err);
 				const verification = await runVerification(spec.verification, cwd, verifyTimeout, signal);

@@ -21,6 +21,7 @@ import {
 	parseDiffStat,
 	classifyOverlapDiffs,
 	isFinalizationIncomplete,
+	isNoYieldFailure,
 	classifyWorkerFailures,
 	buildRecoveryGuide,
 	resolveReviewGate,
@@ -36,6 +37,10 @@ import {
 	BASELINE_SIGNATURE_CAP,
 	type VerificationBaselineEntry,
 } from "./orchestrator.ts";
+import {
+	buildAbortError,
+	NO_YIELD_FAILURE,
+} from "./worker.ts";
 import { DEFAULT_PERSONA, getPersona, type Persona } from "./personas.ts";
 import { DEFAULT_TASK_SHAPES } from "./config.ts";
 import type { ChecklistProgress } from "./checklist-relay.ts";
@@ -374,6 +379,35 @@ function testClassifyOverlapDiffs(errors: string[]): void {
  *  classification — an aborted worker whose checklist relay showed ALL
  *  requirements done at abort (the worker committed everything and was
  *  verifying/yielding) drives the merge attempt instead of a flat failure. */
+function testNoYieldFailureClass(errors: string[]): void {
+	const check = (cond: boolean, msg: string): void => {
+		if (!cond) errors.push(msg);
+	};
+
+	// The abort rejection carries the cause in structured diagnostics — the
+	// message itself is multi-line (cause + turns/idle + last tool), so the
+	// salvage trigger must match diagnostics.cause, never the message.
+	const err = buildAbortError({
+		cause: NO_YIELD_FAILURE,
+		turns: 11,
+		idleMs: 8000,
+		lastTool: { name: "bash", args: "cat /tmp/x" },
+		stderrTail: "",
+	});
+	check(isNoYieldFailure(err), "abort error with NO_YIELD_FAILURE diagnostics.cause → no-yield class");
+	check(err.message.includes("turns: 11"), "abort error message is decorated (multi-line) — message equality cannot match");
+	check(!isNoYieldFailure(new Error(NO_YIELD_FAILURE)),
+		"bare Error with matching text is NOT classified (no diagnostics)");
+	check(isNoYieldFailure(buildAbortError({
+		cause: "wall-timeout: exceeded 30m",
+		turns: 50,
+		idleMs: 0,
+		lastTool: null,
+		stderrTail: "",
+	})) === false, "other watchdog failures → not no-yield class");
+	console.log("✓ isNoYieldFailure: structured diagnostics.cause matching (message-decorated abort rejections)");
+}
+
 function testFinalizationIncomplete(errors: string[]): void {
 	const check = (cond: boolean, msg: string): void => {
 		if (!cond) errors.push(msg);
@@ -727,6 +761,7 @@ export async function runTests(): Promise<void> {
 	testParseDiffStat(errors);
 	testClassifyOverlapDiffs(errors);
 	testFinalizationIncomplete(errors);
+	testNoYieldFailureClass(errors);
 	testRecoveryGuide(errors);
 	testVerificationLifecycle(errors);
 	await testVerificationBaselineCapture(errors);
