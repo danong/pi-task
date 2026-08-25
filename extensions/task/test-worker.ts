@@ -696,7 +696,33 @@ export async function runTests(): Promise<void> {
 			"worker prompt keeps the orientation core (checklist, jj commits, yield)");
 		check(/Batch independent tool calls/.test(p) && /head -c ~2000/.test(p) && /at most twice/.test(p),
 			"worker prompt carries the efficiency guidance (batch, truncate, test-sparing)");
+		// Termination rule (no-yield salvage class): the prompt must state that
+		// ending a turn without a tool call fails the run — prose-only endings
+		// were the dominant failure mode on weak models.
+		check(/TERMINATION RULE/.test(p) && /without a tool call fails the run/.test(p),
+			"worker prompt pins the termination rule (no prose-only turn endings)");
 		console.log("✓ worker system prompt: TDD nudge (failing test → verify fails → red-green-refactor) + orientation core + efficiency");
+	}
+
+	// No-yield failure contract: the orchestrator recognizes this exact cause
+	// to trigger the verified-salvage path — the constant must stay in sync
+	// with what the idle watchdog fails with (both reference NO_YIELD_FAILURE).
+	{
+		const { NO_YIELD_FAILURE } = await import("./worker.ts");
+		check(NO_YIELD_FAILURE === "worker ended without calling yield",
+			"NO_YIELD_FAILURE is the idle-watchdog cause string");
+
+		// The yield tool must carry a promptSnippet: pi's system-prompt builder
+		// enumerates ONLY tools that have one — without it the worker was told
+		// to "call yield() when complete" while Available tools omitted yield.
+		const captured: Array<{ name?: string; promptSnippet?: string }> = [];
+		const fakePi = { registerTool: (t: unknown) => captured.push(t as { name?: string; promptSnippet?: string }) };
+		const mod = await import("./tools/yield.ts");
+		(mod.default as (pi: unknown) => void)(fakePi);
+		const yieldTool = captured.find((t) => t.name === "yield");
+		check(yieldTool !== undefined, "yield extension registers the yield tool");
+		check(typeof yieldTool?.promptSnippet === "string" && yieldTool.promptSnippet.length > 10,
+			"yield tool declares a promptSnippet (system-prompt enumeration gate)");
 	}
 
 	if (errors.length > 0) {

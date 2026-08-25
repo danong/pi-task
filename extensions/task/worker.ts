@@ -345,6 +345,15 @@ const WORKER_IDLE_NUDGE_PROMPT =
 	"Your task turn ended without calling yield(). Call yield() now with your typed result — the run cannot complete without it.";
 
 /**
+ * The exact failure cause for a worker that settled twice without calling
+ * yield() (idle watchdog). Exported so the orchestrator can recognize this
+ * failure class and salvage a verified tree instead of hard-failing — the
+ * work is often already done (the failure is purely a completion-signal
+ * gap, seen on weak models that end turns with prose).
+ */
+export const NO_YIELD_FAILURE = "worker ended without calling yield";
+
+/**
  * The worker system prompt (design doc: minimal, ~150 tokens). Behavior is
  * enforced by tools, not prose — this only orients the worker. Callers can
  * override via WorkerOptions.systemPrompt.
@@ -355,6 +364,10 @@ const WORKER_IDLE_NUDGE_PROMPT =
  */
 const WORKER_SYSTEM_PROMPT_BASE = `You are implementing a coding task. Explore the codebase, make changes,
 and call yield() when complete.
+
+TERMINATION RULE: never end a turn with plain prose. Every turn must end by
+calling a tool; when all requirements are met and verification passes, call
+yield() — a turn that ends without a tool call fails the run.
 
 Make atomic jj commits as you complete each requirement.
 Run verification commands after your changes.
@@ -1064,7 +1077,7 @@ export function spawnWorkerSession(opts: WorkerOptions): WorkerSession {
 					// stdin may already be closed — the close handler reports the exit.
 				}
 			} else if (action === "fail") {
-				failWorker("worker ended without calling yield");
+				failWorker(NO_YIELD_FAILURE);
 			}
 		}
 

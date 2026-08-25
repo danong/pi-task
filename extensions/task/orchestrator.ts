@@ -30,6 +30,7 @@ import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import {
 	CHECKLIST_EXTENSION_PATH,
+	NO_YIELD_FAILURE,
 	buildWorkerSystemPrompt,
 	spawnWorkerSession,
 	spawnWorkerSessionResilient,
@@ -343,7 +344,7 @@ function abortedWorkerResult(): WorkerResult {
 	return {
 		yield: {
 			files_changed: [],
-			summary: "worker aborted during finalization (no yield payload)",
+			summary: "worker ended without a yield payload (verified salvage)",
 			commit_ids: [],
 			deviations: [],
 		},
@@ -2802,13 +2803,19 @@ async function executeSingle(
 			if (swapError) throw swapError;
 			// R2 (third outcome): finalization-incomplete — the checklist relay
 			// showed ALL requirements done at abort, so the worker committed
-			// everything and was verifying/yielding when it was killed. Rescue
+ 			// everything and was verifying/yielding when it was killed. Rescue
 			// any uncommitted tail first (a dirty WC would otherwise fail the
 			// gate), then run verification on the committed tree post-abort:
 			// pass → success-with-caveat (the worker's commit ids); fail → the
 			// current failure path below. Never claim success without the
 			// verification gate.
-			if (isFinalizationIncomplete(checklistCtrl.latest)) {
+			//
+			// Same treatment for the idle-watchdog no-yield failure: a worker
+			// that settled twice without calling yield() often FINISHED the work
+			// (weak models end turns with prose instead of yielding) — the tree,
+			// not the missing payload, decides via the same gate.
+			const noYieldFailure = err instanceof Error && err.message === NO_YIELD_FAILURE;
+			if (noYieldFailure || isFinalizationIncomplete(checklistCtrl.latest)) {
 				await rescueAbortedWorkBestEffort(cwd, err);
 				const verification = await runVerification(spec.verification, cwd, verifyTimeout, signal);
 				if (verification.passed) {
@@ -2877,7 +2884,9 @@ async function executeSingle(
 						manifestPath: metrics.manifestPath,
 						durationMs: Date.now() - runStartMs,
 						caveat:
-							`worker aborted during finalization; verified post-merge — ` +
+							(noYieldFailure
+								? `worker ended without calling yield; salvaged — ` 
+								: `worker aborted during finalization; verified post-merge — `) +
 							`${commitIds.length} commit(s): ${commitIds.join(", ") || "(none)"}`,
 					};
 				}

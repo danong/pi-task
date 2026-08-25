@@ -37,6 +37,13 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "yield",
 		label: "Yield",
+		// promptSnippet is REQUIRED for the tool to appear in pi's system-prompt
+		// "Available tools" enumeration (system-prompt.js filters on it). Without
+		// it the worker was told to "call yield() when complete" while the listed
+		// toolset omitted yield — weak models concluded no completion tool exists
+		// and ended turns with prose.
+		promptSnippet:
+			"Return your typed result and terminate the session — your final action once all requirements are met and verification passes",
 		description:
 			"Return your typed result and terminate the session. " +
 			"Call this when all requirements are complete and verification has passed. " +
