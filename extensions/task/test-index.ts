@@ -51,6 +51,7 @@ import {
 	renderSubSpecObject,
 	resolveBudgetMode,
 	resolveBudgetTier,
+	DEFAULT_BUDGET_TIERS,
 	resolveSubSpecs,
 	summarizeResult,
 	taskResultToToolReturn,
@@ -198,16 +199,16 @@ function testBudgetResolution(errors: string[]): void {
 		"normalize degrades invalid/undefined to auto");
 
 	// Locked CLI flag wins over everything.
-	check(resolveBudgetTier("free", "full") === "free", "locked flag beats the model param");
-	check(resolveBudgetTier("economy", undefined) === "economy", "locked flag alone");
+	check(resolveBudgetTier("free", "full", undefined, undefined, DEFAULT_BUDGET_TIERS) === "free", "locked flag beats the model param");
+	check(resolveBudgetTier("economy", undefined, undefined, undefined, DEFAULT_BUDGET_TIERS) === "economy", "locked flag alone");
 	// Unlocked flag: the model's budget param is honored.
-	check(resolveBudgetTier("auto", "full") === "full", "param honored when flag is auto");
-	check(resolveBudgetTier(undefined, "economy") === "economy", "param honored when flag unset");
+	check(resolveBudgetTier("auto", "full", undefined, undefined, DEFAULT_BUDGET_TIERS) === "full", "param honored when flag is auto");
+	check(resolveBudgetTier(undefined, "economy", undefined, undefined, DEFAULT_BUDGET_TIERS) === "economy", "param honored when flag unset");
 	// Neither → default tier.
-	check(resolveBudgetTier("auto", "auto") === "full", "auto/auto → default full");
-	check(resolveBudgetTier(undefined, undefined) === "full", "unset/unset → default full");
+	check(resolveBudgetTier("auto", "auto", undefined, undefined, DEFAULT_BUDGET_TIERS) === "full", "auto/auto → default full");
+	check(resolveBudgetTier(undefined, undefined, undefined, undefined, DEFAULT_BUDGET_TIERS) === "full", "unset/unset → default full");
 	// Invalid values degrade to the default.
-	check(resolveBudgetTier("bogus", "bogus") === "full", "invalid values → default");
+	check(resolveBudgetTier("bogus", "bogus", undefined, undefined, DEFAULT_BUDGET_TIERS) === "full", "invalid values → default");
 
 	// Runtime-realistic: getFlag("task-budget") never returns undefined —
 	// the flag is registered with default "auto", so an unset flag arrives
@@ -215,12 +216,12 @@ function testBudgetResolution(errors: string[]): void {
 	// default; the requirement-count heuristic is only reached via
 	// [defaults] budget = "auto".
 	check(resolveBudgetMode("auto", undefined, "full") === "full", "auto flag + full default → full");
-	check(resolveBudgetTier("auto", undefined, "full", 3) === "full", "auto flag + full default → full regardless of count");
-	check(resolveBudgetTier("auto", undefined, "full", 8) === "full", "auto flag + full default → full for big specs too");
-	check(resolveBudgetTier("auto", undefined, "auto", 3) === "economy", "config auto + 3 reqs → economy");
-	check(resolveBudgetTier("auto", undefined, "auto", 8) === "full", "config auto + 8 reqs → full");
-	check(resolveBudgetTier("auto", "economy", "full", 8) === "economy", "locked param beats config default");
-	check(resolveBudgetTier("free", "full", "economy", 8) === "free", "locked flag beats everything");
+	check(resolveBudgetTier("auto", undefined, "full", 3, DEFAULT_BUDGET_TIERS) === "full", "auto flag + full default → full regardless of count");
+	check(resolveBudgetTier("auto", undefined, "full", 8, DEFAULT_BUDGET_TIERS) === "full", "auto flag + full default → full for big specs too");
+	check(resolveBudgetTier("auto", undefined, "auto", 3, DEFAULT_BUDGET_TIERS) === "economy", "config auto + 3 reqs → economy");
+	check(resolveBudgetTier("auto", undefined, "auto", 8, DEFAULT_BUDGET_TIERS) === "full", "config auto + 8 reqs → full");
+	check(resolveBudgetTier("auto", "economy", "full", 8, DEFAULT_BUDGET_TIERS) === "economy", "locked param beats config default");
+	check(resolveBudgetTier("free", "full", "economy", 8, DEFAULT_BUDGET_TIERS) === "free", "locked flag beats everything");
 
 	// ─── Phase 11: resolution over a DYNAMIC tier set ──────────────
 	// A loaded config's tiers define the vocabulary: any tier in the set is
@@ -243,6 +244,21 @@ function testBudgetResolution(errors: string[]): void {
 	// The heuristic never auto-selects the max tier.
 	const maxSet: Record<string, BudgetTierConfig> = { max: tierConfig(), ultra: tierConfig() };
 	check(autoTierForRequirements(3, maxSet) === "ultra", "auto never picks the max tier");
+
+	// Regression (execute-path custom-tier lock): a /task-budget lock on a
+	// tier that exists ONLY in the loaded config (e.g. bench-good in
+	// ~/.pi/agent/config/task.toml) must resolve to that tier. The resolver
+	// requires the loaded set — omitting it made isLockedBudget/normalize
+ // check the BUILT-IN table, so the lock degraded to "auto" and the
+ // requirement heuristic picked economy for small specs.
+ const loadedSet: Record<string, BudgetTierConfig> = {
+ ...DEFAULT_BUDGET_TIERS,
+ "bench-good": tierConfig(),
+ };
+ check(resolveBudgetTier("bench-good", undefined, "bench-good", 1, loadedSet) === "bench-good",
+ "/task-budget lock on a config-only tier beats the auto heuristic");
+ check(resolveBudgetTier("auto", undefined, "bench-good", 1, loadedSet) === "bench-good",
+ "config default naming a config-only tier locks without an explicit lock");
 
 	console.log("✓ resolveBudgetTier: locked flag > locked param > config default; normalize/isLocked; dynamic tier sets");
 }
@@ -398,10 +414,10 @@ X
 	check(resolveBudgetMode(undefined, undefined, "auto") === "auto", "config default auto → auto");
 
 	// resolveBudgetTier: config default + heuristic drive the auto path.
-	check(resolveBudgetTier(undefined, undefined, "economy") === "economy", "config default economy when nothing locks");
-	check(resolveBudgetTier(undefined, undefined, "auto", 3) === "economy", "config auto + 3 reqs → economy");
-	check(resolveBudgetTier(undefined, undefined, "auto", 8) === "full", "config auto + 8 reqs → full");
-	check(resolveBudgetTier("free", undefined, "full", 8) === "free", "locked flag beats heuristic");
+	check(resolveBudgetTier(undefined, undefined, "economy", undefined, DEFAULT_BUDGET_TIERS) === "economy", "config default economy when nothing locks");
+	check(resolveBudgetTier(undefined, undefined, "auto", 3, DEFAULT_BUDGET_TIERS) === "economy", "config auto + 3 reqs → economy");
+	check(resolveBudgetTier(undefined, undefined, "auto", 8, DEFAULT_BUDGET_TIERS) === "full", "config auto + 8 reqs → full");
+	check(resolveBudgetTier("free", undefined, "full", 8, DEFAULT_BUDGET_TIERS) === "free", "locked flag beats heuristic");
 
 	console.log("✓ auto heuristic + lenient counting + config-default resolution (dynamic tiers)");
 }
@@ -457,9 +473,9 @@ function testBudgetOverridePersistence(errors: string[]): void {
 	const flag = "auto"; // CLI flag is untouched by /task-budget
 	const sessionMode = readBudgetOverride(fakeCtx([budgetEntry("economy")])) ?? normalizeBudgetMode(flag);
 	check(sessionMode === "economy", "session_start resolution: stored override wins over the auto flag");
-	const lockedTier = resolveBudgetTier(sessionMode, undefined, "full", 8);
+	const lockedTier = resolveBudgetTier(sessionMode, undefined, "full", 8, DEFAULT_BUDGET_TIERS);
 	check(lockedTier === "economy", "locked session mode must beat config default + auto heuristic");
-	check(resolveBudgetTier(flag, undefined, "full", 8) === "full", "raw flag alone resolves to full for 8 requirements — the bypass the handler fix removes");
+	check(resolveBudgetTier(flag, undefined, "full", 8, DEFAULT_BUDGET_TIERS) === "full", "raw flag alone resolves to full for 8 requirements — the bypass the handler fix removes");
 	const plan = buildRunPlan({ tier: lockedTier, executeModel: "m" });
 	check(plan.tier === "economy", "plan carries the locked tier");
 

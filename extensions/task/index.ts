@@ -288,14 +288,19 @@ export function resolveSubSpecs(p: {
  * `flag` is the SESSION budget mode — the stored /task-budget override,
  * else the CLI flag, resolved at session_start — not the raw flag value:
  * a /task-budget lock never appears in the flag, so feeding the raw flag
- * here bypasses the lock (todo #69). Pure — tested hermetically.
+ * here bypasses the lock (todo #69). `tiers` is REQUIRED: resolution
+ * vocabulary is the LOADED config's tier set (Phase 11) — defaulting to
+ * the built-in table made any custom [budget.*] tier silently
+ * unresolvable (a /task-budget lock on it degraded to "auto" and the
+ * heuristic picked economy; regression-tested in test-index.ts).
+ * Pure — tested hermetically.
  */
 export function resolveBudgetTier(
 	flag: unknown,
 	param: unknown,
 	configDefault: BudgetMode = DEFAULT_BUDGET_TIER,
 	requirementCount: number | null = null,
-	tiers: Record<BudgetTier, BudgetTierConfig> = DEFAULT_BUDGET_TIERS,
+	tiers: Record<BudgetTier, BudgetTierConfig>,
 ): BudgetTier {
 	const mode = resolveBudgetMode(flag, param, configDefault, tiers);
 	return isLockedBudget(mode, tiers) ? mode : autoTierForRequirements(requirementCount, tiers);
@@ -993,6 +998,11 @@ export default function (pi: ExtensionAPI) {
 					p.budget,
 					taskConfig.defaults.budget,
 					reqCount,
+					// Config-driven tiers MUST be passed: without them the resolver
+					// checks locks/defaults against the built-in tier set, so any
+					// custom [budget.*] tier (config-driven since Phase 11) silently
+					// degrades to "auto" and a /task-budget lock on it is ignored.
+					taskConfig.tiers,
 				);
 				const tierConfig = taskConfig.tiers[tier];
 
