@@ -253,10 +253,10 @@ export const TOOL_GUARD_EXTENSION_PATH = join(
  *  defective verification command (engine-adjudicated, never unilateral). */
 export const DISPUTE_EXTENSION_PATH = join(THIS_DIR, "tools", "dispute.ts");
 /** Reasoning-exclusion (wave-1 cost): injects reasoning:false into every
- *  provider payload when PI_TASK_EXCLUDE_REASONING=1 — the model still
+ *  provider payload when PI_TASK_ENABLE_REASONING_EXCLUDE=1 — the model still
  *  reasons at its budget but the transcript stops accreting the
  *  reasoning_details blobs. Loaded on every worker/reviewer (no-op without
- *  the env var). */
+ *  the enable flag). */
 export const REASONING_EXCLUDE_EXTENSION_PATH = join(
 	THIS_DIR,
 	"tools",
@@ -271,8 +271,9 @@ export const SERVICE_TIER_EXTENSION_PATH = join(
 	"service-tier.ts",
 );
 /** Session-id injection extension (wave-4 cost) — always loaded; it is a no-op
- *  unless an identifier is present (the run's session id via env, or pi's own
- *  ambient session id), so ordinary runs pay nothing. */
+ *  unless PI_TASK_ENABLE_SESSION_ID=1 and an identifier is present
+ *  (the run's session id via env, or pi's own ambient session id), so
+ *  ordinary runs pay nothing. */
 export const SESSION_ID_EXTENSION_PATH = join(
 	THIS_DIR,
 	"tools",
@@ -1094,14 +1095,19 @@ export function spawnWorkerSession(opts: WorkerOptions): WorkerSession {
 			...(opts.providerOnly?.length
 				? { PI_TASK_PROVIDER_ONLY: opts.providerOnly.join(",") }
 				: {}),
-			// Session-id (wave-4 cost): the session-id extension reads this and
-			// injects a top-level session_id (the run id) into every payload.
-			...(opts.sessionId ? { PI_TASK_SESSION_ID: opts.sessionId } : {}),
-			// Reasoning-exclusion (wave-1 cost): the reasoning-exclude
-			// extension reads this and injects reasoning.exclude into every
-			// provider payload — the model reasons at budget but the
-			// transcript stops re-sending the reasoning_details blobs.
-			PI_TASK_EXCLUDE_REASONING: "1",
+			// Session-id (wave-4 cost): only when PI_TASK_ENABLE_SESSION_ID=1 —
+			// disabled by default, no injection otherwise (including interactive).
+			...(process.env.PI_TASK_ENABLE_SESSION_ID === "1"
+				? {
+						PI_TASK_ENABLE_SESSION_ID: "1",
+						...(opts.sessionId ? { PI_TASK_SESSION_ID: opts.sessionId } : {}),
+					}
+				: {}),
+			// Reasoning-exclusion (wave-1 cost): only when
+			// PI_TASK_ENABLE_REASONING_EXCLUDE=1 — disabled by default.
+			...(process.env.PI_TASK_ENABLE_REASONING_EXCLUDE === "1"
+				? { PI_TASK_ENABLE_REASONING_EXCLUDE: "1" }
+				: {}),
 		},
 	});
 

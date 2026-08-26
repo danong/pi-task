@@ -379,12 +379,17 @@ export async function forkedReview(
 			...(opts.providerOnly?.length
 				? { PI_TASK_PROVIDER_ONLY: opts.providerOnly.join(",") }
 				: {}),
-			// Session-id (wave-4): mirrors spawnWorkerSession — the reviewer's
-			// calls carry the run id as session_id too.
-			...(opts.sessionId ? { PI_TASK_SESSION_ID: opts.sessionId } : {}),
-			// Reasoning-exclusion (wave-1): mirrors spawnWorkerSession — the
-			// reviewer's reasoning is excluded too (transcript stays flat).
-			PI_TASK_EXCLUDE_REASONING: "1",
+			// Session-id (wave-4): only when PI_TASK_ENABLE_SESSION_ID=1.
+			...(process.env.PI_TASK_ENABLE_SESSION_ID === "1"
+				? {
+						PI_TASK_ENABLE_SESSION_ID: "1",
+						...(opts.sessionId ? { PI_TASK_SESSION_ID: opts.sessionId } : {}),
+					}
+				: {}),
+			// Reasoning-exclusion (wave-1): only when PI_TASK_ENABLE_REASONING_EXCLUDE=1.
+			...(process.env.PI_TASK_ENABLE_REASONING_EXCLUDE === "1"
+				? { PI_TASK_ENABLE_REASONING_EXCLUDE: "1" }
+				: {}),
 		},
 	});
 

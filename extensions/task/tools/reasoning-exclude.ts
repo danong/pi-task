@@ -2,26 +2,26 @@
  * Worker-side reasoning-exclusion — the WAVE-1 cost lever (cost-reduction
  * plan item 4).
  *
- * Loaded into worker and reviewer subprocesses via --extension. When the
- * engine sets PI_TASK_EXCLUDE_REASONING=1 on the spawn (the tier's or the
- * engine's decision), this extension injects `reasoning: { exclude: true }`
- * into EVERY outgoing provider payload of that subprocess — so the model
- * still REASONS at its configured budget (quality preserved) but the
- * reasoning output is not returned, and the accumulated `reasoning_details`
- * blobs (1-5KB each) that were being re-sent on every later turn stop
- * growing the transcript.
+ * Loaded into worker and reviewer subprocesses via --extension. When
+ * PI_TASK_ENABLE_REASONING_EXCLUDE=1 this extension injects
+ * `reasoning: { exclude: true }` into EVERY outgoing provider payload of
+ * that subprocess — so the model still REASONS at its configured budget
+ * (quality preserved) but the reasoning output is not returned, and the
+ * accumulated `reasoning_details` blobs (1-5KB each) that were being re-sent
+ * on every later turn stop growing the transcript. Disabled by default
+ * (no injection unless the enable flag is set).
  *
  * Scoping is per-process on purpose (the model may run both the interactive
- * session and worker subprocesses): the env var is set only on worker/
- * reviewer spawns — the conversational session never sets it, so its
- * reasoning stays visible for review.
+ * session and worker subprocesses): the enable flag is set only when
+ * explicitly enabled — the conversational session is untouched unless
+ * flagged too. No logs.
  *
- * No env var → the extension is a no-op (zero overhead, zero injection).
+ * No enable flag → the extension is a no-op (zero overhead, zero injection).
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
-export const EXCLUDE_REASONING_ENV_VAR = "PI_TASK_EXCLUDE_REASONING";
+export const ENABLE_REASONING_EXCLUDE_ENV_VAR = "PI_TASK_ENABLE_REASONING_EXCLUDE";
 
 /**
  * Pure injection rule (hermetic-tested): enabled + an object payload → a
@@ -44,8 +44,8 @@ export function injectReasoningExclude(
 }
 
 export default function (pi: ExtensionAPI) {
-	if (process.env[EXCLUDE_REASONING_ENV_VAR] !== "1") return; // not a worker/reviewer spawn
 	pi.on("before_provider_request", (event) => {
+		if (process.env[ENABLE_REASONING_EXCLUDE_ENV_VAR] !== "1") return;
 		return injectReasoningExclude(event.payload, true);
 	});
 }

@@ -11,8 +11,12 @@ import {
 	injectServiceTier,
 	SERVICE_TIER_ENV_VAR,
 } from "./tools/service-tier.ts";
-import { injectReasoningExclude } from "./tools/reasoning-exclude.ts";
-import {
+import reasonExcludeDefault, {
+	ENABLE_REASONING_EXCLUDE_ENV_VAR,
+	injectReasoningExclude,
+} from "./tools/reasoning-exclude.ts";
+import sessionIdDefault, {
+	ENABLE_SESSION_ID_ENV_VAR,
 	injectSessionId,
 	resolveSessionId,
 	SESSION_ID_ENV_VAR,
@@ -544,6 +548,72 @@ export async function runTests(): Promise<void> {
 			injectReasoningExclude(null, true) === null,
 			"non-object payload → unchanged",
 		);
+		check(
+			ENABLE_REASONING_EXCLUDE_ENV_VAR === "PI_TASK_ENABLE_REASONING_EXCLUDE",
+			"the enable-flag contract is PI_TASK_ENABLE_REASONING_EXCLUDE",
+		);
+	}
+
+	// 14g. Reasoning-exclude flag (R2/R4): disabled by default — the
+	// extension's before_provider_request is a no-op unless
+	// PI_TASK_ENABLE_REASONING_EXCLUDE=1; when enabled it injects
+	// reasoning.exclude; when unset or any value !=1 no injection. No logs.
+	{
+		const invokeReasoningHook = (
+			enableVal: string | undefined,
+			payload: unknown,
+		): unknown => {
+			const prev = process.env[ENABLE_REASONING_EXCLUDE_ENV_VAR];
+			if (enableVal === undefined) delete process.env[ENABLE_REASONING_EXCLUDE_ENV_VAR];
+			else process.env[ENABLE_REASONING_EXCLUDE_ENV_VAR] = enableVal;
+			let hook: ((event: { payload: unknown }) => unknown) | null = null;
+			const fakePi = {
+				on: (ev: string, fn: (event: { payload: unknown }) => unknown) => {
+					if (ev === "before_provider_request") hook = fn;
+				},
+			} as unknown as Parameters<typeof reasonExcludeDefault>[0];
+			reasonExcludeDefault(fakePi);
+			const ret = hook ? hook({ payload }) : undefined;
+			const out = ret === undefined ? payload : ret;
+			if (prev === undefined) delete process.env[ENABLE_REASONING_EXCLUDE_ENV_VAR];
+			else process.env[ENABLE_REASONING_EXCLUDE_ENV_VAR] = prev;
+			return out;
+		};
+		const payload = { model: "m", messages: [] };
+		check(
+			invokeReasoningHook(undefined, payload) === payload,
+			"reasoning-exclude disabled (unset) → no injection",
+		);
+		check(
+			invokeReasoningHook("0", payload) === payload,
+			"reasoning-exclude disabled (0) → no injection",
+		);
+		check(
+			invokeReasoningHook("", payload) === payload,
+			"reasoning-exclude disabled (empty) → no injection",
+		);
+		const enabled = invokeReasoningHook("1", payload) as Record<string, unknown>;
+		check(
+			(enabled.reasoning as Record<string, unknown>).exclude === true,
+			"reasoning-exclude enabled (1) → reasoning.exclude injected",
+		);
+		const existing = { model: "m", reasoning: { effort: "high" }, messages: [] };
+		const merged = invokeReasoningHook("1", existing) as Record<string, unknown>;
+		const r = merged.reasoning as Record<string, unknown>;
+		check(
+			r.exclude === true && r.effort === "high",
+			"reasoning-exclude enabled preserves existing reasoning fields",
+		);
+		// No logs on either path.
+		let warned = false;
+		const origWarn = console.warn;
+		console.warn = () => {
+				warned = true;
+			};
+			invokeReasoningHook(undefined, payload);
+			invokeReasoningHook("1", payload);
+			console.warn = origWarn;
+			check(!warned, "reasoning-exclude is silent (no console.warn)");
 	}
 
 	// 14h. Session-ID (wave-4, session_id correlation): valid id + object →
@@ -606,7 +676,112 @@ export async function runTests(): Promise<void> {
 			SESSION_ID_ENV_VAR === "PI_TASK_SESSION_ID",
 			"the env-var contract is the extension's",
 		);
+		check(
+			ENABLE_SESSION_ID_ENV_VAR === "PI_TASK_ENABLE_SESSION_ID",
+			"the enable-flag contract is PI_TASK_ENABLE_SESSION_ID",
+		);
 	}
+
+	// 14i. Session-ID flag (R1/R4): disabled by default — the extension's
+	// before_provider_request is a no-op unless PI_TASK_ENABLE_SESSION_ID=1;
+	// when enabled it injects; when unset or any value !=1 no session_id is
+	// added. No logs (no console.warn). Pure extension behavior tested via the
+	// hook — env gated, never mutates payload when disabled.
+	{
+		type HookEvent = { payload: unknown };
+		const invokeSessionHook = (
+			enableVal: string | undefined,
+			envSessionId: string | undefined,
+			payload: unknown,
+			piSessionId?: string,
+		): unknown => {
+			const prevEnable = process.env[ENABLE_SESSION_ID_ENV_VAR];
+			const prevId = process.env[SESSION_ID_ENV_VAR];
+			if (enableVal === undefined) delete process.env[ENABLE_SESSION_ID_ENV_VAR];
+			else process.env[ENABLE_SESSION_ID_ENV_VAR] = enableVal;
+			if (envSessionId === undefined) delete process.env[SESSION_ID_ENV_VAR];
+			else process.env[SESSION_ID_ENV_VAR] = envSessionId;
+			let captured: unknown = Symbol("not-called");
+			let hook: ((event: HookEvent, ctx: unknown) => unknown) | null = null;
+			const fakePi = {
+				on: (ev: string, fn: (event: HookEvent, ctx: unknown) => unknown) => {
+					if (ev === "before_provider_request") hook = fn;
+				},
+			} as unknown as Parameters<typeof sessionIdDefault>[0];
+			sessionIdDefault(fakePi);
+			if (hook) {
+					const ctx = {
+						sessionManager: {
+							getSessionId: () => piSessionId,
+						},
+					} as unknown as { sessionManager: { getSessionId: () => string | undefined } };
+					const ret = hook({ payload }, ctx);
+					captured = ret === undefined ? payload : ret;
+				} else {
+					captured = payload;
+				}
+				if (prevEnable === undefined) delete process.env[ENABLE_SESSION_ID_ENV_VAR];
+				else process.env[ENABLE_SESSION_ID_ENV_VAR] = prevEnable;
+				if (prevId === undefined) delete process.env[SESSION_ID_ENV_VAR];
+				else process.env[SESSION_ID_ENV_VAR] = prevId;
+				return captured;
+			};
+		const payload = { model: "m", messages: [] };
+		// Disabled (unset) → no injection even when an id exists.
+		check(
+			invokeSessionHook(undefined, "run-123", payload) === payload,
+			"session_id disabled (unset) → no injection",
+		);
+		check(
+			invokeSessionHook("0", "run-123", payload) === payload,
+			"session_id disabled (0) → no injection",
+		);
+		check(
+			invokeSessionHook("", "run-123", payload) === payload,
+			"session_id disabled (empty) → no injection",
+		);
+		// Disabled vs pi ambient — no injection either.
+		check(
+			invokeSessionHook(undefined, undefined, payload, "pi-sess") === payload,
+			"session_id disabled: pi ambient also blocked",
+		);
+		// Enabled → injects (env wins; ambient fallback).
+		const enabledEnv = invokeSessionHook("1", "run-123", payload) as Record<
+			string,
+			unknown
+		>;
+		check(
+			enabledEnv.session_id === "run-123",
+			"session_id enabled (1) with env id → injected",
+		);
+		const enabledAmbient = invokeSessionHook("1", undefined, payload, "pi-sess") as Record<
+			string,
+			unknown
+		>;
+		check(
+			enabledAmbient.session_id === "pi-sess",
+			"session_id enabled: pi ambient injected when no env",
+		);
+		// Enabled but no identifier → still no-op.
+		check(
+			invokeSessionHook("1", undefined, payload) === payload,
+			"session_id enabled but no id → no injection",
+		);
+		// No logs when dropping over-cap (disabled path dropless; enabled also silent).
+		const longId = "x".repeat(SESSION_ID_MAX_LENGTH + 1);
+		let warned = false;
+		const origWarn = console.warn;
+		console.warn = () => {
+				warned = true;
+			};
+			invokeSessionHook("1", longId, payload);
+			console.warn = origWarn;
+			check(!warned, "session_id drop is silent (no console.warn)");
+		check(
+				invokeSessionHook("1", longId, payload) === payload,
+				"over-cap id dropped (enabled but silent)",
+			);
+		}
 
 	// 14e. Provider pin (provider.only) + the mixed-flow guarantee: in one	// prewalk→swap session the gemini call gets tier+pin, the deepseek
 	// workhorse stays untouched (a vertex pin would break it).
