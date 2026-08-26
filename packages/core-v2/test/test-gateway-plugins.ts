@@ -558,6 +558,7 @@ export async function runTests(): Promise<void> {
 				transformExecutionBundle: () =>
 					Promise.reject(new Error("bundle boom")),
 			};
+			const brokenHookErrors: unknown[] = [];
 			const result2 = await runTask({
 				specMarkdown: BUNDLE_SPEC,
 				cwd: workDir,
@@ -567,6 +568,7 @@ export async function runTests(): Promise<void> {
 				host: capturingHost(join(workDir, "hello2.txt"), spawns2),
 				bundle: { targetPaths: [seed] },
 				plugins: [broken],
+				onPluginHookError: (e) => brokenHookErrors.push(e),
 			});
 			check(
 				result2.receipt.bundleHit !== null,
@@ -575,6 +577,12 @@ export async function runTests(): Promise<void> {
 			check(
 				spawns2.length === 1 && !spawns2[0]!.includes("plugin-marker.ts"),
 				"the untransformed bundle grounds the prompt when a transformer throws",
+			);
+			check(
+				brokenHookErrors.length === 1 &&
+					String(brokenHookErrors[0]).includes("broken-transformer") &&
+					String(brokenHookErrors[0]).includes("transformExecutionBundle"),
+				"throwing transformer failure is attributed through onPluginHookError (no console.error fallthrough)",
 			);
 		}
 
