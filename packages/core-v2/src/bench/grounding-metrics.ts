@@ -46,7 +46,10 @@ export interface GroundingRunRecord {
 
 /** Everything billed as prompt for one record (NFR-3 denominator). */
 export function totalBilledInput(
-	r: Pick<GroundingRunRecord, "inputTokens" | "cacheReadTokens" | "cacheWriteTokens">,
+	r: Pick<
+		GroundingRunRecord,
+		"inputTokens" | "cacheReadTokens" | "cacheWriteTokens"
+	>,
 ): number {
 	return r.inputTokens + r.cacheReadTokens + r.cacheWriteTokens;
 }
@@ -83,7 +86,14 @@ export interface ConfigAggregate {
 	costPerFileChangedUsd: number | null;
 }
 
-interface Acc extends Omit<ConfigAggregate, "avgTurns" | "cor" | "costPerFileChangedUsd" | "bundleHitRate" | "forkCleanRate"> {
+interface Acc extends Omit<
+	ConfigAggregate,
+	| "avgTurns"
+	| "cor"
+	| "costPerFileChangedUsd"
+	| "bundleHitRate"
+	| "forkCleanRate"
+> {
 	bundleHits: number;
 	bundleTotal: number;
 	cleanRuns: number;
@@ -94,7 +104,9 @@ interface Acc extends Omit<ConfigAggregate, "avgTurns" | "cor" | "costPerFileCha
 }
 
 /** Aggregate records per config id. Pure. */
-export function aggregateRecords(records: readonly GroundingRunRecord[]): Map<string, ConfigAggregate> {
+export function aggregateRecords(
+	records: readonly GroundingRunRecord[],
+): Map<string, ConfigAggregate> {
 	const accs = new Map<string, Acc>();
 	for (const r of records) {
 		const existing = accs.get(r.configId);
@@ -148,13 +160,17 @@ export function aggregateRecords(records: readonly GroundingRunRecord[]): Map<st
 			avgDurationMs: a.runs > 0 ? a.durationTotalMs / a.runs : 0,
 			billedInputTokens: a.billedInputTokens,
 			groundingTokens: a.groundingTokens,
-			cor: a.billedInputTokens > 0 ? a.groundingTokens / a.billedInputTokens : null,
+			cor:
+				a.billedInputTokens > 0
+					? a.groundingTokens / a.billedInputTokens
+					: null,
 			bundleHitRate: a.bundleTotal > 0 ? a.bundleHits / a.bundleTotal : null,
 			forkCleanRate: a.runs > 0 ? a.cleanRuns / a.runs : null,
 			firstPassVerifyRate: a.runs > 0 ? a.firstPassVerifyRate / a.runs : 0,
 			retryCacheHitRate: a.retryTotal > 0 ? a.retryHits / a.retryTotal : null,
 			cacheAffinityViolations: a.cacheAffinityViolations,
-			costPerFileChangedUsd: a.filesChanged > 0 ? a.totalCostUsd / a.filesChanged : null,
+			costPerFileChangedUsd:
+				a.filesChanged > 0 ? a.totalCostUsd / a.filesChanged : null,
 		});
 	}
 	return out;
@@ -164,7 +180,10 @@ export function aggregateRecords(records: readonly GroundingRunRecord[]): Map<st
  * NFR-3 normalization for one config: total cost ÷ total changed files.
  * Null when the config produced no diffs (nothing to normalize).
  */
-export function costPerFileChanged(records: readonly GroundingRunRecord[], configId: string): number | null {
+export function costPerFileChanged(
+	records: readonly GroundingRunRecord[],
+	configId: string,
+): number | null {
 	let cost = 0;
 	let files = 0;
 	for (const r of records) {
@@ -204,13 +223,19 @@ function bestOf(
  * Short wins/loses table across the scored dimensions. Only configs with
  * runs compete; ties keep the first encountered (stable input order).
  */
-export function buildWinsLoses(aggs: readonly ConfigAggregate[]): DimensionWinner[] {
+export function buildWinsLoses(
+	aggs: readonly ConfigAggregate[],
+): DimensionWinner[] {
 	const scored = aggs.filter((a) => a.runs > 0);
 	if (scored.length === 0) return [];
 	return [
 		{
 			dimension: "lowest cost per run",
-			winner: bestOf(scored, (a) => a.runs > 0 ? a.totalCostUsd / a.runs : null, true),
+			winner: bestOf(
+				scored,
+				(a) => (a.runs > 0 ? a.totalCostUsd / a.runs : null),
+				true,
+			),
 			note: "raw USD averaged over runs",
 		},
 		{
@@ -257,11 +282,17 @@ export function renderSummaryLines(
 		"",
 	];
 	if (records.length === 0) {
-		lines.push("No evidence recorded yet. Dry path: `mise run eval-grounding` prints the plan");
-		lines.push("(zero LLM). Real runs: see `docs/pi-task-v2.md §7` for the reproduction steps.");
+		lines.push(
+			"No evidence recorded yet. Dry path: `mise run eval-grounding` prints the plan",
+		);
+		lines.push(
+			"(zero LLM). Real runs: see `docs/pi-task-v2.md §7` for the reproduction steps.",
+		);
 		return lines;
 	}
-	lines.push("| config | runs | avg turns | cost/run | USD/file | COR | first-pass | bundle hit | fork clean |");
+	lines.push(
+		"| config | runs | avg turns | cost/run | USD/file | COR | first-pass | bundle hit | fork clean |",
+	);
 	lines.push("| --- | --- | --- | --- | --- | --- | --- | --- | --- |");
 	for (const a of aggs) {
 		const fmt = (v: number | null): string => (v === null ? "—" : v.toFixed(3));
@@ -282,7 +313,9 @@ export function renderSummaryLines(
 	lines.push("");
 	lines.push("## Where each mode wins / loses");
 	for (const w of winners) {
-		lines.push(`- ${w.dimension}: **${w.winner ?? "(no comparable data)"}** — ${w.note}`);
+		lines.push(
+			`- ${w.dimension}: **${w.winner ?? "(no comparable data)"}** — ${w.note}`,
+		);
 	}
 	return lines;
 }

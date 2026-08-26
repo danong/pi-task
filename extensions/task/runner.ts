@@ -33,14 +33,21 @@
  * the worker machinery into the fast suite's module graph.
  */
 
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	readFileSync,
+	readdirSync,
+	renameSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { SandboxConfig, TaskShape } from "./config.ts";
 import type { RunPlan } from "./progress.ts";
 import { formatDuration } from "./progress.ts";
 import type { FailureArtifact, RunManifest } from "./metrics.ts";
-import type { ExecuteTaskOptions } from "./orchestrator.ts";
 
 // ─── File naming ─────────────────────────────────────────────────────
 
@@ -57,19 +64,39 @@ export const LIVE_HEARTBEAT_INTERVAL_MS = 2_000;
  *  updates far more often than a status reader needs). */
 export const LIVE_WRITE_THROTTLE_MS = 1_000;
 
-export function requestPathFor(metricsDir: string, project: string, runId: string): string {
+export function requestPathFor(
+	metricsDir: string,
+	project: string,
+	runId: string,
+): string {
 	return join(metricsDir, project, `${runId}${REQUEST_SUFFIX}`);
 }
-export function livePathFor(metricsDir: string, project: string, runId: string): string {
+export function livePathFor(
+	metricsDir: string,
+	project: string,
+	runId: string,
+): string {
 	return join(metricsDir, project, `${runId}${LIVE_SUFFIX}`);
 }
-export function logPathFor(metricsDir: string, project: string, runId: string): string {
+export function logPathFor(
+	metricsDir: string,
+	project: string,
+	runId: string,
+): string {
 	return join(metricsDir, project, `${runId}${LOG_SUFFIX}`);
 }
-export function manifestPathFor(metricsDir: string, project: string, runId: string): string {
+export function manifestPathFor(
+	metricsDir: string,
+	project: string,
+	runId: string,
+): string {
 	return join(metricsDir, project, `${runId}.json`);
 }
-export function failurePathFor(metricsDir: string, project: string, runId: string): string {
+export function failurePathFor(
+	metricsDir: string,
+	project: string,
+	runId: string,
+): string {
 	return join(metricsDir, project, `${runId}.failure.json`);
 }
 
@@ -201,11 +228,17 @@ export function resolveRunnerSpawn(opts: {
 	requestPath: string;
 	baseDir?: string;
 }): { command: string; args: string[] } {
-	const localTsx = join(opts.baseDir ?? PACKAGE_ROOT, "node_modules", ".bin", "tsx");
+	const localTsx = join(
+		opts.baseDir ?? PACKAGE_ROOT,
+		"node_modules",
+		".bin",
+		"tsx",
+	);
+	const tsxBin = existsSync(localTsx) ? localTsx : undefined;
 	return buildRunnerCommand({
 		runnerPath: opts.runnerPath,
 		requestPath: opts.requestPath,
-		tsxBin: existsSync(localTsx) ? localTsx : undefined,
+		...(tsxBin !== undefined && { tsxBin }),
 	});
 }
 
@@ -263,7 +296,10 @@ function projectDirs(metricsDir: string): string[] {
 	}
 }
 
-export function locateRun(metricsDir: string, runId: string): LocatedRun | null {
+export function locateRun(
+	metricsDir: string,
+	runId: string,
+): LocatedRun | null {
 	if (!existsSync(metricsDir)) return null;
 	const candidates: LocatedRun[] = [];
 	for (const project of projectDirs(metricsDir)) {
@@ -276,21 +312,52 @@ export function locateRun(metricsDir: string, runId: string): LocatedRun | null 
 		if (existsSync(livePath)) found.livePath = livePath;
 		const requestPath = requestPathFor(metricsDir, project, runId);
 		if (existsSync(requestPath)) found.requestPath = requestPath;
-		if (found.manifestPath || found.failurePath || found.livePath || found.requestPath) {
+		if (
+			found.manifestPath ||
+			found.failurePath ||
+			found.livePath ||
+			found.requestPath
+		) {
 			candidates.push(found);
 		}
 	}
 	if (candidates.length === 0) return null;
-	return candidates.find((c) => c.manifestPath) ?? candidates[0];
+	const withManifest = candidates.find((c) => c.manifestPath);
+	return withManifest ?? candidates[0] ?? null;
 }
 
 /** One run's resolved status for /task-status. */
 export type RunStatus =
 	| { kind: "unknown"; runId: string; metricsDir: string }
-	| { kind: "starting"; runId: string; project: string; metricsDir: string; request: RunRequest }
-	| { kind: "live"; runId: string; project: string; metricsDir: string; state: LiveRunState; staleMs: number }
-	| { kind: "finished"; runId: string; project: string; metricsDir: string; manifest: RunManifest }
-	| { kind: "failed"; runId: string; project: string; metricsDir: string; artifact: FailureArtifact };
+	| {
+			kind: "starting";
+			runId: string;
+			project: string;
+			metricsDir: string;
+			request: RunRequest;
+	  }
+	| {
+			kind: "live";
+			runId: string;
+			project: string;
+			metricsDir: string;
+			state: LiveRunState;
+			staleMs: number;
+	  }
+	| {
+			kind: "finished";
+			runId: string;
+			project: string;
+			metricsDir: string;
+			manifest: RunManifest;
+	  }
+	| {
+			kind: "failed";
+			runId: string;
+			project: string;
+			metricsDir: string;
+			artifact: FailureArtifact;
+	  };
 
 function parseJsonFile<T>(path: string): T | null {
 	try {
@@ -308,19 +375,35 @@ function parseJsonFile<T>(path: string): T | null {
  * unreadable files fall through to the next candidate. Pure —
  * hermetically tested.
  */
-export function readRunStatus(metricsDir: string, runId: string, nowMs: number): RunStatus {
+export function readRunStatus(
+	metricsDir: string,
+	runId: string,
+	nowMs: number,
+): RunStatus {
 	const loc = locateRun(metricsDir, runId);
 	if (!loc) return { kind: "unknown", runId, metricsDir };
 	if (loc.manifestPath) {
 		const manifest = parseJsonFile<RunManifest>(loc.manifestPath);
 		if (manifest && typeof manifest.run_id === "string") {
-			return { kind: "finished", runId, project: loc.project, metricsDir, manifest };
+			return {
+				kind: "finished",
+				runId,
+				project: loc.project,
+				metricsDir,
+				manifest,
+			};
 		}
 	}
 	if (loc.failurePath) {
 		const artifact = parseJsonFile<FailureArtifact>(loc.failurePath);
 		if (artifact && typeof artifact.run_id === "string") {
-			return { kind: "failed", runId, project: loc.project, metricsDir, artifact };
+			return {
+				kind: "failed",
+				runId,
+				project: loc.project,
+				metricsDir,
+				artifact,
+			};
 		}
 	}
 	if (loc.livePath) {
@@ -333,14 +416,22 @@ export function readRunStatus(metricsDir: string, runId: string, nowMs: number):
 				project: loc.project,
 				metricsDir,
 				state,
-				staleMs: Number.isFinite(hb) ? Math.max(0, nowMs - hb) : Number.POSITIVE_INFINITY,
+				staleMs: Number.isFinite(hb)
+					? Math.max(0, nowMs - hb)
+					: Number.POSITIVE_INFINITY,
 			};
 		}
 	}
 	if (loc.requestPath) {
 		const request = parseJsonFile<RunRequest>(loc.requestPath);
 		if (request && typeof request.run_id === "string") {
-			return { kind: "starting", runId, project: loc.project, metricsDir, request };
+			return {
+				kind: "starting",
+				runId,
+				project: loc.project,
+				metricsDir,
+				request,
+			};
 		}
 	}
 	return { kind: "unknown", runId, metricsDir };
@@ -382,8 +473,13 @@ export function renderRunStatus(status: RunStatus, nowMs: number): string[] {
 	}
 	if (status.kind === "live") {
 		const start = Date.parse(status.state.started_at);
-		const elapsed = Number.isFinite(start) ? formatDuration(Math.max(0, nowMs - start)) : "?";
-		const lines = [`${base} · RUNNING · elapsed ${elapsed}`, ...status.state.progress_text.split("\n")];
+		const elapsed = Number.isFinite(start)
+			? formatDuration(Math.max(0, nowMs - start))
+			: "?";
+		const lines = [
+			`${base} · RUNNING · elapsed ${elapsed}`,
+			...status.state.progress_text.split("\n"),
+		];
 		if (status.staleMs >= LIVE_STALE_THRESHOLD_MS) {
 			lines.push(
 				`⚠ no heartbeat for ${formatDuration(status.staleMs)} — the child may have died; ` +
@@ -434,7 +530,11 @@ function writeFileAtomic(path: string, content: string): void {
 /** Write the run request (the tool does this before the spawn). Returns
  *  the written path. */
 export function writeRunRequest(request: RunRequest): string {
-	const path = requestPathFor(request.metrics_dir, request.project, request.run_id);
+	const path = requestPathFor(
+		request.metrics_dir,
+		request.project,
+		request.run_id,
+	);
 	writeFileAtomic(path, JSON.stringify(request, null, 2) + "\n");
 	return path;
 }
@@ -476,12 +576,16 @@ async function runChild(requestPath: string): Promise<number> {
 	try {
 		request = JSON.parse(readFileSync(requestPath, "utf-8")) as RunRequest;
 	} catch (err) {
-		console.error(`runner: cannot read request ${requestPath}: ${err instanceof Error ? err.message : String(err)}`);
+		console.error(
+			`runner: cannot read request ${requestPath}: ${err instanceof Error ? err.message : String(err)}`,
+		);
 		return 2;
 	}
 	const { run_id, metrics_dir, project, worker_count, plan, options } = request;
 	if (!run_id || !metrics_dir || !project || !options?.cwd || !options.model) {
-		console.error("runner: malformed request (run_id / metrics_dir / project / options.cwd / options.model required)");
+		console.error(
+			"runner: malformed request (run_id / metrics_dir / project / options.cwd / options.model required)",
+		);
 		return 2;
 	}
 
@@ -510,8 +614,10 @@ async function runChild(requestPath: string): Promise<number> {
 
 	// Lazy imports: the worker machinery loads only when a run actually
 	// happens (the fast suite imports this module's pure parts).
-	const [{ executeTask }, { applyProgressEvent, buildProgressText, createProgressState }] =
-		await Promise.all([import("./orchestrator.ts"), import("./progress.ts")]);
+	const [
+		{ executeTask },
+		{ applyProgressEvent, buildProgressText, createProgressState },
+	] = await Promise.all([import("./orchestrator.ts"), import("./progress.ts")]);
 
 	const progress = createProgressState(worker_count, plan, Date.now());
 	const onUpdate = (partial: unknown): void => {
@@ -555,15 +661,19 @@ async function runChild(requestPath: string): Promise<number> {
 		const manifestPath = manifestPathFor(metrics_dir, project, run_id);
 		if (!existsSync(failurePath) && !existsSync(manifestPath)) {
 			try {
-				const { buildFailureArtifact, writeFailureArtifact } = await import("./metrics.ts");
+				const { buildFailureArtifact, writeFailureArtifact } =
+					await import("./metrics.ts");
 				const kind =
-					(options.subSpecs?.length ?? 1) > 1 || (options.parallel ?? 1) > 1 ? "parallel" : "worker";
+					(options.subSpecs?.length ?? 1) > 1 || (options.parallel ?? 1) > 1
+						? "parallel"
+						: "worker";
+				const specHash = options.spec ?? options.subSpecs?.join("\n\n");
 				writeFailureArtifact(
 					buildFailureArtifact({
 						kind,
 						runId: run_id,
-						tier: options.budget,
-						specHash: options.spec ?? options.subSpecs?.join("\n\n"),
+						...(options.budget !== undefined && { tier: options.budget }),
+						...(specHash !== undefined && { specHash }),
 						cause: err instanceof Error ? err.message : String(err),
 					}),
 					{ metricsDir: metrics_dir, project },
@@ -573,7 +683,9 @@ async function runChild(requestPath: string): Promise<number> {
 			}
 		}
 		removeFileBestEffort(livePathFor(metrics_dir, project, run_id));
-		console.error(`run ${run_id}: FAILED — ${err instanceof Error ? err.message : String(err)}`);
+		console.error(
+			`run ${run_id}: FAILED — ${err instanceof Error ? err.message : String(err)}`,
+		);
 		return 1;
 	} finally {
 		clearInterval(heartbeat);
@@ -602,7 +714,10 @@ async function main(): Promise<number> {
 
 // Guard: only run when executed directly (never on import — the hermetic
 // tests import the pure parts).
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (
+	process.argv[1] &&
+	import.meta.url === pathToFileURL(process.argv[1]).href
+) {
 	main()
 		.then((code) => process.exit(code))
 		.catch((err) => {

@@ -71,11 +71,14 @@ export async function runAll(): Promise<void> {
 	console.log(`✓ core-v2: ${SUITES.length} suite(s) passed (zero LLM calls)`);
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (
+	process.argv[1] &&
+	import.meta.url === pathToFileURL(process.argv[1]).href
+) {
 	runAll()
 		.then(() => process.exit(0))
 		.catch((err) => {
-			console.error(err.message ?? err);
+			console.error(err instanceof Error ? err.message : String(err));
 			process.exit(1);
 		});
 }

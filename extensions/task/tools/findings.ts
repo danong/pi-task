@@ -38,13 +38,13 @@ export default function (pi: ExtensionAPI) {
 			"final action — the session ends after report_findings.",
 		parameters: ReviewResultSchema,
 
-		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+		execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			ctx.shutdown();
-			return {
+			return Promise.resolve({
 				content: [{ type: "text", text: "Review report accepted." }],
 				details: { ...params },
 				terminate: true,
-			};
+			});
 		},
 	});
 }

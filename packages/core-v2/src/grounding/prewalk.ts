@@ -65,7 +65,9 @@ function perM(tokens: number, rate: number): number {
  * output counts equally on both models and cancels out of the comparison
  * only partially (cheap output is also cheaper), so output IS included.
  */
-export function decidePrewalkSwap(input: PrewalkDecisionInput): PrewalkDecision {
+export function decidePrewalkSwap(
+	input: PrewalkDecisionInput,
+): PrewalkDecision {
 	const ctx = Math.max(0, input.contextTokensAtSwap);
 	const n = Math.max(1, Math.round(input.remainingTurnsEstimate));
 	const out = input.outputTokensPerTurn ?? DEFAULT_OUTPUT_TOKENS_PER_TURN;
@@ -74,17 +76,24 @@ export function decidePrewalkSwap(input: PrewalkDecisionInput): PrewalkDecision 
 	const cheap = input.pricing.execute;
 
 	// Stay: every turn re-reads the context at the strong cache-read rate.
-	const stayCostUsd = n * (perM(ctx, strong.cacheRead) + perM(out, strong.output));
+	const stayCostUsd =
+		n * (perM(ctx, strong.cacheRead) + perM(out, strong.output));
 
 	// Swap: turn 1 re-prices the WHOLE context uncached; turns 2..N are
 	// cheap cache reads. Output runs on the cheap model throughout.
 	const swapPenaltyUsd = perM(ctx, cheap.input);
-	const swapCostUsd = swapPenaltyUsd + (n - 1) * (perM(ctx, cheap.cacheRead) + perM(out, cheap.output));
+	const swapCostUsd =
+		swapPenaltyUsd +
+		(n - 1) * (perM(ctx, cheap.cacheRead) + perM(out, cheap.output));
 
 	// Break-even N*: smallest N where swapping beats staying.
-	const perTurnSaving = perM(ctx, strong.cacheRead - cheap.cacheRead) + perM(out, strong.output - cheap.output);
+	const perTurnSaving =
+		perM(ctx, strong.cacheRead - cheap.cacheRead) +
+		perM(out, strong.output - cheap.output);
 	const breakEvenTurns =
-		perTurnSaving > 0 ? Math.ceil(swapPenaltyUsd / perTurnSaving) : Number.POSITIVE_INFINITY;
+		perTurnSaving > 0
+			? Math.ceil(swapPenaltyUsd / perTurnSaving)
+			: Number.POSITIVE_INFINITY;
 
 	const swap = swapCostUsd < stayCostUsd && Number.isFinite(breakEvenTurns);
 	return {
@@ -105,7 +114,10 @@ export interface AttachPrewalkOptions {
 	/** Execute-model id to switch to when the policy fires. */
 	executeModelId: string;
 	decide: (input: { contextTokensAtSwap: number }) => PrewalkDecision;
-	onSwap?: (info: { contextTokensAtSwap: number; decision: PrewalkDecision }) => void;
+	onSwap?: (info: {
+		contextTokensAtSwap: number;
+		decision: PrewalkDecision;
+	}) => void;
 }
 
 export interface PrewalkAttachment {
@@ -137,7 +149,9 @@ export function attachPrewalk(
 				options.onSwap?.({ contextTokensAtSwap, decision });
 			} catch (err) {
 				// A failed policy must never kill the worker session mid-run.
-				console.error(`prewalk: policy error (ignored): ${err instanceof Error ? err.message : String(err)}`);
+				console.error(
+					`prewalk: policy error (ignored): ${err instanceof Error ? err.message : String(err)}`,
+				);
 			}
 		})();
 	});

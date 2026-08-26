@@ -33,7 +33,6 @@ import {
 	execJj,
 	fetchIfRemote,
 	removeWorkspace,
-	taskBaseChangeId,
 	writeIdentityFile,
 } from "./jj.ts";
 
@@ -55,14 +54,25 @@ const DEFAULT_AUTHOR_EMAIL = "noreply@pi-task-v2.local";
 export class JujutsuWorkspaceDriver implements WorkspaceDriver {
 	readonly name = "jj";
 	readonly integrationMode: IntegrationMode;
-	readonly #opts: Required<Pick<JujutsuDriverOptions, "projectDir" | "authorName" | "authorEmail" | "integrationMode" | "namePrefix">>;
+	readonly #opts: Required<
+		Pick<
+			JujutsuDriverOptions,
+			| "projectDir"
+			| "authorName"
+			| "authorEmail"
+			| "integrationMode"
+			| "namePrefix"
+		>
+	>;
 	#prepared = false;
 	readonly #contexts = new Map<string, WorkspaceContext>();
 	#baseChangeId: string | undefined;
 
 	constructor(options: JujutsuDriverOptions) {
 		if (!existsSync(options.projectDir)) {
-			throw new Error(`JujutsuWorkspaceDriver: projectDir does not exist: ${options.projectDir}`);
+			throw new Error(
+				`JujutsuWorkspaceDriver: projectDir does not exist: ${options.projectDir}`,
+			);
 		}
 		const mode: IntegrationMode = options.integrationMode ?? "task-base";
 		this.#opts = {
@@ -76,7 +86,9 @@ export class JujutsuWorkspaceDriver implements WorkspaceDriver {
 	}
 
 	async isSupported(): Promise<boolean> {
-		const r = await execJj(["--version"], this.#opts.projectDir, { timeoutMs: 10_000 });
+		const r = await execJj(["--version"], this.#opts.projectDir, {
+			timeoutMs: 10_000,
+		});
 		return r.code === 0;
 	}
 
@@ -89,7 +101,7 @@ export class JujutsuWorkspaceDriver implements WorkspaceDriver {
 		this.#prepared = true;
 	}
 
-	async createWorkspace(taskId: string, _parentBranch?: string): Promise<WorkspaceContext> {
+	async createWorkspace(taskId: string): Promise<WorkspaceContext> {
 		if (!this.#prepared) await this.prepare();
 		const name = `${this.#opts.namePrefix}-${taskId}`;
 		const dir = await createWorkerWorkspace(this.#opts.projectDir, name);
@@ -109,18 +121,31 @@ export class JujutsuWorkspaceDriver implements WorkspaceDriver {
 	 * union-resolved first, residual conflicts are returned (escalation).
 	 * feature-branch mode: bookmark the tip; nothing merges.
 	 */
-	async mergeWorkspace(context: WorkspaceContext): Promise<{ success: boolean; conflicts?: string[] }> {
+	async mergeWorkspace(
+		context: WorkspaceContext,
+	): Promise<{ success: boolean; conflicts?: string[] }> {
 		if (this.#opts.integrationMode === "feature-branch") {
-			await createBookmarkAt(this.#opts.projectDir, context.branchName, context.branchName);
+			await createBookmarkAt(
+				this.#opts.projectDir,
+				context.branchName,
+				context.branchName,
+			);
 			return { success: true, conflicts: [] };
 		}
 		const base = this.#requireBase();
 		const outcome = await this.combine(base, [context]);
-		return { success: outcome.conflicts.length === 0, conflicts: outcome.conflicts };
+		return {
+			success: outcome.conflicts.length === 0,
+			conflicts: outcome.conflicts,
+		};
 	}
 
 	async cleanupWorkspace(context: WorkspaceContext): Promise<void> {
-		await removeWorkspace(this.#opts.projectDir, context.branchName, context.hostPath);
+		await removeWorkspace(
+			this.#opts.projectDir,
+			context.branchName,
+			context.hostPath,
+		);
 		this.#contexts.delete(context.branchName);
 	}
 
@@ -128,33 +153,66 @@ export class JujutsuWorkspaceDriver implements WorkspaceDriver {
 	async prepareIntegrationBase(goal: string): Promise<string> {
 		if (this.#baseChangeId !== undefined) return this.#baseChangeId;
 		if (!this.#prepared) await this.prepare();
-		const identityFile = writeIdentityFile(this.#opts.authorName, this.#opts.authorEmail);
-		this.#baseChangeId = await createAiTaskBase(this.#opts.projectDir, identityFile, goal);
+		const identityFile = writeIdentityFile(
+			this.#opts.authorName,
+			this.#opts.authorEmail,
+		);
+		this.#baseChangeId = await createAiTaskBase(
+			this.#opts.projectDir,
+			identityFile,
+			goal,
+		);
 		return this.#baseChangeId;
 	}
 
 	/** R1 atomic combine across ALL contexts, then the R4 union ladder,
 	 *  then the R3 consistency gate over the expected file union. */
-	async combine(baseChangeId: string, contexts: readonly WorkspaceContext[]): Promise<CombineOutcome> {
+	async combine(
+		baseChangeId: string,
+		contexts: readonly WorkspaceContext[],
+	): Promise<CombineOutcome> {
 		if (this.#opts.integrationMode === "feature-branch") {
-			throw new Error("combine() is unavailable in feature-branch integration mode");
+			throw new Error(
+				"combine() is unavailable in feature-branch integration mode",
+			);
 		}
-		const { mergeWorkspacesAtomic, resolveConflictsWithUnion, workspaceFileChanges } = await import("./jj.ts");
+		const {
+			mergeWorkspacesAtomic,
+			resolveConflictsWithUnion,
+			workspaceFileChanges,
+		} = await import("./jj.ts");
 		const names = contexts.map((c) => c.branchName);
 		// Pre-merge union of worker file changes — the consistency gate's input.
 		const expected = new Set<string>();
 		for (const c of contexts) {
-			for (const change of await workspaceFileChanges(this.#opts.projectDir, baseChangeId, c.branchName)) {
+			for (const change of await workspaceFileChanges(
+				this.#opts.projectDir,
+				baseChangeId,
+				c.branchName,
+			)) {
 				if (change.kind !== "D") expected.add(change.file);
 			}
 		}
-		const outcome = await mergeWorkspacesAtomic(this.#opts.projectDir, names, baseChangeId);
+		const outcome = await mergeWorkspacesAtomic(
+			this.#opts.projectDir,
+			names,
+			baseChangeId,
+		);
 		if (outcome.conflicts.length > 0) {
-			await resolveConflictsWithUnion(this.#opts.projectDir, baseChangeId, outcome.conflicts);
+			await resolveConflictsWithUnion(
+				this.#opts.projectDir,
+				baseChangeId,
+				outcome.conflicts,
+			);
 			const { detectChangeConflicts } = await import("./jj.ts");
-			outcome.conflicts = await detectChangeConflicts(this.#opts.projectDir, baseChangeId);
+			outcome.conflicts = await detectChangeConflicts(
+				this.#opts.projectDir,
+				baseChangeId,
+			);
 		}
-		await assertMerged(this.#opts.projectDir, baseChangeId, { expectedFiles: [...expected] });
+		await assertMerged(this.#opts.projectDir, baseChangeId, {
+			expectedFiles: [...expected],
+		});
 		return outcome;
 	}
 
@@ -165,10 +223,15 @@ export class JujutsuWorkspaceDriver implements WorkspaceDriver {
 		const { resolveCommitId } = await import("./jj.ts");
 		const commitId = await resolveCommitId(this.#opts.projectDir, baseChangeId);
 		const result = await execJj(["new", commitId], this.#opts.projectDir);
-		if (result.code !== 0) throw new Error(`jj new <merged> failed (${result.code}): ${result.stderr.trim()}`);
+		if (result.code !== 0)
+			throw new Error(
+				`jj new <merged> failed (${result.code}): ${result.stderr.trim()}`,
+			);
 	}
 
-	async publishBookmarks(contexts: readonly WorkspaceContext[]): Promise<string[]> {
+	async publishBookmarks(
+		contexts: readonly WorkspaceContext[],
+	): Promise<string[]> {
 		const created: string[] = [];
 		for (const c of contexts) {
 			await createBookmarkAt(this.#opts.projectDir, c.branchName, c.branchName);
@@ -179,7 +242,9 @@ export class JujutsuWorkspaceDriver implements WorkspaceDriver {
 
 	#requireBase(): string {
 		if (this.#baseChangeId === undefined) {
-			throw new Error("no integration base prepared — call prepareIntegrationBase(goal) first");
+			throw new Error(
+				"no integration base prepared — call prepareIntegrationBase(goal) first",
+			);
 		}
 		return this.#baseChangeId;
 	}

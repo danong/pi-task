@@ -30,11 +30,11 @@ export const YieldSchema = Type.Object({
 				command: Type.String(),
 				reason: Type.String(),
 			}),
+			{
+				description:
+					"Verification commands disputed via dispute_verification (the engine merges tool-recorded disputes in automatically; omit unless you also dispute inline)",
+			},
 		),
-		{
-			description:
-				"Verification commands disputed via dispute_verification (the engine merges tool-recorded disputes in automatically; omit unless you also dispute inline)",
-		},
 	),
 });
 

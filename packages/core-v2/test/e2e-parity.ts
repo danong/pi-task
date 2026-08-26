@@ -9,7 +9,13 @@
  */
 
 import { execSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -49,7 +55,10 @@ async function main(): Promise<number> {
 
 		const dbPath = join(dir, "tasks.db");
 		const daemon = startDaemon(dbPath);
-		if (daemon.reconciled.requeued.length + daemon.reconciled.failed.length !== 0) {
+		if (
+			daemon.reconciled.requeued.length + daemon.reconciled.failed.length !==
+			0
+		) {
 			throw new Error("fresh ledger should reconcile nothing");
 		}
 
@@ -72,7 +81,10 @@ async function main(): Promise<number> {
 			if (!cond) failures.push(msg);
 		};
 
-		check(result.receipt.verdict === "ship", `receipt verdict ship (got ${result.receipt.verdict})`);
+		check(
+			result.receipt.verdict === "ship",
+			`receipt verdict ship (got ${result.receipt.verdict})`,
+		);
 		check(result.verificationPassed, "verification passed");
 		check(existsSync(join(repo, "hello-v2.txt")), "hello-v2.txt exists");
 
@@ -84,7 +96,10 @@ async function main(): Promise<number> {
 
 		const task = daemon.store.getTask(result.taskId);
 		check(task?.status === "completed", "ledger task row completed");
-		check(task?.planMode !== null && task?.planMode !== undefined, "ledger plan_mode recorded");
+		check(
+			task?.planMode !== null && task?.planMode !== undefined,
+			"ledger plan_mode recorded",
+		);
 		const session = daemon.store.getMicroSession(`${result.taskId}-worker`);
 		check(session?.status === "yielded", "ledger session row yielded");
 		daemon.store.close();
@@ -92,7 +107,9 @@ async function main(): Promise<number> {
 		console.log(`receipt: ${JSON.stringify(result.receipt)}`);
 		if (failures.length > 0) {
 			// Keep the workspace + ledger + failure artifact for diagnosis.
-			console.error(`parity FAILED (workspace kept at ${dir}):\n  ${failures.join("\n  ")}`);
+			console.error(
+				`parity FAILED (workspace kept at ${dir}):\n  ${failures.join("\n  ")}`,
+			);
 			return 1;
 		}
 		console.log("✓ parity e2e passed");
@@ -110,6 +127,8 @@ function writeInitialCommit(repo: string): void {
 main()
 	.then((code) => process.exit(code))
 	.catch((err) => {
-		console.error(err instanceof Error ? err.stack ?? err.message : String(err));
+		console.error(
+			err instanceof Error ? (err.stack ?? err.message) : String(err),
+		);
 		process.exit(1);
 	});

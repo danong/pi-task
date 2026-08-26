@@ -12,7 +12,10 @@
 import { ExecutionBundleSchema } from "../contracts/payloads.ts";
 import type { ExecutionBundle, HandoffBundle } from "../contracts/payloads.ts";
 import { HandoffBundleSchema } from "../contracts/payloads.ts";
-import type { TaskLifecycleEvent, TaskPlugin } from "../contracts/task-plugin.ts";
+import type {
+	TaskLifecycleEvent,
+	TaskPlugin,
+} from "../contracts/task-plugin.ts";
 
 export interface PluginHookContext {
 	/** Sink for per-hook failures (defaults to console.error). */
@@ -23,25 +26,38 @@ function report(ctx: PluginHookContext | undefined, err: unknown): void {
 	// The sink call itself is guarded: a custom onHookError that throws must
 	// never turn a plugin failure into an unhandled rejection or crash the
 	// pipeline — it degrades to console.error.
-	const sink = ctx?.onHookError ?? ((e: unknown) => console.error("plugin: hook failed", e));
+	const sink =
+		ctx?.onHookError ??
+		((e: unknown) => console.error("plugin: hook failed", e));
 	try {
 		sink(err);
 	} catch (sinkErr) {
-		console.error("plugin: hook-failure sink itself threw", sinkErr, "while reporting", err);
+		console.error(
+			"plugin: hook-failure sink itself threw",
+			sinkErr,
+			"while reporting",
+			err,
+		);
 	}
 }
 
 async function callIsolated(
 	plugin: TaskPlugin,
 	hook: string,
-	run: () => Promise<unknown> | unknown,
+	run: () => unknown,
 	fallback: () => unknown,
 	ctx: PluginHookContext | undefined,
 ): Promise<unknown> {
 	try {
 		return await run();
 	} catch (err) {
-		report(ctx, new Error(`plugin "${plugin.name}" hook ${hook} failed: ${err instanceof Error ? err.message : String(err)}`, { cause: err }));
+		report(
+			ctx,
+			new Error(
+				`plugin "${plugin.name}" hook ${hook} failed: ${err instanceof Error ? err.message : String(err)}`,
+				{ cause: err },
+			),
+		);
 		return fallback();
 	}
 }
@@ -59,13 +75,16 @@ export async function transformExecutionBundleThrough(
 	let current = bundle;
 	for (const plugin of plugins) {
 		if (!plugin.transformExecutionBundle) continue;
-		current = await callIsolated(
+		current = (await callIsolated(
 			plugin,
 			"transformExecutionBundle",
-			async () => ExecutionBundleSchema.parse(await plugin.transformExecutionBundle!(current)),
+			async () =>
+				ExecutionBundleSchema.parse(
+					await plugin.transformExecutionBundle!(current),
+				),
 			() => current,
 			ctx,
-		) as ExecutionBundle;
+		)) as ExecutionBundle;
 	}
 	return current;
 }
@@ -83,13 +102,14 @@ export async function transformHandoffThrough(
 	let current = handoff;
 	for (const plugin of plugins) {
 		if (!plugin.transformHandoff) continue;
-		current = await callIsolated(
+		current = (await callIsolated(
 			plugin,
 			"transformHandoff",
-			async () => HandoffBundleSchema.parse(await plugin.transformHandoff!(current)),
+			async () =>
+				HandoffBundleSchema.parse(await plugin.transformHandoff!(current)),
 			() => current,
 			ctx,
-		) as HandoffBundle;
+		)) as HandoffBundle;
 	}
 	return current;
 }
@@ -105,7 +125,13 @@ export function emitLifecycleEventToPlugins(
 ): void {
 	for (const plugin of plugins) {
 		if (!plugin.onLifecycleEvent) continue;
-		void callIsolated(plugin, "onLifecycleEvent", () => plugin.onLifecycleEvent!(event), () => undefined, ctx);
+		void callIsolated(
+			plugin,
+			"onLifecycleEvent",
+			() => plugin.onLifecycleEvent!(event),
+			() => undefined,
+			ctx,
+		);
 	}
 }
 
@@ -125,10 +151,20 @@ export function registerPluginTriggers(
 	}
 }
 
-function callIsolatedSync(plugin: TaskPlugin, run: (p: TaskPlugin) => void, ctx?: PluginHookContext): void {
+function callIsolatedSync(
+	plugin: TaskPlugin,
+	run: (p: TaskPlugin) => void,
+	ctx?: PluginHookContext,
+): void {
 	try {
 		run(plugin);
 	} catch (err) {
-		report(ctx, new Error(`plugin "${plugin.name}" hook registerTriggers failed: ${err instanceof Error ? err.message : String(err)}`, { cause: err }));
+		report(
+			ctx,
+			new Error(
+				`plugin "${plugin.name}" hook registerTriggers failed: ${err instanceof Error ? err.message : String(err)}`,
+				{ cause: err },
+			),
+		);
 	}
 }

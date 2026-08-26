@@ -29,11 +29,27 @@ export interface SurfaceCapabilities {
 /** Downstream event union a surface may receive per level. */
 export type SurfaceEvent =
 	| { type: "TurnDelta"; text: string }
-	| { type: "ToolActivity"; tool: string; argsPreview: string; phase: "start" | "done"; durationMs?: number }
-	| { type: "PermissionRequest"; requestId: string; action: string; detail: string }
+	| {
+			type: "ToolActivity";
+			tool: string;
+			argsPreview: string;
+			phase: "start" | "done";
+			durationMs?: number;
+	  }
+	| {
+			type: "PermissionRequest";
+			requestId: string;
+			action: string;
+			detail: string;
+	  }
 	| { type: "Receipt"; receipt: TaskReceipt }
 	| { type: "Escalation"; taskId: string; reason: string }
-	| { type: "StatusSnapshot"; model: string; tier: string; activeTasks: number };
+	| {
+			type: "StatusSnapshot";
+			model: string;
+			tier: string;
+			activeTasks: number;
+	  };
 
 /** Upstream command union a surface may publish. */
 export type SurfaceCommand =
@@ -51,14 +67,14 @@ export interface SurfaceStream {
 
 export interface ControlSurface {
 	name: string;
-/** Subscribe to a hosted session's event stream at a QoS level:
- *  "delta" (token-level, TUI), "digest" (coarse, Discord),
- *  "receipts" (escalations + verdicts only, cron/CI).
- *
- *  The stream is session-scoped: Receipt/Escalation events are only
- *  delivered for tasks whose emitting runner stamped this session's id
- *  on the terminal task.* lifecycle event — a listener never sees
- *  another concurrent task's outcome. */
+	/** Subscribe to a hosted session's event stream at a QoS level:
+	 *  "delta" (token-level, TUI), "digest" (coarse, Discord),
+	 *  "receipts" (escalations + verdicts only, cron/CI).
+	 *
+	 *  The stream is session-scoped: Receipt/Escalation events are only
+	 *  delivered for tasks whose emitting runner stamped this session's id
+	 *  on the terminal task.* lifecycle event — a listener never sees
+	 *  another concurrent task's outcome. */
 	connect(sessionId: string, level: SubscriptionLevel): SurfaceStream;
 	capabilities(): SurfaceCapabilities;
 }

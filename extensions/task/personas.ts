@@ -59,7 +59,8 @@ few or no findings.`;
 /** Default reviewer: adversarial code review gating the fix loop. */
 export const adversarialPersona: Persona = {
 	name: "adversarial",
-	description: "Adversarial code reviewer; gates the review-fix loop with structured P0-P3 findings.",
+	description:
+		"Adversarial code reviewer; gates the review-fix loop with structured P0-P3 findings.",
 	systemPrompt: ADVERSARIAL_SYSTEM_PROMPT,
 	output: { kind: "findings" },
 };
@@ -150,7 +151,8 @@ change is faithful, return verdict "ship" with few or no findings.`;
 /** Two-axis review: repo conventions + a Fowler smell baseline. */
 export const standardsPersona: Persona = {
 	name: "standards",
-	description: "Reviews a change against repo conventions + a Fowler smell baseline.",
+	description:
+		"Reviews a change against repo conventions + a Fowler smell baseline.",
 	systemPrompt: STANDARDS_SYSTEM_PROMPT,
 	output: { kind: "findings" },
 };
@@ -158,7 +160,8 @@ export const standardsPersona: Persona = {
 /** Two-axis review: faithful implementation of the originating spec. */
 export const specFidelityPersona: Persona = {
 	name: "spec-fidelity",
-	description: "Reviews a change against the originating spec — requirements met, no scope creep, deviations justified.",
+	description:
+		"Reviews a change against the originating spec — requirements met, no scope creep, deviations justified.",
 	systemPrompt: SPEC_FIDELITY_SYSTEM_PROMPT,
 	output: { kind: "findings" },
 };
@@ -168,7 +171,8 @@ export const specFidelityPersona: Persona = {
  *  and the latest docs/architecture-review.md — never goals/vision. */
 export const architecturePersona: Persona = {
 	name: "architecture",
-	description: "Reviews a change against the recorded architecture — CONTEXT.md vocabulary/conventions, docs/adr/ decisions, the latest docs/architecture-review.md.",
+	description:
+		"Reviews a change against the recorded architecture — CONTEXT.md vocabulary/conventions, docs/adr/ decisions, the latest docs/architecture-review.md.",
 	systemPrompt: ARCHITECTURE_SYSTEM_PROMPT,
 	output: { kind: "findings" },
 };
@@ -188,7 +192,11 @@ export const PERSONAS: Persona[] = [
  * forked only under the explicit `persona = "parallel"` opt-in
  * (PARALLEL_REVIEW_PERSONA in orchestrator.ts).
  */
-export const DEFAULT_REVIEW_PERSONAS: string[] = ["standards", "spec-fidelity", "architecture"];
+export const DEFAULT_REVIEW_PERSONAS: string[] = [
+	"standards",
+	"spec-fidelity",
+	"architecture",
+];
 
 /** The persona used when none is specified. */
 export const DEFAULT_PERSONA: Persona = adversarialPersona;

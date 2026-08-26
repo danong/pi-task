@@ -25,13 +25,18 @@
  */
 
 import { execFile } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import {
 	CHECKLIST_EXTENSION_PATH,
 	buildWorkerSystemPrompt,
-	spawnWorkerSession,
 	spawnWorkerSessionResilient,
 	type WorkerFailureDiagnostics,
 	type WorkerResult,
@@ -42,7 +47,10 @@ import {
 	PREWALK_EXTENSION_PATH,
 	type SwapInfo,
 } from "./prewalk.ts";
-import { attachChecklistRelay, type ChecklistProgress } from "./checklist-relay.ts";
+import {
+	attachChecklistRelay,
+	type ChecklistProgress,
+} from "./checklist-relay.ts";
 import { resolveSandbox, type ResolvedSandbox } from "./sandbox.ts";
 import {
 	DEFAULT_PREWALK_MIN_REQUIREMENTS,
@@ -56,7 +64,12 @@ import {
 	type SandboxConfig,
 	type TaskShape,
 } from "./config.ts";
-import { buildMap, formatMapPrompt, loadRepoMapConfig, sliceRelevant } from "./repo-map.ts";
+import {
+	buildMap,
+	formatMapPrompt,
+	loadRepoMapConfig,
+	sliceRelevant,
+} from "./repo-map.ts";
 import {
 	assertCleanWorkingCopy,
 	assertMerged,
@@ -109,6 +122,30 @@ import {
 	type RunManifest,
 } from "./metrics.ts";
 
+// ─── Run-pipeline shape default ─────────────────────────────────────
+
+/** A run-pipeline shape optionally tagged with its config-table name
+ *  ("code" | "analysis" | any [shapes.*] key). A plain TaskShape IS a
+ *  valid NamedTaskShape: resolveTaskShape resolves shapes BY name, so
+ *  the orchestrator normally handles anonymous resolved shapes and the
+ *  manifest records the built-in default name when the tag is absent
+ *  (metrics.ts BuildManifestInput.shape: string). */
+interface NamedTaskShape extends TaskShape {
+	name?: string | undefined;
+}
+
+/** The built-in code shape — the fallback wherever a caller omits the
+ *  run-pipeline shape. Bound once so every `shape ?? …` site shares one
+ *  narrowed, non-optional value (DEFAULT_TASK_SHAPES is a plain Record,
+ *  so its `.code` entry alone does not satisfy strict null checks). */
+const DEFAULT_SHAPE: NamedTaskShape = {
+	// Unreachable fallback: DEFAULT_TASK_SHAPES always ships "code" (the
+	// same invariant config.ts resolveTaskShape relies on); the assertion
+	// only narrows the Record index.
+	...(DEFAULT_TASK_SHAPES.code as TaskShape),
+	name: "code",
+};
+
 // ─── Merge-failure artifact (R2) ────────────────────────────────────
 
 /**
@@ -131,12 +168,14 @@ export interface MergeFailureInfo {
 	}>;
 	danglingCommitIds: string[];
 	conflictedFiles: string[];
-	conflictHunks?: Record<string, string>;
-	metricsDir?: string;
+	/** Optional AND nullable under exactOptionalPropertyTypes — call sites
+	 *  forward their own `T | undefined` locals verbatim (R4 discipline). */
+	conflictHunks?: Record<string, string> | undefined;
+	metricsDir?: string | undefined;
 	project: string;
 	specMarkdown: string;
-	tier?: string;
-	runId?: string;
+	tier?: string | undefined;
+	runId?: string | undefined;
 }
 
 /** Write a merge-failure artifact via the existing .failure.json pattern
@@ -147,21 +186,26 @@ export function writeMergeFailureArtifact(opts: MergeFailureInfo): void {
 	try {
 		const artifact = buildFailureArtifact({
 			kind: "parallel",
-			runId: opts.runId,
+			...(opts.runId === undefined ? {} : { runId: opts.runId }),
 			specHash: hashSpec(opts.specMarkdown),
-			tier: opts.tier,
+			...(opts.tier === undefined ? {} : { tier: opts.tier }),
 			cause: opts.cause,
 			merge: {
 				workspaces: opts.workspaces,
 				dangling_commit_ids: opts.danglingCommitIds,
 				conflicted_files: opts.conflictedFiles,
-				conflict_hunks: opts.conflictHunks,
+				...(opts.conflictHunks === undefined
+					? {}
+					: { conflict_hunks: opts.conflictHunks }),
 			},
 			// R4: recovery happens on the USER's repo, scripted from the
 			// artifact — the guide travels with it.
 			recovery: buildRecoveryGuide(opts),
 		});
-		writeFailureArtifact(artifact, { metricsDir: opts.metricsDir, project: opts.project });
+		writeFailureArtifact(artifact, {
+			metricsDir: opts.metricsDir,
+			project: opts.project,
+		});
 	} catch {
 		// Best effort — the original failure propagates regardless.
 	}
@@ -183,8 +227,12 @@ const FAILURE_PATH_JJ_TIMEOUT_MS = 30_000;
  * committed work is complete, so the run attempts finalization (merge +
  * verification gate) instead of failing flat. Pure — hermetically tested.
  */
-export function isFinalizationIncomplete(progress: ChecklistProgress | null): boolean {
-	return progress !== null && progress.total > 0 && progress.done >= progress.total;
+export function isFinalizationIncomplete(
+	progress: ChecklistProgress | null,
+): boolean {
+	return (
+		progress !== null && progress.total > 0 && progress.done >= progress.total
+	);
 }
 
 /**
@@ -195,7 +243,8 @@ export function isFinalizationIncomplete(progress: ChecklistProgress | null): bo
  * are never classified. Pure — hermetically tested.
  */
 export function isNoYieldFailure(err: unknown): boolean {
-	const diag = (err as { diagnostics?: { code?: unknown } } | null)?.diagnostics;
+	const diag = (err as { diagnostics?: { code?: unknown } } | null)
+		?.diagnostics;
 	return diag?.code === "no_yield";
 }
 
@@ -213,7 +262,9 @@ export function isNoYieldFailure(err: unknown): boolean {
 export function classifyWorkerFailures(
 	progresses: Array<ChecklistProgress | null>,
 ): "merge" | "abort" {
-	return progresses.length > 0 && progresses.every(isFinalizationIncomplete) ? "merge" : "abort";
+	return progresses.length > 0 && progresses.every(isFinalizationIncomplete)
+		? "merge"
+		: "abort";
 }
 
 /**
@@ -244,11 +295,21 @@ export async function rescueWorkspaceStateBestEffort(
 		// After jj commit the rescue commit is @- (jj commit finalizes the
 		// working copy and opens a fresh empty @ on top).
 		const id = await execJj(
-			["log", "-r", "@-", "-T", "commit_id", "--no-graph", "--ignore-working-copy"],
+			[
+				"log",
+				"-r",
+				"@-",
+				"-T",
+				"commit_id",
+				"--no-graph",
+				"--ignore-working-copy",
+			],
 			workspaceDir,
 			opts,
 		);
-		return id.code === 0 && /^[0-9a-f]{40}$/.test(id.stdout.trim()) ? id.stdout.trim() : null;
+		return id.code === 0 && /^[0-9a-f]{40}$/.test(id.stdout.trim())
+			? id.stdout.trim()
+			: null;
 	} catch {
 		return null;
 	}
@@ -265,7 +326,11 @@ export async function rescueWorkspaceStateBestEffort(
  */
 export function buildRecoveryGuide(opts: {
 	cause: string;
-	workspaces: Array<{ name: string; commit_id: string; rescue_commit_id?: string }>;
+	workspaces: Array<{
+		name: string;
+		commit_id: string;
+		rescue_commit_id?: string;
+	}>;
 }): string {
 	const lines = [
 		`The task run failed before completing: ${opts.cause}`,
@@ -419,7 +484,12 @@ export function classifyOverlapDiffs(diffsByWorker: string[]): OverlapKind {
 	for (const diff of diffsByWorker) {
 		if (diff.includes("Binary files differ")) return "substantive";
 		for (const line of diff.split("\n")) {
-			if (line.startsWith("+++") || line.startsWith("---") || line.startsWith("diff --git")) continue;
+			if (
+				line.startsWith("+++") ||
+				line.startsWith("---") ||
+				line.startsWith("diff --git")
+			)
+				continue;
 			if (!line.startsWith("+") && !line.startsWith("-")) continue;
 			const content = line.slice(1);
 			if (content.trim().length === 0) continue; // whitespace-only
@@ -438,11 +508,15 @@ export function classifyOverlapDiffs(diffsByWorker: string[]): OverlapKind {
  * original failure. Exported for the hermetic test (real jj on a temp
  * repo).
  */
-export async function rescueAbortedWorkBestEffort(cwd: string, err: unknown): Promise<void> {
+export async function rescueAbortedWorkBestEffort(
+	cwd: string,
+	err: unknown,
+): Promise<void> {
 	try {
 		const status = await execJj(["status"], cwd);
 		if (status.code !== 0 || /has no changes/i.test(status.stdout)) return;
-		const cause = err instanceof Error ? err.message.slice(0, 140) : "unknown cause";
+		const cause =
+			err instanceof Error ? err.message.slice(0, 140) : "unknown cause";
 		await execJj(["commit", "-m", `rescue: aborted task run (${cause})`], cwd);
 	} catch {
 		// Best effort — the original failure propagates regardless.
@@ -460,31 +534,37 @@ export async function rescueAbortedWorkBestEffort(cwd: string, err: unknown): Pr
 function writeFailureArtifactBestEffort(opts: {
 	err: unknown;
 	kind: "worker" | "review" | "parallel" | "batch";
-	runId?: string;
-	metricsDir?: string;
+	runId?: string | undefined;
+	metricsDir?: string | undefined;
 	project: string;
 	specMarkdown: string;
-	tier?: string;
+	tier?: string | undefined;
 	/** R4 recovery hint (batch lane): the job-state file path — the
 	 *  recovery handle for aborted/timed-out jobs and failed items. */
-	recovery?: string;
+	recovery?: string | undefined;
 }): void {
 	if (!opts.metricsDir) return;
 	try {
-		const d = (opts.err as { diagnostics?: WorkerFailureDiagnostics }).diagnostics;
+		const d = (opts.err as { diagnostics?: WorkerFailureDiagnostics })
+			.diagnostics;
 		const artifact = buildFailureArtifact({
 			kind: opts.kind,
-			runId: opts.runId,
+			...(opts.runId === undefined ? {} : { runId: opts.runId }),
 			specHash: hashSpec(opts.specMarkdown),
-			tier: opts.tier,
-			cause: d?.cause ?? (opts.err instanceof Error ? opts.err.message : String(opts.err)),
-			turns: d?.turns,
-			idleMs: d?.idleMs,
-			lastTool: d?.lastTool,
-			stderrTail: d?.stderrTail,
-			recovery: opts.recovery,
+			...(opts.tier === undefined ? {} : { tier: opts.tier }),
+			cause:
+				d?.cause ??
+				(opts.err instanceof Error ? opts.err.message : String(opts.err)),
+			...(d?.turns === undefined ? {} : { turns: d.turns }),
+			...(d?.idleMs === undefined ? {} : { idleMs: d.idleMs }),
+			lastTool: d?.lastTool ?? null,
+			...(d?.stderrTail === undefined ? {} : { stderrTail: d.stderrTail }),
+			...(opts.recovery === undefined ? {} : { recovery: opts.recovery }),
 		});
-		writeFailureArtifact(artifact, { metricsDir: opts.metricsDir, project: opts.project });
+		writeFailureArtifact(artifact, {
+			metricsDir: opts.metricsDir,
+			project: opts.project,
+		});
 	} catch {
 		// Best effort — the original failure propagates regardless.
 	}
@@ -508,14 +588,14 @@ export interface ExecuteTaskOptions {
 	 *  commands is the single post-merge gate, run once on the merged tree. */
 	subSpecs?: string[];
 	/** Worker system prompt (appended to pi's default). */
-	systemPrompt?: string;
+	systemPrompt?: string | undefined;
 	/** When set, worker starts on this model and swaps to the execute
 	 *  model on its first edit (prewalk). Auto-skipped if == execute model. */
 	prewalkModel?: string;
 	/** Model the worker runs on after the prewalk swap. Defaults to model. */
 	executeModel?: string;
 	/** Called when a prewalk model swap fires. */
-	onSwap?: (info: SwapInfo) => void;
+	onSwap?: ((info: SwapInfo) => void) | undefined;
 	/** Number of parallel workers. Default: 1 (single-worker path).
 	 *  Each worker gets an isolated jj workspace merged into the task base
 	 *  afterwards; clamped to the requirement count. */
@@ -527,9 +607,9 @@ export interface ExecuteTaskOptions {
 	/** Map annotation model override. Default: config (then execute model). */
 	mapModel?: string;
 	/** Abort signal — terminates the worker on abort. */
-	signal?: AbortSignal;
+	signal?: AbortSignal | undefined;
 	/** Per-command timeout for verification (ms). Default: 10 min. */
-	verificationTimeoutMs?: number;
+	verificationTimeoutMs?: number | undefined;
 	/**
 	 * Worker wall-clock budget (ms, Phase 11 — R5). Default:
 	 * WORKER_WALL_TIMEOUT_MS (45 min). The task tool passes the resolved
@@ -573,7 +653,7 @@ export interface ExecuteTaskOptions {
 	 *  slots, and review axes. Default: the built-in code shape. */
 	shape?: TaskShape;
 	/** Max fix workers the loop may dispatch (when review enabled). Default: 2. */
-	maxFixIterations?: number;
+	maxFixIterations?: number | undefined;
 	/** Tasks with FEWER requirements than this skip the prewalk (start
 	 *  straight on the execute model). Default: config
 	 *  `[defaults] prewalk_min_requirements` (3). */
@@ -585,29 +665,29 @@ export interface ExecuteTaskOptions {
 	/** OpenRouter service tier for this run's subprocesses (the tier's
 	 *  service_tier config — "flex" | "priority"). Threaded to every worker
 	 *  and reviewer spawn; recorded in the manifest. Unset → standard. */
-	serviceTier?: string;
+	serviceTier?: string | undefined;
 	/** Turn budget for the main worker (the tier's turn_budget — Phase 3):
 	 *  convergence nudge at 70%, typed abort at 100%. Unset → unbounded. */
-	turnBudget?: number;
+	turnBudget?: number | undefined;
 	/** Whether the worker tracks requirements via the checklist tool
 	 *  (the tier's checklist config). false → the checklist extension is
 	 *  not loaded and the prompt stops mandating it. Default: true. */
-	checklist?: boolean;
+	checklist?: boolean | undefined;
 	/** OpenRouter endpoint slugs for provider.only (the tier's provider_only
 	 *  config — the flex pin). Threaded with serviceTier. */
-	providerOnly?: string[];
+	providerOnly?: string[] | undefined;
 	/** Batch provider injection (hermetic tests inject the fake; the task
 	 *  tool never passes one). Default: OpenRouterBatchProvider (needs
 	 *  OPENROUTER_API_KEY — typed BatchError("no_api_key") when absent). */
-	batchProvider?: BatchProvider;
+	batchProvider?: BatchProvider | undefined;
 	/** Budget tier label for the manifest (Phase 10). Orchestrator does
 	 *  not interpret it — the task tool passes the resolved tier so
 	 *  persisted manifests carry config.budget. Direct executeTask callers
 	 *  may omit it (manifests then say "default"). */
-	budget?: string;
+	budget?: string | undefined;
 	/** Directory for persisted run manifests. When unset, the manifest is
 	 *  built in-memory only (TaskResult.manifest) and nothing is written. */
-	metricsDir?: string;
+	metricsDir?: string | undefined;
 	/**
 	 * Worker sandbox policy ([sandbox] vocabulary, config/task.toml).
 	 * Omitted → the built-in defaults (same shape as loadTaskConfig with no
@@ -616,7 +696,7 @@ export interface ExecuteTaskOptions {
 	 * probe failure degrades this run to plain spawns with ONE actionable
 	 * warning.
 	 */
-	sandbox?: SandboxConfig;
+	sandbox?: SandboxConfig | undefined;
 	/**
 	 * AI commit identity (todo #84): worker commits are authored as
 	 * aiAuthorName / aiAuthorEmail ("{model}" in the name is replaced with
@@ -625,27 +705,27 @@ export interface ExecuteTaskOptions {
 	 * their identity — the override is worker-scoped (JJ_CONFIG in the
 	 * worker env) and the parallel merge target (createAiTaskBase).
 	 */
-	aiAuthorName?: string;
-	aiAuthorEmail?: string;
+	aiAuthorName?: string | undefined;
+	aiAuthorEmail?: string | undefined;
 	/** Project name for the manifest path (<metricsDir>/<project>/...).
 	 *  Default: the cwd basename. */
-	project?: string;
+	project?: string | undefined;
 	/** Preserve worker session traces next to the manifest (benchmark mode;
 	 *  requires metricsDir). Implies the worker persists its session. */
-	preserveSessions?: boolean;
-	onUpdate?: (partial: unknown) => void;
+	preserveSessions?: boolean | undefined;
+	onUpdate?: ((partial: unknown) => void) | undefined;
 	/** Wall-clock run-lifecycle timestamps + pre-dispatch main-session spend
 	 *  (R1). The task tool records received_at + main_session_tokens when the
 	 *  tool call starts (main-session tokens read via sessionManager); direct
 	 *  callers may omit them (manifest fields then absent/zero — backward
 	 *  compatible). dispatched_at/completed_at are stamped by the orchestrator. */
-	receivedAt?: string;
-	mainSessionTokens?: number;
+	receivedAt?: string | undefined;
+	mainSessionTokens?: number | undefined;
 	/** Pre-generated run id (detached dispatch): the caller knows the id
 	 *  BEFORE the run completes (it returns it immediately), so the manifest
 	 *  and any failure artifact must land under that same id. Absent →
 	 *  generated at finalization (blocking runs, unchanged). */
-	runId?: string;
+	runId?: string | undefined;
 }
 
 export interface VerificationCommandResult {
@@ -659,6 +739,8 @@ export interface VerificationResult {
 	commands: number;
 	duration_ms: number;
 	failures: VerificationCommandResult[];
+	/** True when a command was killed by its timeout (exit 124). */
+	timed_out?: boolean;
 }
 
 export interface TaskResult {
@@ -737,9 +819,19 @@ function runCommand(
 				// Timeout exit code 124 (conventional, matches `timeout(1)`).
 				// Node 22 reports execFile timeouts as killed=true + signal=SIGTERM
 				// (code is null); ETIMEDOUT is the older/other-platform shape.
-				const err = error as (NodeJS.ErrnoException & { killed?: boolean; signal?: string }) | null;
-				const timedOut = err?.code === "ETIMEDOUT" || (err?.killed === true && err.signal === "SIGTERM");
-				const exitCode = !err ? 0 : timedOut ? 124 : typeof err.code === "number" ? err.code : 1;
+				const err = error as
+					| (NodeJS.ErrnoException & { killed?: boolean; signal?: string })
+					| null;
+				const timedOut =
+					err?.code === "ETIMEDOUT" ||
+					(err?.killed === true && err.signal === "SIGTERM");
+				const exitCode = !err
+					? 0
+					: timedOut
+						? 124
+						: typeof err.code === "number"
+							? err.code
+							: 1;
 				const output = [stdout, stderr].filter(Boolean).join("\n").trim();
 				resolve({ command, exitCode, output });
 			},
@@ -801,7 +893,10 @@ export interface VerificationBaselineEntry {
 export const BASELINE_SIGNATURE_CAP = 2000;
 
 /** Pure: the bounded comparison signature of a command's output. */
-export function outputSignature(output: string, cap: number = BASELINE_SIGNATURE_CAP): string {
+export function outputSignature(
+	output: string,
+	cap: number = BASELINE_SIGNATURE_CAP,
+): string {
 	return output.length <= cap ? output : output.slice(0, cap);
 }
 
@@ -812,9 +907,13 @@ export function outputSignature(output: string, cap: number = BASELINE_SIGNATURE
  * (most task verifications fail before the change — that is TDD, not a
  * defect).
  */
-export function isBrokenVerificationCommand(entry: VerificationBaselineEntry): boolean {
+export function isBrokenVerificationCommand(
+	entry: VerificationBaselineEntry,
+): boolean {
 	if (entry.exitCode === 127) return true; // command not found
-	return entry.exitCode === 2 && /syntax error|parse error/i.test(entry.signature);
+	return (
+		entry.exitCode === 2 && /syntax error|parse error/i.test(entry.signature)
+	);
 }
 
 /**
@@ -840,8 +939,8 @@ export async function captureVerificationBaseline(
 		if (isBrokenVerificationCommand(entry)) {
 			throw new Error(
 				`verification command is broken (exit ${entry.exitCode} on the untouched tree) — fix the spec before dispatching:\n` +
-						`  ${command}\n` +
-						`  ${entry.signature.split("\n")[0]}`,
+					`  ${command}\n` +
+					`  ${entry.signature.split("\n")[0]}`,
 			);
 		}
 		baseline.push(entry);
@@ -860,13 +959,20 @@ export async function captureVerificationBaseline(
 export function classifyVerificationFailures(
 	failures: VerificationCommandResult[],
 	baseline: VerificationBaselineEntry[],
-): { actionable: VerificationCommandResult[]; specDefectSuspected: VerificationCommandResult[] } {
+): {
+	actionable: VerificationCommandResult[];
+	specDefectSuspected: VerificationCommandResult[];
+} {
 	const byCommand = new Map(baseline.map((b) => [b.command, b]));
 	const actionable: VerificationCommandResult[] = [];
 	const specDefectSuspected: VerificationCommandResult[] = [];
 	for (const failure of failures) {
 		const base = byCommand.get(failure.command);
-		if (base && base.exitCode === failure.exitCode && base.signature === outputSignature(failure.output)) {
+		if (
+			base &&
+			base.exitCode === failure.exitCode &&
+			base.signature === outputSignature(failure.output)
+		) {
 			specDefectSuspected.push(failure);
 		} else {
 			actionable.push(failure);
@@ -896,7 +1002,9 @@ export function adjudicateDisputes(
 	baseline: VerificationBaselineEntry[],
 ): { upheld: string[]; rejected: VerificationDispute[] } {
 	const suspected = new Set(
-		classifyVerificationFailures(failures, baseline).specDefectSuspected.map((f) => f.command),
+		classifyVerificationFailures(failures, baseline).specDefectSuspected.map(
+			(f) => f.command,
+		),
 	);
 	const upheld: string[] = [];
 	const rejected: VerificationDispute[] = [];
@@ -983,7 +1091,8 @@ export function aggregateSubSpecs(subSpecs: string[]): Spec {
 export function splitSpec(spec: Spec, parallel: number): string[] {
 	const buckets: string[][] = Array.from({ length: parallel }, () => []);
 	spec.requirements.forEach((req, index) => {
-		buckets[index % parallel].push(`- ${req}`);
+		// index < parallel keeps every bucket in range (noUncheckedIndexedAccess).
+		buckets[index % parallel]!.push(`- ${req}`);
 	});
 	return buckets.map((reqs) => {
 		const parts = [`## Goal\n${spec.goal}`];
@@ -1015,13 +1124,21 @@ export function routeRun(
 	shape: TaskShape | undefined,
 	opts: { parallel?: number; hasSubSpecs?: boolean } = {},
 ): RunRoute {
-	const channel = (shape ?? DEFAULT_TASK_SHAPES.code).channel;
+	const channel = (shape ?? DEFAULT_SHAPE).channel;
 	if (channel !== "batch") return { kind: "interactive" };
 	if ((opts.parallel ?? 1) > 1) {
-		return { kind: "invalid", reason: "the batch channel does not support parallel runs (single-turn job lane, no workspaces)" };
+		return {
+			kind: "invalid",
+			reason:
+				"the batch channel does not support parallel runs (single-turn job lane, no workspaces)",
+		};
 	}
 	if (opts.hasSubSpecs) {
-		return { kind: "invalid", reason: "the batch channel does not support sub_specs runs (single-turn job lane, one spec)" };
+		return {
+			kind: "invalid",
+			reason:
+				"the batch channel does not support sub_specs runs (single-turn job lane, one spec)",
+		};
 	}
 	return { kind: "batch" };
 }
@@ -1066,9 +1183,12 @@ export const PARALLEL_REVIEW_PERSONA = "parallel";
  * the default). Axis-less shapes never reach here — resolveReviewGate
  * disabled the review upstream. Pure — tested hermetically.
  */
-export function resolveReviewAxes(persona: string | undefined, shape: TaskShape | undefined): Persona[] {
+export function resolveReviewAxes(
+	persona: string | undefined,
+	shape: TaskShape | undefined,
+): Persona[] {
 	if (persona === PARALLEL_REVIEW_PERSONA) {
-		const axes = (shape ?? DEFAULT_TASK_SHAPES.code).review
+		const axes = (shape ?? DEFAULT_SHAPE).review
 			.map((n) => getPersona(n))
 			.filter((p): p is Persona => p !== undefined);
 		return axes.length > 0 ? axes : [DEFAULT_PERSONA];
@@ -1118,10 +1238,16 @@ const FIX_PROMPT_OUTPUT_CAP_LINES = 40;
 /** Pure: cap a verification failure's output for the fix prompt (first
  *  {@link FIX_PROMPT_OUTPUT_CAP_LINES} lines + a pointer when truncated).
  *  Hermetically tested. */
-export function capFixOutput(output: string, capLines: number = FIX_PROMPT_OUTPUT_CAP_LINES): string {
+export function capFixOutput(
+	output: string,
+	capLines: number = FIX_PROMPT_OUTPUT_CAP_LINES,
+): string {
 	const lines = output.split("\n");
 	if (lines.length <= capLines) return output;
-	return lines.slice(0, capLines).join("\n") + `\n… (${lines.length - capLines} more lines truncated — full output in the manifest)`;
+	return (
+		lines.slice(0, capLines).join("\n") +
+		`\n… (${lines.length - capLines} more lines truncated — full output in the manifest)`
+	);
 }
 
 /**
@@ -1136,20 +1262,26 @@ export function buildFixPrompt(opts: {
 	failures: VerificationCommandResult[];
 	findings: Finding[];
 }): string {
-		const parts = [
+	const parts = [
 		"You are fixing issues found during review of a completed task. Address the " +
 			"findings below and make the verification pass, then call yield().",
 		`## Spec\n${opts.specMarkdown}`,
 	];
 	if (opts.failures.length > 0) {
 		const failText = opts.failures
-			.map((f) => `### \`${f.command}\` (exit ${f.exitCode})\n\`\`\`\n${capFixOutput(f.output)}\n\`\`\``)
+			.map(
+				(f) =>
+					`### \`${f.command}\` (exit ${f.exitCode})\n\`\`\`\n${capFixOutput(f.output)}\n\`\`\``,
+			)
 			.join("\n\n");
 		parts.push(`## Verification failures\n${failText}`);
 	}
 	if (opts.findings.length > 0) {
 		const findText = opts.findings
-			.map((f) => `- [${f.priority}] (${f.category}) ${f.file}: ${f.description} — verify: ${f.verification}`)
+			.map(
+				(f) =>
+					`- [${f.priority}] (${f.category}) ${f.file}: ${f.description} — verify: ${f.verification}`,
+			)
 			.join("\n");
 		parts.push(`## Review findings to address (P0/P1)\n${findText}`);
 	}
@@ -1163,10 +1295,19 @@ function headCommitId(cwd: string, rev = "@"): Promise<string> {
 	return new Promise((resolve, reject) => {
 		execFile(
 			"jj",
-			["log", "-r", rev, "--no-graph", "-T", "commit_id", "--ignore-working-copy"],
+			[
+				"log",
+				"-r",
+				rev,
+				"--no-graph",
+				"-T",
+				"commit_id",
+				"--ignore-working-copy",
+			],
 			{ cwd },
 			(error, stdout) => {
-				if (error) reject(new Error(`jj log -r ${rev} failed: ${error.message}`));
+				if (error)
+					reject(new Error(`jj log -r ${rev} failed: ${error.message}`));
 				else resolve(stdout.trim());
 			},
 		);
@@ -1186,10 +1327,21 @@ function computeDiff(cwd: string, fromRev: string): Promise<string> {
 	return new Promise((resolve, reject) => {
 		execFile(
 			"jj",
-			["diff", "--from", fromRev, "--to", "@-", "--git", "--ignore-working-copy"],
+			[
+				"diff",
+				"--from",
+				fromRev,
+				"--to",
+				"@-",
+				"--git",
+				"--ignore-working-copy",
+			],
 			{ cwd, maxBuffer: MAX_OUTPUT_BYTES },
 			(error, stdout) => {
-				if (error) reject(new Error(`jj diff --from ${fromRev} failed: ${error.message}`));
+				if (error)
+					reject(
+						new Error(`jj diff --from ${fromRev} failed: ${error.message}`),
+					);
 				else resolve(stdout.trim());
 			},
 		);
@@ -1202,7 +1354,10 @@ function computeDiff(cwd: string, fromRev: string): Promise<string> {
  * deletion, EXCLUDING the "+++"/"---" hunk headers. Binary diffs and
  * rename-only changes count nothing. Pure — hermetically tested.
  */
-export function parseDiffStat(diff: string): { insertions: number; deletions: number } {
+export function parseDiffStat(diff: string): {
+	insertions: number;
+	deletions: number;
+} {
 	let insertions = 0;
 	let deletions = 0;
 	for (const line of diff.split("\n")) {
@@ -1248,33 +1403,36 @@ function assembleManifest(opts: {
 	prewalkModel: string;
 	executeModel: string;
 	reviewModel: string;
-	shape: string;
+	/** The run-pipeline SHAPE the run used (resolved by executeTask).
+	 *  Optional: absent → the built-in defaults (name "code", channel
+	 *  "sync") are recorded on the manifest. */
+	shape?: NamedTaskShape | undefined;
 	reviewForked: boolean;
-	budget?: string;
+	budget?: string | undefined;
 	/** OpenRouter service tier the run requested (flex infra). */
-	serviceTier?: string;
+	serviceTier?: string | undefined;
 	worker: WorkerResult;
 	workerDurationMs: number;
 	totalDurationMs: number;
 	swapTurn: number | null;
 	verification: VerificationResult;
 	/** Spec-defect suspects (baseline-matched failures) for the manifest. */
-	suspectedSpecDefects?: string[];
+	suspectedSpecDefects?: string[] | undefined;
 	/** Adjudicated worker disputes for the manifest. */
-	disputes?: { upheld: string[]; rejected: VerificationDispute[] };
+	disputes?: { upheld: string[]; rejected: VerificationDispute[] } | undefined;
 	review: ReviewMetricsInput | null;
 	fixLoop: { iterations: number; costUsd: number };
 	/** Whether the worker sandbox was ACTIVE for this run (R3). */
-	sandbox?: boolean;
+	sandbox?: boolean | undefined;
 	/** Run-lifecycle timestamps (R1): dispatched_at (worker spawn) and the
 	 *  main-session pre-dispatch token spend (task tool supplies received_at
 	 *  + mainSessionTokens; completed_at is stamped by finalizeMetrics). */
-	receivedAt?: string;
-	dispatchedAt?: string;
-	completedAt?: string;
-	mainSessionTokens?: number;
+	receivedAt?: string | undefined;
+	dispatchedAt?: string | undefined;
+	completedAt?: string | undefined;
+	mainSessionTokens?: number | undefined;
 	/** Aggregate files changed + added/removed line counts (R1). */
-	filesChanged?: string[];
+	filesChanged?: string[] | undefined;
 	insertions: number;
 	deletions: number;
 	/** Supplied by finalizeMetrics (the run id + preserved session traces). */
@@ -1298,7 +1456,7 @@ function assembleManifest(opts: {
 				by_priority: countByPriority(opts.review.result.findings),
 				cost_usd: opts.review.costUsd,
 				personas: opts.review.personas,
-		  }
+			}
 		: null;
 	return buildRunManifest({
 		runId: opts.runId,
@@ -1311,9 +1469,11 @@ function assembleManifest(opts: {
 			reviewForked: opts.reviewForked,
 			shape: opts.shape?.name ?? "code",
 			channel: opts.shape?.channel ?? "sync",
-			budget: opts.budget,
-			sandbox: opts.sandbox,
-			serviceTier: opts.serviceTier,
+			...(opts.budget === undefined ? {} : { budget: opts.budget }),
+			...(opts.sandbox === undefined ? {} : { sandbox: opts.sandbox }),
+			...(opts.serviceTier === undefined
+				? {}
+				: { serviceTier: opts.serviceTier }),
 		},
 		phases: {
 			prewalk: split.prewalk,
@@ -1323,23 +1483,42 @@ function assembleManifest(opts: {
 				commands: opts.verification.commands,
 				duration_ms: opts.verification.duration_ms,
 				source: "worker-tree",
-				timed_out: opts.verification.timed_out,
-				...(opts.suspectedSpecDefects?.length ? { suspected_spec_defects: opts.suspectedSpecDefects } : {}),
-				...(opts.disputes && (opts.disputes.upheld.length > 0 || opts.disputes.rejected.length > 0)
+				...(opts.verification.timed_out === undefined
+					? {}
+					: { timed_out: opts.verification.timed_out }),
+				...(opts.suspectedSpecDefects?.length
+					? { suspected_spec_defects: opts.suspectedSpecDefects }
+					: {}),
+				...(opts.disputes &&
+				(opts.disputes.upheld.length > 0 || opts.disputes.rejected.length > 0)
 					? { disputes: opts.disputes }
 					: {}),
 			},
 			review,
-			fixLoop: { iterations: opts.fixLoop.iterations, cost_usd: opts.fixLoop.costUsd },
+			fixLoop: {
+				iterations: opts.fixLoop.iterations,
+				cost_usd: opts.fixLoop.costUsd,
+			},
 		},
 		durationMs: opts.totalDurationMs,
-		readDuplicationTokens: computeReadDuplication(opts.worker.reads, opts.swapTurn).tokens,
+		readDuplicationTokens: computeReadDuplication(
+			opts.worker.reads,
+			opts.swapTurn,
+		).tokens,
 		sessionFiles: opts.sessionFiles,
-		receivedAt: opts.receivedAt,
-		dispatchedAt: opts.dispatchedAt,
-		completedAt: opts.completedAt,
-		mainSessionTokens: opts.mainSessionTokens,
-		filesChanged: opts.filesChanged,
+		...(opts.receivedAt === undefined ? {} : { receivedAt: opts.receivedAt }),
+		...(opts.dispatchedAt === undefined
+			? {}
+			: { dispatchedAt: opts.dispatchedAt }),
+		...(opts.completedAt === undefined
+			? {}
+			: { completedAt: opts.completedAt }),
+		...(opts.mainSessionTokens === undefined
+			? {}
+			: { mainSessionTokens: opts.mainSessionTokens }),
+		...(opts.filesChanged === undefined
+			? {}
+			: { filesChanged: opts.filesChanged }),
 		insertions: opts.insertions,
 		deletions: opts.deletions,
 	});
@@ -1352,13 +1531,18 @@ function assembleManifest(opts: {
  */
 function finalizeMetrics(opts: {
 	cwd: string;
-	project?: string;
-	metricsDir?: string;
-	preserveSessions?: boolean;
-	runId?: string;
+	/** Optional AND nullable under exactOptionalPropertyTypes — call sites
+	 *  forward their own `T | undefined` locals verbatim (R4 discipline). */
+	project?: string | undefined;
+	metricsDir?: string | undefined;
+	preserveSessions?: boolean | undefined;
+	runId?: string | undefined;
 	worker: WorkerResult;
-	assemble: Omit<Parameters<typeof assembleManifest>[0], "runId" | "sessionFiles" | "completedAt">;
-}): { manifest: RunManifest; manifestPath?: string } {
+	assemble: Omit<
+		Parameters<typeof assembleManifest>[0],
+		"runId" | "sessionFiles" | "completedAt"
+	>;
+}): { manifest: RunManifest; manifestPath?: string | undefined } {
 	const project = opts.project ?? deriveProjectName(opts.cwd);
 	const runId = opts.runId ?? generateRunId();
 
@@ -1411,35 +1595,39 @@ function renderSpecMarkdown(spec: Spec): string {
  */
 function finalizeParallelMetrics(opts: {
 	cwd: string;
-	project?: string;
-	metricsDir?: string;
-	runId?: string;
+	/** Optional AND nullable under exactOptionalPropertyTypes — the caller
+	 *  forwards its own `T | undefined` locals verbatim (R4 discipline). */
+	project?: string | undefined;
+	metricsDir?: string | undefined;
+	runId?: string | undefined;
 	specMarkdown: string;
 	requirements: number;
 	prewalkModel: string;
 	executeModel: string;
 	reviewModel: string;
-	budget?: string;
+	budget?: string | undefined;
 	/** Whether the worker sandbox was ACTIVE for this run (R3). */
-	sandbox?: boolean;
+	sandbox?: boolean | undefined;
 	workers: WorkerResult[];
 	parallelDurationMs: number;
 	totalDurationMs: number;
 	verification: VerificationResult;
-	/** Run-lifecycle timestamps + main-session spend + diff stats (R1). */
-	receivedAt?: string;
-	dispatchedAt?: string;
-	mainSessionTokens?: number;
+	/** Run-lifecycle timestamps + main-session spend + diff stats (R1).
+	 *  Optional AND nullable under exactOptionalPropertyTypes — the caller
+	 *  forwards its own `T | undefined` locals verbatim (R4 discipline). */
+	receivedAt?: string | undefined;
+	dispatchedAt?: string | undefined;
+	mainSessionTokens?: number | undefined;
 	/** Aggregate files changed across the workers (R1). */
-	filesChanged?: string[];
+	filesChanged?: string[] | undefined;
 	insertions: number;
 	deletions: number;
 	/** R1/R4/R5 parallel-merge record (atomic combine + union ladder +
 	 *  overlap classification) — written into the manifest. */
-	merge?: MergeMetrics;
+	merge?: MergeMetrics | undefined;
 	/** Spec-defect suspects (baseline-matched failures on the merged tree). */
 	suspectedSpecDefects?: string[];
-}): { manifest: RunManifest; manifestPath?: string } {
+}): { manifest: RunManifest; manifestPath?: string | undefined } {
 	const project = opts.project ?? deriveProjectName(opts.cwd);
 	const manifest = buildRunManifest({
 		runId: opts.runId ?? generateRunId(),
@@ -1450,34 +1638,47 @@ function finalizeParallelMetrics(opts: {
 			executeModel: opts.executeModel,
 			reviewModel: opts.reviewModel,
 			reviewForked: false,
-			budget: opts.budget,
-			sandbox: opts.sandbox,
-			serviceTier: opts.serviceTier,
+			...(opts.budget === undefined ? {} : { budget: opts.budget }),
+			...(opts.sandbox === undefined ? {} : { sandbox: opts.sandbox }),
 		},
 		phases: {
 			prewalk: null,
-			execute: aggregateExecutePhase(opts.workers, opts.parallelDurationMs, opts.executeModel),
+			execute: aggregateExecutePhase(
+				opts.workers,
+				opts.parallelDurationMs,
+				opts.executeModel,
+			),
 			verify: {
 				passed: opts.verification.passed,
 				commands: opts.verification.commands,
 				duration_ms: opts.verification.duration_ms,
 				source: "union-gate",
-				timed_out: opts.verification.timed_out,
-				...(opts.suspectedSpecDefects?.length ? { suspected_spec_defects: opts.suspectedSpecDefects } : {}),
+				...(opts.verification.timed_out === undefined
+					? {}
+					: { timed_out: opts.verification.timed_out }),
+				...(opts.suspectedSpecDefects?.length
+					? { suspected_spec_defects: opts.suspectedSpecDefects }
+					: {}),
 			},
 			review: null,
 			fixLoop: { iterations: 0, cost_usd: 0 },
 		},
 		durationMs: opts.totalDurationMs,
 		readDuplicationTokens: 0,
-		receivedAt: opts.receivedAt,
-		dispatchedAt: opts.dispatchedAt,
+		...(opts.receivedAt === undefined ? {} : { receivedAt: opts.receivedAt }),
+		...(opts.dispatchedAt === undefined
+			? {}
+			: { dispatchedAt: opts.dispatchedAt }),
 		completedAt: new Date().toISOString(),
-		mainSessionTokens: opts.mainSessionTokens,
-		filesChanged: opts.filesChanged,
+		...(opts.mainSessionTokens === undefined
+			? {}
+			: { mainSessionTokens: opts.mainSessionTokens }),
+		...(opts.filesChanged === undefined
+			? {}
+			: { filesChanged: opts.filesChanged }),
 		insertions: opts.insertions,
 		deletions: opts.deletions,
-		merge: opts.merge,
+		...(opts.merge === undefined ? {} : { merge: opts.merge }),
 	});
 	const manifestPath = opts.metricsDir
 		? writeManifest(manifest, { metricsDir: opts.metricsDir, project })
@@ -1487,8 +1688,18 @@ function finalizeParallelMetrics(opts: {
 
 // ─── Orchestrator ────────────────────────────────────────────────────
 
-export async function executeTask(opts: ExecuteTaskOptions): Promise<TaskResult> {
-	const { cwd, model, systemPrompt, signal, verificationTimeoutMs, onUpdate, onSwap } = opts;
+export async function executeTask(
+	opts: ExecuteTaskOptions,
+): Promise<TaskResult> {
+	const {
+		cwd,
+		model,
+		systemPrompt,
+		signal,
+		verificationTimeoutMs,
+		onUpdate,
+		onSwap,
+	} = opts;
 	// R2: the merge-failure artifact targets <metricsDir>/<project>/; resolved
 	// once here (the parallel path's worker-failure + merge-failure writes
 	// both use these).
@@ -1496,7 +1707,8 @@ export async function executeTask(opts: ExecuteTaskOptions): Promise<TaskResult>
 	const project = opts.project ?? deriveProjectName(cwd);
 	const budget = opts.budget;
 	const parallel = opts.parallel ?? 1;
-	const subSpecs = opts.subSpecs && opts.subSpecs.length > 0 ? opts.subSpecs : undefined;
+	const subSpecs =
+		opts.subSpecs && opts.subSpecs.length > 0 ? opts.subSpecs : undefined;
 
 	// R1: the orchestrator commits task work into (single path) or squashes
 	// workspace commits under (parallel path) the main working copy — user
@@ -1521,7 +1733,7 @@ export async function executeTask(opts: ExecuteTaskOptions): Promise<TaskResult>
 	//    from the budget tier (which picks the models). `analysis` promotes
 	//    the strong prewalk model into the writer/review slots (no swap):
 	//    surveys/design reviews get the deep thinker writing, not planning.
-	const shape = opts.shape ?? DEFAULT_TASK_SHAPES.code;
+	const shape = opts.shape ?? DEFAULT_SHAPE;
 	const executeModel =
 		shape.workModel === "prewalk"
 			? (opts.prewalkModel ?? opts.executeModel ?? model)
@@ -1530,7 +1742,8 @@ export async function executeTask(opts: ExecuteTaskOptions): Promise<TaskResult>
 		shape.prewalk &&
 		opts.prewalkModel !== undefined &&
 		isPrewalkActive(opts.prewalkModel, executeModel) &&
-		(spec.requirements.length >= (opts.prewalkMinRequirements ?? DEFAULT_PREWALK_MIN_REQUIREMENTS));
+		spec.requirements.length >=
+			(opts.prewalkMinRequirements ?? DEFAULT_PREWALK_MIN_REQUIREMENTS);
 	const reviewModel =
 		shape.reviewModel === "prewalk"
 			? (opts.prewalkModel ?? opts.reviewModel ?? executeModel)
@@ -1551,7 +1764,8 @@ export async function executeTask(opts: ExecuteTaskOptions): Promise<TaskResult>
 		opts.aiAuthorName ?? DEFAULT_TASK_CONFIG.defaults.aiAuthorName,
 		executeModel,
 	);
-	const aiEmail = opts.aiAuthorEmail ?? DEFAULT_TASK_CONFIG.defaults.aiAuthorEmail;
+	const aiEmail =
+		opts.aiAuthorEmail ?? DEFAULT_TASK_CONFIG.defaults.aiAuthorEmail;
 
 	// 2b. Batch channel routing (M2): a shape on the batch channel runs the
 	// spec as an ASYNC batch job — one typed single-turn prompt per
@@ -1561,7 +1775,10 @@ export async function executeTask(opts: ExecuteTaskOptions): Promise<TaskResult>
 	// sub_specs on the batch channel are a configuration error
 	// (routeRun → invalid). Review is single-turn-incompatible: silently
 	// skipped (reviewSkipped on the result — same contract as parallel).
-	const route = routeRun(shape, { parallel, hasSubSpecs: subSpecs !== undefined });
+	const route = routeRun(shape, {
+		parallel,
+		hasSubSpecs: subSpecs !== undefined,
+	});
 	if (route.kind === "invalid") {
 		throw new Error(`executeTask: ${route.reason}`);
 	}
@@ -1582,8 +1799,10 @@ export async function executeTask(opts: ExecuteTaskOptions): Promise<TaskResult>
 			verificationTimeoutMs: opts.verificationTimeoutMs,
 			aiAuthorName: aiName,
 			aiAuthorEmail: aiEmail,
-			receivedAt: opts.receivedAt,
-			mainSessionTokens: opts.mainSessionTokens,
+			...(opts.receivedAt === undefined ? {} : { receivedAt: opts.receivedAt }),
+			...(opts.mainSessionTokens === undefined
+				? {}
+				: { mainSessionTokens: opts.mainSessionTokens }),
 			batch: opts.batch,
 			batchProvider: opts.batchProvider,
 		});
@@ -1625,7 +1844,8 @@ export async function executeTask(opts: ExecuteTaskOptions): Promise<TaskResult>
 	// just means no map section.
 	// Mode/model come from config/repo-map.toml, overridable per call.
 	const mapConfig = loadRepoMapConfig();
-	const injectMap = opts.useMap !== undefined ? opts.useMap : mapConfig.injectWorkers;
+	const injectMap =
+		opts.useMap !== undefined ? opts.useMap : mapConfig.injectWorkers;
 	let mapPrompt: string | null = null;
 	if (injectMap) {
 		try {
@@ -1646,7 +1866,8 @@ export async function executeTask(opts: ExecuteTaskOptions): Promise<TaskResult>
 			// catches environmental failures (e.g. not a git repo).
 		}
 	}
-	const promptFor = (body: string): string => (mapPrompt ? mapPrompt + "\n\n" + body : body);
+	const promptFor = (body: string): string =>
+		mapPrompt ? mapPrompt + "\n\n" + body : body;
 
 	if (parallel <= 1 && !subSpecs) {
 		return executeSingle(cwd, {
@@ -1663,16 +1884,20 @@ export async function executeTask(opts: ExecuteTaskOptions): Promise<TaskResult>
 			workerTimeoutMs: opts.workerTimeoutMs,
 			toolTimeoutMs: opts.toolTimeoutMs,
 			reviewWallTimeoutMs: opts.reviewWallTimeoutMs,
-			serviceTier: opts.serviceTier,
-			providerOnly: opts.providerOnly,
+			...(opts.serviceTier === undefined
+				? {}
+				: { serviceTier: opts.serviceTier }),
+			...(opts.providerOnly === undefined
+				? {}
+				: { providerOnly: opts.providerOnly }),
 			verificationBaseline,
-			turnBudget: opts.turnBudget,
+			...(opts.turnBudget === undefined ? {} : { turnBudget: opts.turnBudget }),
 			spec,
 			specMarkdown,
 			reviewRequested: reviewGate.requested,
 			review: reviewGate.enabled,
 			reviewModel,
-			persona: opts.persona,
+			...(opts.persona === undefined ? {} : { persona: opts.persona }),
 			shape,
 			maxFixIterations: opts.maxFixIterations,
 			budget: opts.budget,
@@ -1685,8 +1910,10 @@ export async function executeTask(opts: ExecuteTaskOptions): Promise<TaskResult>
 			// R1: the task tool records these when its execute starts (received_at
 			// + the main session's pre-dispatch token spend); direct callers may
 			// omit them (manifest fields then absent/zero).
-			receivedAt: opts.receivedAt,
-			mainSessionTokens: opts.mainSessionTokens,
+			...(opts.receivedAt === undefined ? {} : { receivedAt: opts.receivedAt }),
+			...(opts.mainSessionTokens === undefined
+				? {}
+				: { mainSessionTokens: opts.mainSessionTokens }),
 			runId: opts.runId,
 		});
 	}
@@ -1719,7 +1946,9 @@ export async function executeTask(opts: ExecuteTaskOptions): Promise<TaskResult>
 	// least one requirement). The mechanical fallback clamps parallel to the
 	// requirement count: round-robin splitting can't give every worker at
 	// least one requirement beyond that.
-	const workerCount = subSpecs ? subSpecs.length : Math.min(parallel, spec.requirements.length);
+	const workerCount = subSpecs
+		? subSpecs.length
+		: Math.min(parallel, spec.requirements.length);
 	// The parallel merge target (todo #84): a fresh AI-authored commit unless
 	// the identity is empty (direct callers without the config). The identity
 	// config file lives in a temp dir (orchestrator-side, not sandboxed);
@@ -1778,39 +2007,62 @@ export async function executeTask(opts: ExecuteTaskOptions): Promise<TaskResult>
 	const sessions = workspaces.map((ws, i) =>
 		spawnWorkerSessionResilient({
 			cwd: ws.dir,
-			noProgressTimeoutMs: channelWatchdogWindows((shape ?? DEFAULT_TASK_SHAPES.code).channel).noProgressMs,
+			noProgressTimeoutMs: channelWatchdogWindows(
+				(shape ?? DEFAULT_SHAPE).channel,
+			).noProgressMs,
 			// Todo #89: the workspace differs from the project root — the
 			// sandbox must bind the shared jj store rw or workspace commits
 			// fail with EROFS.
 			projectDir: cwd,
 			model: usePrewalk ? opts.prewalkModel! : executeModel,
-			serviceTier: opts.serviceTier,
-			serviceTierExcludes: opts.serviceTier || opts.providerOnly?.length ? [executeModel] : undefined,
-			providerOnly: opts.providerOnly,
-			sessionId: opts.runId,
-			task: promptFor(workerTasks[i]),
-			systemPrompt: systemPrompt ?? buildWorkerSystemPrompt(opts.checklist !== false),
+			...(opts.serviceTier === undefined
+				? {}
+				: { serviceTier: opts.serviceTier }),
+			...(opts.serviceTier || opts.providerOnly?.length
+				? { serviceTierExcludes: [executeModel] }
+				: {}),
+			...(opts.providerOnly === undefined
+				? {}
+				: { providerOnly: opts.providerOnly }),
+			...(opts.runId === undefined ? {} : { sessionId: opts.runId }),
+			task:
+				// workerTasks.length === workerCount (splitSpec / subSpecs) and
+				// i < workerCount, so the entry is always present (guard only
+				// narrows noUncheckedIndexedAccess).
+				promptFor(workerTasks[i]!),
+			systemPrompt:
+				systemPrompt ?? buildWorkerSystemPrompt(opts.checklist !== false),
 			extensions: [
 				...(opts.checklist !== false ? [CHECKLIST_EXTENSION_PATH] : []),
 				...(usePrewalk ? [PREWALK_EXTENSION_PATH] : []),
 			],
-			signal,
+			...(signal === undefined ? {} : { signal }),
 			sandbox,
 			aiAuthorName: aiName,
 			aiAuthorEmail: aiEmail,
 			onUpdate: (partial) => {
 				onUpdate?.({ ...partial, index: i });
 				if (partial.type === "yield") {
-					onUpdate?.({ type: "workers_progress", done: ++doneCount, total: workerCount });
+					onUpdate?.({
+						type: "workers_progress",
+						done: ++doneCount,
+						total: workerCount,
+					});
 				}
 			},
 			// Phase 11 (R4/R5): per-tier wall + per-tool-call budget. The
 			// verification commands + grace: the wall must not kill an
 			// in-flight suite run — it gets a bounded grace instead.
-			timeoutMs: opts.workerTimeoutMs,
-			toolTimeoutMs: opts.toolTimeoutMs,
+			...(opts.workerTimeoutMs === undefined
+				? {}
+				: { timeoutMs: opts.workerTimeoutMs }),
+			...(opts.toolTimeoutMs === undefined
+				? {}
+				: { toolTimeoutMs: opts.toolTimeoutMs }),
 			verificationCommands: spec.verification,
-			verificationTimeoutMs: opts.verificationTimeoutMs,
+			...(opts.verificationTimeoutMs === undefined
+				? {}
+				: { verificationTimeoutMs: opts.verificationTimeoutMs }),
 		}),
 	);
 	// R6: a failed model swap aborts its session and surfaces as a precise
@@ -1821,7 +2073,7 @@ export async function executeTask(opts: ExecuteTaskOptions): Promise<TaskResult>
 				attachPrewalk(s, {
 					prewalkModel: opts.prewalkModel!,
 					executeModel,
-					onSwap,
+					...(onSwap === undefined ? {} : { onSwap }),
 					onError: (err) => {
 						swapErrors.push(err);
 						s.abort();
@@ -1834,7 +2086,13 @@ export async function executeTask(opts: ExecuteTaskOptions): Promise<TaskResult>
 	// uses — observer-only (zero LLM tokens), worker-side semantics unchanged.
 	const checklistCtrls = sessions.map((s, i) =>
 		attachChecklistRelay(s, {
-			onChecklist: (c) => onUpdate?.({ type: "checklist", index: i, done: c.done, total: c.total }),
+			onChecklist: (c) =>
+				onUpdate?.({
+					type: "checklist",
+					index: i,
+					done: c.done,
+					total: c.total,
+				}),
 		}),
 	);
 
@@ -1876,8 +2134,11 @@ export async function executeTask(opts: ExecuteTaskOptions): Promise<TaskResult>
 		const settled = await Promise.allSettled(sessions.map((s) => s.result));
 		// A failed model swap (R6) takes precedence over the generic failure
 		// aggregation — surface the precise error.
-		if (swapErrors.length > 0) throw swapErrors[0];
-		const failures = settled.filter((r): r is PromiseRejectedResult => r.status === "rejected");
+		const swapError = swapErrors[0];
+		if (swapError) throw swapError;
+		const failures = settled.filter(
+			(r): r is PromiseRejectedResult => r.status === "rejected",
+		);
 		if (failures.length > 0) {
 			const message = `Parallel workers failed: ${failures.map((f) => (f.reason as Error).message).join("; ")}`;
 			// R2 (third outcome): classify each failed worker from its
@@ -1890,7 +2151,12 @@ export async function executeTask(opts: ExecuteTaskOptions): Promise<TaskResult>
 			// preserved workspaces). Never merge or claim success without the
 			// gate.
 			const failedProgresses = settled
-				.map((r, i) => (r.status === "rejected" ? checklistCtrls[i].latest : null))
+				.map((r, i) =>
+					// sessions/checklistCtrls share the worker index; only
+					// rejected entries consult the relay (guard narrows the
+					// noUncheckedIndexedAccess index).
+					r.status === "rejected" ? (checklistCtrls[i]!.latest ?? null) : null,
+				)
 				.filter((p): p is ChecklistProgress => p !== null);
 			if (classifyWorkerFailures(failedProgresses) === "merge") {
 				finalizationIncompleteIndexes = settled
@@ -1911,13 +2177,19 @@ export async function executeTask(opts: ExecuteTaskOptions): Promise<TaskResult>
 				for (const ws of workspaces) {
 					let at = "";
 					try {
-						at = await workspaceCommitId(cwd, ws.name, { timeoutMs: FAILURE_PATH_JJ_TIMEOUT_MS });
+						at = await workspaceCommitId(cwd, ws.name, {
+							timeoutMs: FAILURE_PATH_JJ_TIMEOUT_MS,
+						});
 					} catch {
 						/* best effort */
 					}
-					const rescueId = await rescueWorkspaceStateBestEffort(ws.dir, message, {
-						timeoutMs: FAILURE_PATH_JJ_TIMEOUT_MS,
-					});
+					const rescueId = await rescueWorkspaceStateBestEffort(
+						ws.dir,
+						message,
+						{
+							timeoutMs: FAILURE_PATH_JJ_TIMEOUT_MS,
+						},
+					);
 					wsRecords.push({
 						name: ws.name,
 						commit_id: rescueId ?? at,
@@ -1938,7 +2210,9 @@ export async function executeTask(opts: ExecuteTaskOptions): Promise<TaskResult>
 				throw new Error(message);
 			}
 		}
-		results = (settled as PromiseFulfilledResult<WorkerResult>[]).map((r) => r.value);
+		results = (settled as PromiseFulfilledResult<WorkerResult>[]).map(
+			(r) => r.value,
+		);
 
 		// ── Merge path (R1/R2/R3/R4/R5) — a failure here never forgets the
 		// workspaces (R2): the artifact records names + dangling ids, the
@@ -1952,7 +2226,9 @@ export async function executeTask(opts: ExecuteTaskOptions): Promise<TaskResult>
 			const expectedFiles = new Set<string>();
 			const fileWorkers = new Map<string, string[]>();
 			for (let i = 0; i < workerCount; i++) {
-				const name = workspaces[i].name;
+				// workspaces has exactly workerCount entries (built above) —
+				// the guard only narrows noUncheckedIndexedAccess.
+				const name = workspaces[i]!.name;
 				const changes = await workspaceFileChanges(cwd, baseChangeId, name);
 				for (const c of changes) {
 					if (c.kind !== "D") expectedFiles.add(c.file);
@@ -1965,10 +2241,18 @@ export async function executeTask(opts: ExecuteTaskOptions): Promise<TaskResult>
 			for (const [file, names] of fileWorkers) {
 				if (names.length < 2) continue;
 				const diffs: string[] = [];
-				for (const name of names) diffs.push(await diffForWorkspacePath(cwd, baseChangeId, name, file));
-				overlaps.push({ file, workers: names, kind: classifyOverlapDiffs(diffs) });
+				for (const name of names)
+					diffs.push(await diffForWorkspacePath(cwd, baseChangeId, name, file));
+				overlaps.push({
+					file,
+					workers: names,
+					kind: classifyOverlapDiffs(diffs),
+				});
 			}
-			mergeMetrics.overlaps = overlaps.map((o) => ({ file: o.file, kind: o.kind }));
+			mergeMetrics.overlaps = overlaps.map((o) => ({
+				file: o.file,
+				kind: o.kind,
+			}));
 			onUpdate?.({ type: "merge_report", overlaps });
 
 			// R1: ATOMIC combine — every workspace's commits land in the task
@@ -2002,16 +2286,23 @@ export async function executeTask(opts: ExecuteTaskOptions): Promise<TaskResult>
 			// workspaces alive) and BEFORE verification (which then provably
 			// runs on the merged tree).
 			try {
-				await assertMerged(cwd, workspaces.map((w) => w.name), baseChangeId, {
-					expectedFiles: [...expectedFiles],
-				});
+				await assertMerged(
+					cwd,
+					workspaces.map((w) => w.name),
+					baseChangeId,
+					{
+						expectedFiles: [...expectedFiles],
+					},
+				);
 				// The merged base must remain a VISIBLE commit: a stale-target
 				// squash can hide the whole base chain, which assertMerged's
 				// re-resolution would surface only as a raw jj error (a hidden
 				// change resolves to the 40-zero commit id).
 				await assertVisibleCommit(cwd, baseChangeId);
 			} catch (err) {
-				throw new Error(`Parallel merge consistency check failed: ${(err as Error).message}`);
+				throw new Error(
+					`Parallel merge consistency check failed: ${(err as Error).message}`,
+				);
 			}
 
 			// R4: deterministic conflict ladder — rung 1 (jj 3-way merge) ran
@@ -2022,10 +2313,20 @@ export async function executeTask(opts: ExecuteTaskOptions): Promise<TaskResult>
 			// (LLM/manual) — with just the conflicted hunks (artifact +
 			// result); the verification gate below always validates the final
 			// tree.
-			const conflictsBeforeUnion = await detectChangeConflicts(cwd, baseChangeId);
+			const conflictsBeforeUnion = await detectChangeConflicts(
+				cwd,
+				baseChangeId,
+			);
 			if (conflictsBeforeUnion.length > 0) {
-				await resolveConflictsWithUnion(cwd, baseChangeId, conflictsBeforeUnion);
-				const conflictsAfterUnion = await detectChangeConflicts(cwd, baseChangeId);
+				await resolveConflictsWithUnion(
+					cwd,
+					baseChangeId,
+					conflictsBeforeUnion,
+				);
+				const conflictsAfterUnion = await detectChangeConflicts(
+					cwd,
+					baseChangeId,
+				);
 				mergeMetrics.resolved_union = conflictsBeforeUnion.filter(
 					(f) => !conflictsAfterUnion.includes(f),
 				);
@@ -2047,7 +2348,11 @@ export async function executeTask(opts: ExecuteTaskOptions): Promise<TaskResult>
 						})),
 						danglingCommitIds: [],
 						conflictedFiles: conflictsAfterUnion,
-						conflictHunks: await conflictHunks(cwd, baseChangeId, conflictsAfterUnion),
+						conflictHunks: await conflictHunks(
+							cwd,
+							baseChangeId,
+							conflictsAfterUnion,
+						),
 						metricsDir,
 						project,
 						specMarkdown,
@@ -2069,7 +2374,9 @@ export async function executeTask(opts: ExecuteTaskOptions): Promise<TaskResult>
 					name: w.name,
 					commit_id: workspaceAtIds.get(w.name) ?? "",
 				})),
-				danglingCommitIds: [...workspaceAtIds.values()].filter((id) => id.length > 0),
+				danglingCommitIds: [...workspaceAtIds.values()].filter(
+					(id) => id.length > 0,
+				),
 				runId: opts.runId,
 				conflictedFiles: [],
 				metricsDir,
@@ -2092,7 +2399,12 @@ export async function executeTask(opts: ExecuteTaskOptions): Promise<TaskResult>
 		// tree is meaningless (its "verified" output misleads) — the run
 		// fails fast on the conflicts, already artifacted above.
 		if (mergeMetrics.conflicts.length > 0) {
-			verification = { passed: false, commands: 0, duration_ms: 0, failures: [] };
+			verification = {
+				passed: false,
+				commands: 0,
+				duration_ms: 0,
+				failures: [],
+			};
 		} else {
 			verification = await runVerification(
 				spec.verification,
@@ -2103,11 +2415,19 @@ export async function executeTask(opts: ExecuteTaskOptions): Promise<TaskResult>
 			// Baseline adjudication on the merged tree: failures identical to
 			// the pre-change baseline are suspected spec defects — recorded in
 			// the manifest/result (the parallel path has no fix loop).
-			for (const f of classifyVerificationFailures(verification.failures, verificationBaseline).specDefectSuspected) {
-				if (!parallelSuspects.includes(f.command)) parallelSuspects.push(f.command);
+			for (const f of classifyVerificationFailures(
+				verification.failures,
+				verificationBaseline,
+			).specDefectSuspected) {
+				if (!parallelSuspects.includes(f.command))
+					parallelSuspects.push(f.command);
 			}
 		}
-		if (mergeMetrics.conflicts.length === 0 && !verification.passed && finalizationIncompleteIndexes.length > 0) {
+		if (
+			mergeMetrics.conflicts.length === 0 &&
+			!verification.passed &&
+			finalizationIncompleteIndexes.length > 0
+		) {
 			// R2: the gate FAILS a finalization-incomplete recovery → the
 			// current failure path with preserved workspaces: failure artifact
 			// (the recovery guide travels with it) + throw, so the finally
@@ -2118,7 +2438,9 @@ export async function executeTask(opts: ExecuteTaskOptions): Promise<TaskResult>
 				`parallel run failed verification after merging finalization-incomplete ` +
 				`worker(s) ${finalizationIncompleteIndexes.map((i) => `#${i}`).join(", ")} ` +
 				`into ${mergeMetrics.merged_commit_id ?? "?"}: ` +
-				verification.failures.map((f) => `${f.command} (exit ${f.exitCode})`).join("; ");
+				verification.failures
+					.map((f) => `${f.command} (exit ${f.exitCode})`)
+					.join("; ");
 			mergeFailed = new Error(cause);
 			writeMergeFailureArtifact({
 				cause,
@@ -2153,12 +2475,15 @@ export async function executeTask(opts: ExecuteTaskOptions): Promise<TaskResult>
 				try {
 					await removeWorkspace(cwd, ws.name, ws.dir);
 				} catch (err) {
-					console.warn(`workspace cleanup "${ws.name}": ${(err as Error).message}`);
+					console.warn(
+						`workspace cleanup "${ws.name}": ${(err as Error).message}`,
+					);
 				}
 			}
 		}
 		const parents = new Set(workspaces.map((w) => dirname(w.dir)));
-		for (const parent of parents) rmSync(parent, { recursive: true, force: true });
+		for (const parent of parents)
+			rmSync(parent, { recursive: true, force: true });
 		prewalkCtrls.forEach((c) => c.detach());
 		checklistCtrls.forEach((c) => c.detach());
 		// The AI-authored merge target became @ during the run (todo #84);
@@ -2199,14 +2524,15 @@ export async function executeTask(opts: ExecuteTaskOptions): Promise<TaskResult>
 	// R2: on the finalization-incomplete path some/all workers never yielded —
 	// their files live in the merged base; derive the aggregate from the
 	// merged delta instead of the (partial) yield payloads.
-	const filesChanged = finalizationIncompleteIndexes.length > 0
-		? await filesChangedBetweenBestEffort(cwd, taskBaseCommitId, baseCommitId)
-		: results.flatMap((r) => r.yield.files_changed);
+	const filesChanged =
+		finalizationIncompleteIndexes.length > 0
+			? await filesChangedBetweenBestEffort(cwd, taskBaseCommitId, baseCommitId)
+			: results.flatMap((r) => r.yield.files_changed);
 	const metrics = finalizeParallelMetrics({
 		suspectedSpecDefects: parallelSuspects,
 		cwd,
-		project: opts.project,
-		metricsDir: opts.metricsDir,
+		...(opts.project === undefined ? {} : { project: opts.project }),
+		...(opts.metricsDir === undefined ? {} : { metricsDir: opts.metricsDir }),
 		// Detached dispatch: the manifest must land under the caller's id.
 		runId: opts.runId,
 		// sub_specs mode: the AGGREGATE spec's markdown (the union, rendered
@@ -2239,7 +2565,9 @@ export async function executeTask(opts: ExecuteTaskOptions): Promise<TaskResult>
 	// note). The gate-fail case already threw (failure path with preserved
 	// workspaces); escalated conflicts keep the plain failure return.
 	const caveat =
-		finalizationIncompleteIndexes.length > 0 && verification.passed && conflicts.length === 0
+		finalizationIncompleteIndexes.length > 0 &&
+		verification.passed &&
+		conflicts.length === 0
 			? `worker${finalizationIncompleteIndexes.length > 1 ? "s" : ""} ` +
 				`${finalizationIncompleteIndexes.map((i) => `#${i}`).join(", ")} aborted during finalization; ` +
 				`verified post-merge — merged commit ${baseCommitId}, ` +
@@ -2258,14 +2586,18 @@ export async function executeTask(opts: ExecuteTaskOptions): Promise<TaskResult>
 		workers: results,
 		conflicts,
 		verification,
-		...(parallelSuspects.length > 0 ? { suspectedSpecDefects: [...parallelSuspects] } : {}),
+		...(parallelSuspects.length > 0
+			? { suspectedSpecDefects: [...parallelSuspects] }
+			: {}),
 		...(caveat ? { caveat } : {}),
 		// R7: a requested review is single-worker only — surface that it was
 		// skipped (todo #73: no console.warn; the plan line and this flag
 		// carry the signal).
 		...(opts.review ? { reviewSkipped: true } : {}),
 		manifest: metrics.manifest,
-		manifestPath: metrics.manifestPath,
+		...(metrics.manifestPath === undefined
+			? {}
+			: { manifestPath: metrics.manifestPath }),
 		durationMs: Date.now() - runStartMs,
 	};
 }
@@ -2296,12 +2628,14 @@ async function executeBatchLane(
 		spec: Spec;
 		specMarkdown: string;
 		reviewRequested: boolean;
-		metricsDir?: string;
-		project?: string;
-		budget?: string;
-		signal?: AbortSignal;
-		onUpdate?: (partial: unknown) => void;
-		verificationTimeoutMs?: number;
+		/** Optional AND nullable under exactOptionalPropertyTypes — call sites
+		 *  forward their own `T | undefined` locals verbatim (R4 discipline). */
+		metricsDir?: string | undefined;
+		project?: string | undefined;
+		budget?: string | undefined;
+		signal?: AbortSignal | undefined;
+		onUpdate?: ((partial: unknown) => void) | undefined;
+		verificationTimeoutMs?: number | undefined;
 		/** AI commit identity — already formatted ({model} resolved). */
 		aiAuthorName: string;
 		aiAuthorEmail: string;
@@ -2309,9 +2643,9 @@ async function executeBatchLane(
 		mainSessionTokens?: number;
 		/** The injected run_id (the manifest + failure artifact must land
 		 *  under THIS id — a detached dispatch keys everything by it). */
-		runId?: string;
-		batch?: BatchLaneConfig;
-		batchProvider?: BatchProvider;
+		runId?: string | undefined;
+		batch?: BatchLaneConfig | undefined;
+		batchProvider?: BatchProvider | undefined;
 	},
 ): Promise<TaskResult> {
 	const {
@@ -2332,7 +2666,8 @@ async function executeBatchLane(
 	// task.toml's [batch] section (shipped defaults when no file).
 	const batchCfg = opts.batch ?? loadTaskConfig().batch;
 	const provider = opts.batchProvider ?? new OpenRouterBatchProvider();
-	const verifyTimeout = opts.verificationTimeoutMs ?? DEFAULT_VERIFICATION_TIMEOUT_MS;
+	const verifyTimeout =
+		opts.verificationTimeoutMs ?? DEFAULT_VERIFICATION_TIMEOUT_MS;
 	const projectName = project ?? deriveProjectName(cwd);
 	const runStartMs = Date.now();
 	const runId = opts.runId ?? generateRunId();
@@ -2345,7 +2680,11 @@ async function executeBatchLane(
 	if (aiAuthorName.trim().length > 0 && aiAuthorEmail.trim().length > 0) {
 		identityDir = mkdtempSync(join(tmpdir(), "pi-task-identity-"));
 		identityFile = join(identityDir, "jj-identity.toml");
-		writeFileSync(identityFile, aiIdentityToml(aiAuthorName, aiAuthorEmail), "utf-8");
+		writeFileSync(
+			identityFile,
+			aiIdentityToml(aiAuthorName, aiAuthorEmail),
+			"utf-8",
+		);
 		try {
 			await createAiTaskBase(cwd, identityFile, spec.goal);
 		} catch (err) {
@@ -2364,7 +2703,12 @@ async function executeBatchLane(
 	// Verification lifecycle: the pre-apply baseline (the tree is clean
 	// here — cleanness asserted at the run's head). Baseline-identical
 	// post-apply failures are recorded as suspected spec defects.
-	const batchBaseline = await captureVerificationBaseline(spec.verification, cwd, verifyTimeout, signal);
+	const batchBaseline = await captureVerificationBaseline(
+		spec.verification,
+		cwd,
+		verifyTimeout,
+		signal,
+	);
 	const batchSuspects: string[] = [];
 
 	try {
@@ -2376,7 +2720,7 @@ async function executeBatchLane(
 			provider,
 			pollIntervalMs: batchCfg.pollIntervalMs,
 			jobTimeoutMs: batchCfg.jobTimeoutMs,
-			metricsDir,
+			...(metricsDir === undefined ? {} : { metricsDir }),
 			project: projectName,
 			runId,
 			signal,
@@ -2402,7 +2746,10 @@ async function executeBatchLane(
 		} catch (err) {
 			throw err instanceof BatchError
 				? err
-				: new BatchError("invalid_output", `batch output extraction failed: ${(err as Error).message}`);
+				: new BatchError(
+						"invalid_output",
+						`batch output extraction failed: ${(err as Error).message}`,
+					);
 		}
 		for (const f of files) {
 			const target = join(cwd, f.path);
@@ -2426,12 +2773,25 @@ async function executeBatchLane(
 		// → nothing to commit (verification decides the outcome).
 		let commitIds: string[] = [];
 		if (files.length > 0) {
-			const commit = await execJj(["commit", "-m", `batch(task): ${spec.goal}`], cwd);
+			const commit = await execJj(
+				["commit", "-m", `batch(task): ${spec.goal}`],
+				cwd,
+			);
 			if (commit.code !== 0) {
-				throw new Error(`batch commit failed (${commit.code}): ${commit.stderr.trim()}`);
+				throw new Error(
+					`batch commit failed (${commit.code}): ${commit.stderr.trim()}`,
+				);
 			}
 			const id = await execJj(
-				["log", "-r", "@-", "-T", "commit_id", "--no-graph", "--ignore-working-copy"],
+				[
+					"log",
+					"-r",
+					"@-",
+					"-T",
+					"commit_id",
+					"--no-graph",
+					"--ignore-working-copy",
+				],
 				cwd,
 			);
 			if (id.code === 0 && /^[0-9a-f]{40}$/.test(id.stdout.trim())) {
@@ -2440,8 +2800,16 @@ async function executeBatchLane(
 		}
 
 		// 4. Verification (bash hard gate, zero tokens) on the applied tree.
-		const verification = await runVerification(spec.verification, cwd, verifyTimeout, signal);
-		for (const f of classifyVerificationFailures(verification.failures, batchBaseline).specDefectSuspected) {
+		const verification = await runVerification(
+			spec.verification,
+			cwd,
+			verifyTimeout,
+			signal,
+		);
+		for (const f of classifyVerificationFailures(
+			verification.failures,
+			batchBaseline,
+		).specDefectSuspected) {
 			if (!batchSuspects.includes(f.command)) batchSuspects.push(f.command);
 		}
 
@@ -2461,7 +2829,7 @@ async function executeBatchLane(
 				reviewForked: false,
 				shape: "batch",
 				channel: "batch",
-				budget,
+				...(budget === undefined ? {} : { budget }),
 				checklist: false,
 				swapTrigger: "none",
 			},
@@ -2482,18 +2850,22 @@ async function executeBatchLane(
 					commands: verification.commands,
 					duration_ms: verification.duration_ms,
 					source: "batch",
-					timed_out: verification.timed_out,
-					...(batchSuspects.length > 0 ? { suspected_spec_defects: batchSuspects } : {}),
+					...(verification.timed_out === undefined
+						? {}
+						: { timed_out: verification.timed_out }),
+					...(batchSuspects.length > 0
+						? { suspected_spec_defects: batchSuspects }
+						: {}),
 				},
 				review: null,
 				fixLoop: { iterations: 0, cost_usd: 0 },
 			},
 			durationMs: Date.now() - runStartMs,
 			readDuplicationTokens: 0,
-			receivedAt,
+			...(receivedAt === undefined ? {} : { receivedAt }),
 			dispatchedAt: new Date().toISOString(),
 			completedAt: new Date().toISOString(),
-			mainSessionTokens,
+			...(mainSessionTokens === undefined ? {} : { mainSessionTokens }),
 			filesChanged: files.map((f) => f.path),
 			insertions: diffStat.insertions,
 			deletions: diffStat.deletions,
@@ -2539,10 +2911,16 @@ async function executeBatchLane(
 			// A requested review is single-turn-incompatible — surface that it
 			// was skipped (todo #73: no console output; the flag carries it).
 			...(reviewRequested ? { reviewSkipped: true } : {}),
-			batch: { jobId: lane.jobId, model: batchCfg.model, items: lane.items.length },
-			...(batchSuspects.length > 0 ? { suspectedSpecDefects: [...batchSuspects] } : {}),
+			batch: {
+				jobId: lane.jobId,
+				model: batchCfg.model,
+				items: lane.items.length,
+			},
+			...(batchSuspects.length > 0
+				? { suspectedSpecDefects: [...batchSuspects] }
+				: {}),
 			manifest,
-			manifestPath,
+			...(manifestPath === undefined ? {} : { manifestPath }),
 			durationMs: Date.now() - runStartMs,
 		};
 	} catch (err) {
@@ -2551,7 +2929,9 @@ async function executeBatchLane(
 		// file path — the recovery handle (resume polling an aborted/
 		// timed-out job; resubmit only the failed items).
 		if (err instanceof BatchError) {
-			const statePath = metricsDir ? batchJobStatePath(metricsDir, projectName, runId) : undefined;
+			const statePath = metricsDir
+				? batchJobStatePath(metricsDir, projectName, runId)
+				: undefined;
 			const recovery = statePath
 				? `Batch lane failure — recover from the job-state file:\n  ${statePath}\n` +
 					(err.code === "aborted" || err.code === "poll_timeout"
@@ -2581,7 +2961,10 @@ async function executeBatchLane(
 			try {
 				await execJj(["new"], cwd);
 				const leftover = (
-					await execJj(["log", "-r", "@-", "-T", "if(empty, 'EMPTY', 'X')", "--no-graph"], cwd)
+					await execJj(
+						["log", "-r", "@-", "-T", "if(empty, 'EMPTY', 'X')", "--no-graph"],
+						cwd,
+					)
 				).stdout.trim();
 				if (leftover === "EMPTY") await execJj(["abandon", "@-"], cwd);
 			} catch {
@@ -2609,23 +2992,25 @@ async function executeSingle(
 	opts: {
 		taskPrompt: string;
 		usePrewalk: boolean;
-		prewalkModel?: string;
+		/** Optional AND nullable under exactOptionalPropertyTypes — executeTask
+		 *  forwards its own `T | undefined` locals verbatim (R4 discipline). */
+		prewalkModel?: string | undefined;
 		executeModel: string;
 		/** Whether the checklist tool is loaded (tier checklist config). */
-		checklist?: boolean;
-		systemPrompt?: string;
-		signal?: AbortSignal;
-		onSwap?: (info: SwapInfo) => void;
-		onUpdate?: (partial: unknown) => void;
-		verificationTimeoutMs?: number;
-		workerTimeoutMs?: number;
-		toolTimeoutMs?: number;
+		checklist?: boolean | undefined;
+		systemPrompt?: string | undefined;
+		signal?: AbortSignal | undefined;
+		onSwap?: ((info: SwapInfo) => void) | undefined;
+		onUpdate?: ((partial: unknown) => void) | undefined;
+		verificationTimeoutMs?: number | undefined;
+		workerTimeoutMs?: number | undefined;
+		toolTimeoutMs?: number | undefined;
 		/** Per-fork review wall (ms); absent → review.ts's 20-min default. */
-		reviewWallTimeoutMs?: number;
+		reviewWallTimeoutMs?: number | undefined;
 		/** OpenRouter service tier (flex infra) → worker/fix/reviewer spawns. */
-		serviceTier?: string;
+		serviceTier?: string | undefined;
 		/** OpenRouter provider.only pin (flex infra). */
-		providerOnly?: string[];
+		providerOnly?: string[] | undefined;
 		/** Pre-change verification baseline (dispatch-time dry run) — lets the
 		 *  fix loop distinguish spec defects from real failures by evidence. */
 		verificationBaseline?: VerificationBaselineEntry[];
@@ -2640,50 +3025,88 @@ async function executeSingle(
 		review?: boolean;
 		reviewModel?: string;
 		persona?: string;
-		shape?: TaskShape;
-		maxFixIterations?: number;
-		metricsDir?: string;
-		project?: string;
-		preserveSessions?: boolean;
-		runId?: string;
-		budget?: string;
+		shape?: TaskShape | undefined;
+		maxFixIterations?: number | undefined;
+		metricsDir?: string | undefined;
+		project?: string | undefined;
+		preserveSessions?: boolean | undefined;
+		runId?: string | undefined;
+		budget?: string | undefined;
 		sandbox: ResolvedSandbox;
 		/** AI commit identity (todo #84) — already formatted ({model} resolved). */
-		aiAuthorName?: string;
-		aiAuthorEmail?: string;
+		aiAuthorName?: string | undefined;
+		aiAuthorEmail?: string | undefined;
 		/** R1: the task tool's received_at + pre-dispatch main-session spend
 		 *  (absent for direct callers — manifest fields then absent/zero). */
-		receivedAt?: string;
-		mainSessionTokens?: number;
+		receivedAt?: string | undefined;
+		mainSessionTokens?: number | undefined;
 	},
 ): Promise<TaskResult> {
 	const {
-		taskPrompt, usePrewalk, prewalkModel, executeModel, systemPrompt, signal, onSwap, onUpdate,
-		verificationTimeoutMs, workerTimeoutMs, toolTimeoutMs, reviewWallTimeoutMs, spec, specMarkdown, reviewRequested, review, reviewModel,
-		persona, shape, maxFixIterations, metricsDir, project, preserveSessions, budget, sandbox,
-		runId, aiAuthorName, aiAuthorEmail,
+		taskPrompt,
+		usePrewalk,
+		prewalkModel,
+		executeModel,
+		systemPrompt,
+		signal,
+		onSwap,
+		onUpdate,
+		verificationTimeoutMs,
+		workerTimeoutMs,
+		toolTimeoutMs,
+		reviewWallTimeoutMs,
+		spec,
+		specMarkdown,
+		reviewRequested,
+		review,
+		reviewModel,
+		persona,
+		shape,
+		maxFixIterations,
+		metricsDir,
+		project,
+		preserveSessions,
+		budget,
+		sandbox,
+		runId,
+		aiAuthorName,
+		aiAuthorEmail,
 	} = opts;
 
 	// Checklist-per-tier: false → the checklist tool is not loaded and the
 	// prompt stops mandating it (saves the init + done-per-requirement
 	// turns on cheap tiers). Default true.
 	const useChecklist = opts.checklist !== false;
-	const workerSystemPrompt = systemPrompt ?? buildWorkerSystemPrompt(useChecklist);
-	const workerExtensions = [...(useChecklist ? [CHECKLIST_EXTENSION_PATH] : []), ...(usePrewalk ? [PREWALK_EXTENSION_PATH] : [])];
+	const workerSystemPrompt =
+		systemPrompt ?? buildWorkerSystemPrompt(useChecklist);
+	// Failure artifacts land under <metricsDir>/<project>/ (R2): direct
+	// callers omit project, so derive it like executeBatchLane does — an
+	// undefined project would make join() throw inside the best-effort
+	// catch and silently drop the artifact.
+	const projectName = project ?? deriveProjectName(cwd);
+	const workerExtensions = [
+		...(useChecklist ? [CHECKLIST_EXTENSION_PATH] : []),
+		...(usePrewalk ? [PREWALK_EXTENSION_PATH] : []),
+	];
 
 	// Verification lifecycle locals: the pre-change baseline (dispatch-time
 	// dry run) + the accumulated spec-defect suspects (failures matching the
 	// baseline exactly — recorded in the result/manifest, never fix-looped).
 	const verificationBaseline = opts.verificationBaseline ?? [];
 	const suspectedSpecDefects: string[] = [];
-	let lastAdjudication: { upheld: string[]; rejected: VerificationDispute[] } = { upheld: [], rejected: [] };
+	let lastAdjudication: { upheld: string[]; rejected: VerificationDispute[] } =
+		{ upheld: [], rejected: [] };
 
-	const verifyTimeout = verificationTimeoutMs ?? DEFAULT_VERIFICATION_TIMEOUT_MS;
+	const verifyTimeout =
+		verificationTimeoutMs ?? DEFAULT_VERIFICATION_TIMEOUT_MS;
 
 	// The worker persists a session when the reviewer forks it (review) or when
 	// traces are preserved (benchmark mode). The orchestrator owns the scratch
 	// dir and cleans it up in finally.
-	const sessionDir = review || preserveSessions ? mkdtempSync(join(tmpdir(), "pi-task-session-")) : undefined;
+	const sessionDir =
+		review || preserveSessions
+			? mkdtempSync(join(tmpdir(), "pi-task-session-"))
+			: undefined;
 
 	// AI commit identity (todo #84): root the single worker on a fresh
 	// AI-authored commit. jj commit preserves the working-copy commit's
@@ -2695,10 +3118,19 @@ async function executeSingle(
 	// working copy to the user's identity.
 	let identityDir: string | null = null;
 	let identityFile: string | null = null;
-	if (aiAuthorName.trim().length > 0 && aiAuthorEmail.trim().length > 0) {
+	if (
+		aiAuthorName !== undefined &&
+		aiAuthorEmail !== undefined &&
+		aiAuthorName.trim().length > 0 &&
+		aiAuthorEmail.trim().length > 0
+	) {
 		identityDir = mkdtempSync(join(tmpdir(), "pi-task-identity-"));
 		identityFile = join(identityDir, "jj-identity.toml");
-		writeFileSync(identityFile, aiIdentityToml(aiAuthorName, aiAuthorEmail), "utf-8");
+		writeFileSync(
+			identityFile,
+			aiIdentityToml(aiAuthorName, aiAuthorEmail),
+			"utf-8",
+		);
 		try {
 			await createAiTaskBase(cwd, identityFile, spec.goal);
 		} catch (err) {
@@ -2732,33 +3164,42 @@ async function executeSingle(
 		const session = spawnWorkerSessionResilient({
 			cwd,
 			model: usePrewalk ? prewalkModel! : executeModel,
-			serviceTier: opts.serviceTier,
-			serviceTierExcludes: opts.serviceTier || opts.providerOnly?.length ? [executeModel] : undefined,
-			providerOnly: opts.providerOnly,
-			sessionId: runId,
-			noProgressTimeoutMs: channelWatchdogWindows((shape ?? DEFAULT_TASK_SHAPES.code).channel).noProgressMs,
+			...(opts.serviceTier === undefined
+				? {}
+				: { serviceTier: opts.serviceTier }),
+			...(opts.serviceTier || opts.providerOnly?.length
+				? { serviceTierExcludes: [executeModel] }
+				: {}),
+			...(opts.providerOnly === undefined
+				? {}
+				: { providerOnly: opts.providerOnly }),
+			...(runId === undefined ? {} : { sessionId: runId }),
+			noProgressTimeoutMs: channelWatchdogWindows(
+				(shape ?? DEFAULT_SHAPE).channel,
+			).noProgressMs,
 			task: taskPrompt,
 			systemPrompt: workerSystemPrompt,
 			extensions: workerExtensions,
-			sessionDir,
-			signal,
+			...(sessionDir === undefined ? {} : { sessionDir }),
+			...(signal === undefined ? {} : { signal }),
 			sandbox,
-			aiAuthorName,
-			aiAuthorEmail,
-			onUpdate,
+			...(aiAuthorName === undefined ? {} : { aiAuthorName }),
+			...(aiAuthorEmail === undefined ? {} : { aiAuthorEmail }),
+			...(onUpdate === undefined ? {} : { onUpdate }),
 			// Phase 11 (R4/R5): per-tier wall + per-tool-call budget. The
 			// verification commands + grace: the wall must not kill an
 			// in-flight suite run — it gets a bounded grace instead.
-			timeoutMs: workerTimeoutMs,
-			toolTimeoutMs,
+			...(workerTimeoutMs === undefined ? {} : { timeoutMs: workerTimeoutMs }),
+			...(toolTimeoutMs === undefined ? {} : { toolTimeoutMs }),
 			verificationCommands: spec.verification,
-			verificationTimeoutMs,
+			...(verificationTimeoutMs === undefined ? {} : { verificationTimeoutMs }),
 		});
 		// Checklist relay (R4): streams the worker's real checklist state to the
 		// progress view via the existing worker event stream — observer-only,
 		// zero LLM tokens, worker-side semantics unchanged.
 		const checklistCtrl = attachChecklistRelay(session, {
-			onChecklist: (c) => onUpdate?.({ type: "checklist", done: c.done, total: c.total }),
+			onChecklist: (c) =>
+				onUpdate?.({ type: "checklist", done: c.done, total: c.total }),
 		});
 
 		// Turn budget (Phase 3): bounded autonomy, enforced mechanically. At
@@ -2769,16 +3210,35 @@ async function executeSingle(
 		if (opts.turnBudget && opts.turnBudget > 0) {
 			session.onEvent((event) => {
 				const ev = event as { type?: string; message?: { role?: string } };
-				if (ev.type !== "message_end" || ev.message?.role !== "assistant") return;
+				if (ev.type !== "message_end" || ev.message?.role !== "assistant")
+					return;
 				turnBudgetState.turns++;
-				const action = decideTurnBudgetAction(turnBudgetState.turns, opts.turnBudget, turnBudgetState.nudged);
+				const action = decideTurnBudgetAction(
+					turnBudgetState.turns,
+					opts.turnBudget,
+					turnBudgetState.nudged,
+				);
 				if (action === "nudge") {
 					turnBudgetState.nudged = true;
-					session.sendCommand({ type: "prompt", message: turnBudgetNudgeMessage(turnBudgetState.turns, opts.turnBudget!) });
-					onUpdate?.({ type: "turn_budget_nudge", turns: turnBudgetState.turns, budget: opts.turnBudget });
+					session.sendCommand({
+						type: "prompt",
+						message: turnBudgetNudgeMessage(
+							turnBudgetState.turns,
+							opts.turnBudget!,
+						),
+					});
+					onUpdate?.({
+						type: "turn_budget_nudge",
+						turns: turnBudgetState.turns,
+						budget: opts.turnBudget,
+					});
 				} else if (action === "abort" && !turnBudgetState.exhausted) {
 					turnBudgetState.exhausted = true;
-					onUpdate?.({ type: "turn_budget_exhausted", turns: turnBudgetState.turns, budget: opts.turnBudget });
+					onUpdate?.({
+						type: "turn_budget_exhausted",
+						turns: turnBudgetState.turns,
+						budget: opts.turnBudget,
+					});
 					session.abort();
 				}
 			});
@@ -2798,7 +3258,7 @@ async function executeSingle(
 						swapError = err;
 						session.abort();
 					},
-			  })
+				})
 			: null;
 
 		let worker: WorkerResult;
@@ -2811,10 +3271,13 @@ async function executeSingle(
 						`the run was aborted to stop the spend. Any commits the worker made remain in the tree.`,
 				);
 			}
-			if (swapError) throw swapError;
+			// swapError's null-narrowing does not survive into a catch block
+			// (the awaited call above can invalidate it), hence the explicit
+			// Error assertion for only-throw-error.
+			if (swapError !== null) throw swapError as Error;
 			// R2 (third outcome): finalization-incomplete — the checklist relay
 			// showed ALL requirements done at abort, so the worker committed
- 			// everything and was verifying/yielding when it was killed. Rescue
+			// everything and was verifying/yielding when it was killed. Rescue
 			// any uncommitted tail first (a dirty WC would otherwise fail the
 			// gate), then run verification on the committed tree post-abort:
 			// pass → success-with-caveat (the worker's commit ids); fail → the
@@ -2828,7 +3291,12 @@ async function executeSingle(
 			const noYieldFailure = isNoYieldFailure(err);
 			if (noYieldFailure || isFinalizationIncomplete(checklistCtrl.latest)) {
 				await rescueAbortedWorkBestEffort(cwd, err);
-				const verification = await runVerification(spec.verification, cwd, verifyTimeout, signal);
+				const verification = await runVerification(
+					spec.verification,
+					cwd,
+					verifyTimeout,
+					signal,
+				);
 				if (verification.passed) {
 					// The worker's commits: the range baseCommit..@- (the worker
 					// never yielded, so the payload's commit_ids are unavailable).
@@ -2837,13 +3305,21 @@ async function executeSingle(
 					let commitIds: string[] = [];
 					const ids = await execJj(
 						[
-							"log", "-r", `${baseCommit}..@-`, "--no-graph",
-							"-T", "if(empty, '', commit_id)", "--ignore-working-copy",
+							"log",
+							"-r",
+							`${baseCommit}..@-`,
+							"--no-graph",
+							"-T",
+							"if(empty, '', commit_id)",
+							"--ignore-working-copy",
 						],
 						cwd,
 					);
 					if (ids.code === 0) {
-						commitIds = ids.stdout.split("\n").map((l) => l.trim()).filter((l) => /^[0-9a-f]{40}$/.test(l));
+						commitIds = ids.stdout
+							.split("\n")
+							.map((l) => l.trim())
+							.filter((l) => /^[0-9a-f]{40}$/.test(l));
 					}
 					let filesChanged: string[] = [];
 					try {
@@ -2857,7 +3333,12 @@ async function executeSingle(
 					// recovery story.
 					const worker = abortedWorkerResult();
 					const metrics = finalizeMetrics({
-						cwd, project, metricsDir, preserveSessions, runId, worker,
+						cwd,
+						project,
+						metricsDir,
+						preserveSessions,
+						runId,
+						worker,
 						assemble: {
 							specMarkdown,
 							requirements: spec.requirements.length,
@@ -2865,17 +3346,20 @@ async function executeSingle(
 							executeModel,
 							reviewModel: reviewModel ?? executeModel,
 							reviewForked: false,
-				shape: shape?.name ?? "code",
+							shape,
 							budget,
 							serviceTier: opts.serviceTier,
 							sandbox: sandbox.active,
-							worker, workerDurationMs: Date.now() - workerStartMs,
+							worker,
+							workerDurationMs: Date.now() - workerStartMs,
 							totalDurationMs: Date.now() - runStartMs,
 							swapTurn,
 							verification,
 							review: null,
 							fixLoop: { iterations: 0, costUsd: 0 },
-							receivedAt: opts.receivedAt,
+							...(opts.receivedAt === undefined
+								? {}
+								: { receivedAt: opts.receivedAt }),
 							dispatchedAt,
 							mainSessionTokens: opts.mainSessionTokens,
 							filesChanged,
@@ -2892,11 +3376,13 @@ async function executeSingle(
 						worker,
 						verification,
 						manifest: metrics.manifest,
-						manifestPath: metrics.manifestPath,
+						...(metrics.manifestPath === undefined
+							? {}
+							: { manifestPath: metrics.manifestPath }),
 						durationMs: Date.now() - runStartMs,
 						caveat:
 							(noYieldFailure
-								? `worker ended without calling yield; salvaged — ` 
+								? `worker ended without calling yield; salvaged — `
 								: `worker aborted during finalization; verified post-merge — `) +
 							`${commitIds.length} commit(s): ${commitIds.join(", ") || "(none)"}`,
 					};
@@ -2912,7 +3398,7 @@ async function executeSingle(
 				kind: "worker",
 				runId,
 				metricsDir,
-				project,
+				project: projectName,
 				specMarkdown,
 				tier: budget,
 			});
@@ -2928,11 +3414,24 @@ async function executeSingle(
 
 		// ── Review disabled: unchanged verify-once path (plus metrics) ──
 		if (!review) {
-			const verification = await runVerification(spec.verification, cwd, verifyTimeout, signal);
-			const defectSplit0 = classifyVerificationFailures(verification.failures, verificationBaseline);
-			lastAdjudication = adjudicateDisputes(disputes, verification.failures, verificationBaseline);
+			const verification = await runVerification(
+				spec.verification,
+				cwd,
+				verifyTimeout,
+				signal,
+			);
+			const defectSplit0 = classifyVerificationFailures(
+				verification.failures,
+				verificationBaseline,
+			);
+			lastAdjudication = adjudicateDisputes(
+				disputes,
+				verification.failures,
+				verificationBaseline,
+			);
 			for (const f of defectSplit0.specDefectSuspected) {
-				if (!suspectedSpecDefects.includes(f.command)) suspectedSpecDefects.push(f.command);
+				if (!suspectedSpecDefects.includes(f.command))
+					suspectedSpecDefects.push(f.command);
 			}
 			for (const c of lastAdjudication.upheld) {
 				if (!suspectedSpecDefects.includes(c)) suspectedSpecDefects.push(c);
@@ -2941,7 +3440,12 @@ async function executeSingle(
 			// leaves @ as an empty working-copy commit after its last `jj commit`).
 			const diffStat = await computeDiffStatBestEffort(cwd, baseCommit);
 			const metrics = finalizeMetrics({
-				cwd, project, metricsDir, preserveSessions, runId, worker,
+				cwd,
+				project,
+				metricsDir,
+				preserveSessions,
+				runId,
+				worker,
 				assemble: {
 					specMarkdown,
 					requirements: spec.requirements.length,
@@ -2949,11 +3453,12 @@ async function executeSingle(
 					executeModel,
 					reviewModel: reviewModel ?? executeModel,
 					reviewForked: false,
-				shape: shape?.name ?? "code",
+					shape,
 					budget,
 					serviceTier: opts.serviceTier,
 					sandbox: sandbox.active,
-					worker, workerDurationMs,
+					worker,
+					workerDurationMs,
 					totalDurationMs: Date.now() - runStartMs,
 					swapTurn,
 					verification,
@@ -2961,7 +3466,9 @@ async function executeSingle(
 					disputes: lastAdjudication,
 					review: null,
 					fixLoop: { iterations: 0, costUsd: 0 },
-					receivedAt: opts.receivedAt,
+					...(opts.receivedAt === undefined
+						? {}
+						: { receivedAt: opts.receivedAt }),
 					dispatchedAt,
 					mainSessionTokens: opts.mainSessionTokens,
 					filesChanged: worker.yield.files_changed,
@@ -2977,14 +3484,21 @@ async function executeSingle(
 				spec,
 				worker,
 				verification,
-				...(suspectedSpecDefects.length > 0 ? { suspectedSpecDefects: [...suspectedSpecDefects] } : {}),
-				...(lastAdjudication.upheld.length > 0 || lastAdjudication.rejected.length > 0 ? { disputes: lastAdjudication } : {}),
+				...(suspectedSpecDefects.length > 0
+					? { suspectedSpecDefects: [...suspectedSpecDefects] }
+					: {}),
+				...(lastAdjudication.upheld.length > 0 ||
+				lastAdjudication.rejected.length > 0
+					? { disputes: lastAdjudication }
+					: {}),
 				// R1: a requested review on an axis-less shape (analysis — surveys
 				// are a single task, the worker IS the review) never forks; surface
 				// the skipped disposition instead (same contract as parallel/batch).
 				...(reviewRequested ? { reviewSkipped: true } : {}),
 				manifest: metrics.manifest,
-				manifestPath: metrics.manifestPath,
+				...(metrics.manifestPath === undefined
+					? {}
+					: { manifestPath: metrics.manifestPath }),
 				durationMs: Date.now() - runStartMs,
 			};
 		}
@@ -2992,7 +3506,9 @@ async function executeSingle(
 		// ── Review + bounded fix loop ──
 		const sessionFile = worker.sessionFile;
 		if (!sessionFile) {
-			throw new Error("review enabled but the worker did not persist a session (no sessionFile)");
+			throw new Error(
+				"review enabled but the worker did not persist a session (no sessionFile)",
+			);
 		}
 		const maxFixes = Math.max(0, maxFixIterations ?? 2);
 		// The review axes (R1): no persona override → ONE default adversarial
@@ -3019,34 +3535,57 @@ async function executeSingle(
 
 		while (true) {
 			// 8a. Verification (bash hard gate, zero tokens)
-			verification = await runVerification(spec.verification, cwd, verifyTimeout, signal);
+			verification = await runVerification(
+				spec.verification,
+				cwd,
+				verifyTimeout,
+				signal,
+			);
 			// Baseline adjudication: failures matching the pre-change baseline
 			// (same exit + output signature) are suspected spec defects — the
 			// gate was unsatisfiable before the work began. The fix loop spends
 			// NOTHING on them: all-suspect → escalate with the evidence, mixed
 			// → fix only the actionable failures.
-			const defectSplit = classifyVerificationFailures(verification.failures, verificationBaseline);
+			const defectSplit = classifyVerificationFailures(
+				verification.failures,
+				verificationBaseline,
+			);
 			// Worker disputes (yield + fix workers): adjudicated by evidence —
 			// upheld only on a baseline-identical failure. Never unilateral.
-			lastAdjudication = adjudicateDisputes(disputes, verification.failures, verificationBaseline);
+			lastAdjudication = adjudicateDisputes(
+				disputes,
+				verification.failures,
+				verificationBaseline,
+			);
 			for (const f of defectSplit.specDefectSuspected) {
-				if (!suspectedSpecDefects.includes(f.command)) suspectedSpecDefects.push(f.command);
+				if (!suspectedSpecDefects.includes(f.command))
+					suspectedSpecDefects.push(f.command);
 			}
 			for (const c of lastAdjudication.upheld) {
 				if (!suspectedSpecDefects.includes(c)) suspectedSpecDefects.push(c);
 			}
-			const actionableFailures = defectSplit.actionable.filter((f) => !lastAdjudication.upheld.includes(f.command));
+			const actionableFailures = defectSplit.actionable.filter(
+				(f) => !lastAdjudication.upheld.includes(f.command),
+			);
 			if (!verification.passed && actionableFailures.length === 0) {
-				onUpdate?.({ type: "spec_defect_suspected", commands: [...suspectedSpecDefects] });
+				onUpdate?.({
+					type: "spec_defect_suspected",
+					commands: [...suspectedSpecDefects],
+				});
 				decision = "escalate";
 				break;
 			}
 			// 8b. Forked adversarial review (inherits the worker's pruned context).
 			// The progress view keys its work → review transition off this event.
 			onUpdate?.({ type: "review_start" });
-			let outcomes: Array<{ result: ReviewResult; usage: { cost_usd: number } }>;
+			let outcomes: Array<{
+				result: ReviewResult;
+				usage: { cost_usd: number };
+			}>;
 			try {
-				const watchWindows = channelWatchdogWindows((shape ?? DEFAULT_TASK_SHAPES.code).channel);
+				const watchWindows = channelWatchdogWindows(
+					(shape ?? DEFAULT_SHAPE).channel,
+				);
 				outcomes = await Promise.all(
 					effectiveAxes.map((p) =>
 						forkedReview({
@@ -3060,14 +3599,22 @@ async function executeSingle(
 							deviations: worker.yield.deviations,
 							persona: p,
 							firstEventTimeoutMs: watchWindows.firstEventMs,
-							wallTimeoutMs: reviewWallTimeoutMs,
-							serviceTier: opts.serviceTier,
-							serviceTierExcludes: opts.serviceTier || opts.providerOnly?.length ? [executeModel] : undefined,
-							providerOnly: opts.providerOnly,
-							signal,
-							onUpdate,
+							...(reviewWallTimeoutMs === undefined
+								? {}
+								: { wallTimeoutMs: reviewWallTimeoutMs }),
+							...(opts.serviceTier === undefined
+								? {}
+								: { serviceTier: opts.serviceTier }),
+							...(opts.serviceTier || opts.providerOnly?.length
+								? { serviceTierExcludes: [executeModel] }
+								: {}),
+							...(opts.providerOnly === undefined
+								? {}
+								: { providerOnly: opts.providerOnly }),
+							...(signal === undefined ? {} : { signal }),
+							...(onUpdate === undefined ? {} : { onUpdate }),
 						}),
-				),
+					),
 				);
 			} catch (err) {
 				// A failed review must not vanish without a trace (the run has no
@@ -3078,7 +3625,7 @@ async function executeSingle(
 					kind: "review",
 					runId,
 					metricsDir,
-					project,
+					project: projectName,
 					specMarkdown,
 					tier: budget,
 				});
@@ -3088,45 +3635,68 @@ async function executeSingle(
 			reviewResult = merged.result;
 			reviewCostUsd += merged.costUsd;
 			// 8c. Ship / fix / escalate
-			decision = decideFixLoop({ testsPass: verification.passed, review: reviewResult, fixesUsed, maxFixes });
-			onUpdate?.({ type: "review", verdict: reviewResult.verdict, findings: reviewResult.findings.length, decision });
+			decision = decideFixLoop({
+				testsPass: verification.passed,
+				review: reviewResult,
+				fixesUsed,
+				maxFixes,
+			});
+			onUpdate?.({
+				type: "review",
+				verdict: reviewResult.verdict,
+				findings: reviewResult.findings.length,
+				decision,
+			});
 			if (decision !== "fix") break;
 
 			// 8d. Dispatch a fix worker for the P0/P1 blockers + failing tests
-			const fixPrompt = buildFixPrompt({ specMarkdown, failures: actionableFailures, findings: blockersOf(reviewResult) });
+			const fixPrompt = buildFixPrompt({
+				specMarkdown,
+				failures: actionableFailures,
+				findings: blockersOf(reviewResult),
+			});
 			const fixSession = spawnWorkerSessionResilient({
 				cwd,
 				model: executeModel,
-				serviceTier: opts.serviceTier,
-				serviceTierExcludes: opts.serviceTier || opts.providerOnly?.length ? [executeModel] : undefined,
-				providerOnly: opts.providerOnly,
-				sessionId: runId,
-				noProgressTimeoutMs: channelWatchdogWindows((shape ?? DEFAULT_TASK_SHAPES.code).channel).noProgressMs,
+				...(opts.serviceTier === undefined
+					? {}
+					: { serviceTier: opts.serviceTier }),
+				...(opts.serviceTier || opts.providerOnly?.length
+					? { serviceTierExcludes: [executeModel] }
+					: {}),
+				...(opts.providerOnly === undefined
+					? {}
+					: { providerOnly: opts.providerOnly }),
+				...(runId === undefined ? {} : { sessionId: runId }),
+				noProgressTimeoutMs: channelWatchdogWindows(
+					(shape ?? DEFAULT_SHAPE).channel,
+				).noProgressMs,
 				task: fixPrompt,
 				systemPrompt: workerSystemPrompt,
 				extensions: useChecklist ? [CHECKLIST_EXTENSION_PATH] : [],
-				signal,
+				...(signal === undefined ? {} : { signal }),
 				sandbox,
-				aiAuthorName,
-				aiAuthorEmail,
-				onUpdate,
+				...(aiAuthorName === undefined ? {} : { aiAuthorName }),
+				...(aiAuthorEmail === undefined ? {} : { aiAuthorEmail }),
+				...(onUpdate === undefined ? {} : { onUpdate }),
 				// Phase 11 (R4/R5): the same per-tier wall + per-tool-call budget.
-				timeoutMs: workerTimeoutMs,
-				toolTimeoutMs,
+				...(workerTimeoutMs === undefined
+					? {}
+					: { timeoutMs: workerTimeoutMs }),
+				...(toolTimeoutMs === undefined ? {} : { toolTimeoutMs }),
 			});
-			const fixResult = await fixSession.result
-				.catch((err: unknown) => {
-					writeFailureArtifactBestEffort({
-						err,
-						kind: "worker",
-						runId,
-						metricsDir,
-						project,
-						specMarkdown,
-						tier: budget,
-					});
-					throw err;
+			const fixResult = await fixSession.result.catch((err: unknown) => {
+				writeFailureArtifactBestEffort({
+					err,
+					kind: "worker",
+					runId,
+					metricsDir,
+					project: projectName,
+					specMarkdown,
+					tier: budget,
 				});
+				throw err;
+			});
 			fixesUsed++;
 			disputes.push(...(fixResult.yield.disputes ?? []));
 			fixesCostUsd += fixResult.usage.cost_usd;
@@ -3141,7 +3711,12 @@ async function executeSingle(
 		// pure. files_changed is the deduped union incl. fix workers.
 		const diffStat = parseDiffStat(diff);
 		const metrics = finalizeMetrics({
-			cwd, project, metricsDir, preserveSessions, runId, worker,
+			cwd,
+			project,
+			metricsDir,
+			preserveSessions,
+			runId,
+			worker,
 			assemble: {
 				specMarkdown,
 				requirements: spec.requirements.length,
@@ -3149,19 +3724,28 @@ async function executeSingle(
 				executeModel,
 				reviewModel: rModel,
 				reviewForked: true,
-				shape: shape?.name ?? "code",
+				shape,
 				budget,
 				serviceTier: opts.serviceTier,
 				sandbox: sandbox.active,
-				worker, workerDurationMs,
+				worker,
+				workerDurationMs,
 				totalDurationMs: Date.now() - runStartMs,
 				swapTurn,
 				verification,
 				suspectedSpecDefects: [...suspectedSpecDefects],
 				disputes: lastAdjudication,
-				review: reviewResult ? { result: reviewResult, costUsd: reviewCostUsd, personas: effectiveAxes.map((p) => p.name) } : null,
+				review: reviewResult
+					? {
+							result: reviewResult,
+							costUsd: reviewCostUsd,
+							personas: effectiveAxes.map((p) => p.name),
+						}
+					: null,
 				fixLoop: { iterations: fixesUsed + 1, costUsd: fixesCostUsd },
-				receivedAt: opts.receivedAt,
+				...(opts.receivedAt === undefined
+					? {}
+					: { receivedAt: opts.receivedAt }),
 				dispatchedAt,
 				mainSessionTokens: opts.mainSessionTokens,
 				filesChanged: [...new Set(files)],
@@ -3178,12 +3762,19 @@ async function executeSingle(
 			spec,
 			worker,
 			verification,
-			...(suspectedSpecDefects.length > 0 ? { suspectedSpecDefects: [...suspectedSpecDefects] } : {}),
-			...(lastAdjudication.upheld.length > 0 || lastAdjudication.rejected.length > 0 ? { disputes: lastAdjudication } : {}),
-			review: reviewResult ?? undefined,
+			...(suspectedSpecDefects.length > 0
+				? { suspectedSpecDefects: [...suspectedSpecDefects] }
+				: {}),
+			...(lastAdjudication.upheld.length > 0 ||
+			lastAdjudication.rejected.length > 0
+				? { disputes: lastAdjudication }
+				: {}),
+			...(reviewResult ? { review: reviewResult } : {}),
 			fixLoop: { iterations: fixesUsed + 1, fixesDispatched: fixesUsed },
 			manifest: metrics.manifest,
-			manifestPath: metrics.manifestPath,
+			...(metrics.manifestPath === undefined
+				? {}
+				: { manifestPath: metrics.manifestPath }),
 			durationMs: Date.now() - runStartMs,
 		};
 	} finally {
@@ -3197,7 +3788,10 @@ async function executeSingle(
 			try {
 				await execJj(["new"], cwd);
 				const leftover = (
-					await execJj(["log", "-r", "@-", "-T", "if(empty, 'EMPTY', 'X')", "--no-graph"], cwd)
+					await execJj(
+						["log", "-r", "@-", "-T", "if(empty, 'EMPTY', 'X')", "--no-graph"],
+						cwd,
+					)
 				).stdout.trim();
 				if (leftover === "EMPTY") await execJj(["abandon", "@-"], cwd);
 			} catch {

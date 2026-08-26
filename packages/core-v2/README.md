@@ -86,8 +86,8 @@ the strict gate.
   `timeout 1800 npx tsx packages/core-v2/test/e2e-parallel.ts`.
 - `src/guards/` — M1.3 operational hardening (FR-7/FR-8):
   - `watchdogs.ts` — pure watchdog decisions over observed session events
-    + elapsed time (`continue` / `nudge(text)` / `abort(reason)`), every
-    bound a named constant
+    - elapsed time (`continue` / `nudge(text)` / `abort(reason)`), every
+      bound a named constant
   - `watchdog-driver.ts` — the stateful driver applying those decisions
     (injectable timer source; `attachWatchdogs` propagates nudges/aborts
     to a live session handle)
@@ -128,6 +128,7 @@ the strict gate.
    `src/plugins/hooks.ts`. A test that only covers pure helpers does not
    pass review (FR-11). See `test/test-gateway-plugins.ts` for the
    pattern over real plugin files.
+
 - `src/bench/` — the M3 suite-03 grounding-evaluation harness
   (docs/pi-task-v2.md §7): `grounding-configs.ts` (the grounding-mode
   vocabulary — bare / current engine / daemon cold, prewalk, bundle, fork
@@ -153,9 +154,9 @@ the strict gate.
     feedback switching (hit-rate/deviation thresholds), empty-feedback
     defaults, threshold overrides, and determinism
   - `test-grounding-eval.ts` — the grounding harness: config enumeration
-    + strong-model gating, plan assembly vs owner-file baselines,
-    COR-from-sums aggregation, NFR-3/NFR-4 normalization, summary
-    rendering, and the JSONL evidence round-trip
+    - strong-model gating, plan assembly vs owner-file baselines,
+      COR-from-sums aggregation, NFR-3/NFR-4 normalization, summary
+      rendering, and the JSONL evidence round-trip
   - `test-watchdogs.ts`, `test-watchdog-driver.ts` — the watchdog decision
     matrix and driver behavior over fake timers
   - `test-verify-run.ts`, `test-artifacts.ts` — real-bash verification

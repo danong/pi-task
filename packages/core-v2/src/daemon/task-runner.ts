@@ -43,11 +43,18 @@
 
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync } from "node:fs";
-import { join } from "node:path";
 
-import type { ExecutionBundle, HandoffBundle, TaskReceipt, Yield } from "../contracts/index.ts";
+import type {
+	ExecutionBundle,
+	HandoffBundle,
+	TaskReceipt,
+	Yield,
+} from "../contracts/index.ts";
 import { writeFailureArtifact } from "../guards/artifacts.ts";
-import { attachWatchdogs, type WatchdogEnd } from "../guards/watchdog-driver.ts";
+import {
+	attachWatchdogs,
+	type WatchdogEnd,
+} from "../guards/watchdog-driver.ts";
 import {
 	buildExecutionBundle,
 	bundleGroundingSection,
@@ -55,9 +62,23 @@ import {
 	isBundleUsable,
 } from "../grounding/bundle.ts";
 import { LedgerStore } from "../ledger/store.ts";
-import { BUNDLE_FEEDBACK_MODE, routeTask, type RoutingFeedbackRow } from "../router/route.ts";
-import { createSessionHost, SessionHostError, type SessionHandle, type SessionHost, type SessionHostEvent } from "../sessions/host.ts";
-import { attachPrewalk, decidePrewalkSwap, type PrewalkPricing } from "../grounding/prewalk.ts";
+import {
+	BUNDLE_FEEDBACK_MODE,
+	routeTask,
+	type RoutingFeedbackRow,
+} from "../router/route.ts";
+import {
+	createSessionHost,
+	SessionHostError,
+	type SessionHandle,
+	type SessionHost,
+	type SessionHostEvent,
+} from "../sessions/host.ts";
+import {
+	attachPrewalk,
+	decidePrewalkSwap,
+	type PrewalkPricing,
+} from "../grounding/prewalk.ts";
 import { verifyThroughEnvironment } from "../verify/adapter.ts";
 import { HostEnvironmentDriver } from "../environments/drivers.ts";
 import type { TaskGateway } from "../contracts/index.ts";
@@ -91,12 +112,19 @@ export interface UsageSnapshot {
 }
 
 /** Everything billed as prompt, cached or not — the NFR-3 denominator. */
-export function totalInputTokens(tokens: { input: number; cacheRead: number; cacheWrite: number }): number {
+export function totalInputTokens(tokens: {
+	input: number;
+	cacheRead: number;
+	cacheWrite: number;
+}): number {
 	return tokens.input + tokens.cacheRead + tokens.cacheWrite;
 }
 
 /** COR grounding ratio: grounding ÷ total input (0 when nothing billed). */
-export function computeCor(groundingTokens: number, totalInput: number): number {
+export function computeCor(
+	groundingTokens: number,
+	totalInput: number,
+): number {
 	return totalInput === 0 ? 0 : groundingTokens / totalInput;
 }
 
@@ -106,7 +134,10 @@ export function computeCor(groundingTokens: number, totalInput: number): number 
  * runner approximates honestly — ≈4 utf-8 bytes per token over the
  * worker system prompt plus the spec markdown.
  */
-export function estimateGroundingTokens(systemPrompt: string, specMarkdown: string): number {
+export function estimateGroundingTokens(
+	systemPrompt: string,
+	specMarkdown: string,
+): number {
 	return Math.ceil(Buffer.byteLength(systemPrompt + specMarkdown, "utf-8") / 4);
 }
 
@@ -128,7 +159,10 @@ export function emptyUsage(): UsageSnapshot {
  * (NFR-3): a rejecting stats() yields the zeroed sentinel snapshot —
  * accounting must never fail a run.
  */
-export async function collectUsage(handle: SessionHandle, groundingTokens: number): Promise<UsageSnapshot> {
+export async function collectUsage(
+	handle: SessionHandle,
+	groundingTokens: number,
+): Promise<UsageSnapshot> {
 	try {
 		const stats = await handle.stats();
 		return {
@@ -159,14 +193,23 @@ export function sumUsage(usages: readonly UsageSnapshot[]): UsageSnapshot {
 	}
 	total.cor = computeCor(
 		total.groundingTokens,
-		totalInputTokens({ input: total.inputTokens, cacheRead: total.cacheReadTokens, cacheWrite: total.cacheWriteTokens }),
+		totalInputTokens({
+			input: total.inputTokens,
+			cacheRead: total.cacheReadTokens,
+			cacheWrite: total.cacheWriteTokens,
+		}),
 	);
 	return total;
 }
 
 /** The flat receipt fields carrying measured usage (receipt stays ≈150
  *  tokens, §5.6 — compact numbers only, no nested objects). */
-export function receiptUsageFields(usage: UsageSnapshot): Pick<TaskReceipt, "costUsd" | "inputTokens" | "outputTokens" | "cacheReadTokens" | "cor"> {
+export function receiptUsageFields(
+	usage: UsageSnapshot,
+): Pick<
+	TaskReceipt,
+	"costUsd" | "inputTokens" | "outputTokens" | "cacheReadTokens" | "cor"
+> {
 	return {
 		costUsd: usage.costUsd,
 		inputTokens: usage.inputTokens,
@@ -211,7 +254,9 @@ export function parseTaskSpec(specMarkdown: string): ParsedTaskSpec {
 		}
 	}
 
-	const goalLines = (sections.get("goal") ?? []).map((l) => l.trim()).filter((l) => l.length > 0);
+	const goalLines = (sections.get("goal") ?? [])
+		.map((l) => l.trim())
+		.filter((l) => l.length > 0);
 	const firstGoal = goalLines[0] ?? "(no goal line)";
 	const requirementLines = (sections.get("requirements") ?? [])
 		.map((l) => l.replace(/^\s*(?:[-*]|\d+[.:)])\s*/, "").trim())
@@ -220,7 +265,8 @@ export function parseTaskSpec(specMarkdown: string): ParsedTaskSpec {
 		.map((l) => l.replace(/^\s*-\s*/, "").trim())
 		.filter((l) => l.length > 0);
 
-	if (requirementLines.length === 0) throw new SpecValidationError("requirements");
+	if (requirementLines.length === 0)
+		throw new SpecValidationError("requirements");
 	if (commandLines.length === 0) throw new SpecValidationError("verification");
 
 	return {
@@ -253,7 +299,10 @@ export function buildWorkerSystemPrompt(specMarkdown: string): string {
  * loops, and reconciliation requeues must never collide on the PK.
  */
 export function deriveTaskId(specMarkdown: string, cwd: string): string {
-	return createHash("sha256").update(`${cwd}\n${specMarkdown}`).digest("hex").slice(0, 12);
+	return createHash("sha256")
+		.update(`${cwd}\n${specMarkdown}`)
+		.digest("hex")
+		.slice(0, 12);
 }
 
 /** First free attempt id for a family: `family`, then `family-a2`,
@@ -371,11 +420,15 @@ async function runWithStore(
 	// as the gateway itself).
 	const baseGateway = options.gateway ?? new InMemoryTaskGateway({ store });
 	const plugins = options.plugins ?? [];
-	const pluginHookCtx = options.onPluginHookError === undefined ? undefined : { onHookError: options.onPluginHookError };
+	const pluginHookCtx =
+		options.onPluginHookError === undefined
+			? undefined
+			: { onHookError: options.onPluginHookError };
 	const gateway: TaskGateway = {
 		emit: (event) => {
 			baseGateway.emit(event);
-			if (plugins.length > 0) emitLifecycleEventToPlugins(event, plugins, pluginHookCtx);
+			if (plugins.length > 0)
+				emitLifecycleEventToPlugins(event, plugins, pluginHookCtx);
 		},
 		on: (pattern, handler) => baseGateway.on(pattern, handler),
 		getTaskState: (taskId) => baseGateway.getTaskState(taskId),
@@ -387,7 +440,11 @@ async function runWithStore(
 	// so one throwing registerTriggers cannot prevent later plugins from
 	// registering nor break the run.
 	if (plugins.length > 0) {
-		registerPluginTriggers((plugin) => plugin.registerTriggers?.(gateway), plugins, pluginHookCtx);
+		registerPluginTriggers(
+			(plugin) => plugin.registerTriggers?.(gateway),
+			plugins,
+			pluginHookCtx,
+		);
 	}
 	gateway.emit({ type: "task.queued", taskId });
 
@@ -411,7 +468,10 @@ async function runWithStore(
 	// NFR-3: when usage was already measured before the failure, carry it
 	// into the failed receipt instead of discarding it (defaults to zeroes
 	// for failures that happen before any session activity).
-	const failRun = (cause: string, usage: UsageSnapshot = emptyUsage()): RunTaskResult => {
+	const failRun = (
+		cause: string,
+		usage: UsageSnapshot = emptyUsage(),
+	): RunTaskResult => {
 		writeFailureArtifact({
 			artifactsDir: options.artifactsDir,
 			runId: taskId,
@@ -423,11 +483,17 @@ async function runWithStore(
 		store.setTaskStatus(taskId, "failed");
 		// Session stamp (review M4 P0-2): terminal task.* events carry the
 		// owning session id so session-scoped surface subscribers can filter.
-		gateway.emit({ type: "task.failed", taskId, sessionId: `${taskId}-worker`, detail: { cause } });
+		gateway.emit({
+			type: "task.failed",
+			taskId,
+			sessionId: `${taskId}-worker`,
+			detail: { cause },
+		});
 		// R3: a bundled run that dies anywhere is a MISS. When the bundle was
 		// merely attempted (never grounded), the miss row was already written
 		// at build time — do not double-count it.
-		if (bundleUsed || !bundleAttempted) store.recordRoutingFeedback(repo, decision.planMode, 0);
+		if (bundleUsed || !bundleAttempted)
+			store.recordRoutingFeedback(repo, decision.planMode, 0);
 		return {
 			receipt: {
 				taskId,
@@ -458,11 +524,16 @@ async function runWithStore(
 		feedback: feedbackRows,
 	});
 	store.setTaskPlanMode(taskId, decision.planMode);
-	gateway.emit({ type: "task.routed", taskId, detail: { planMode: decision.planMode } });
+	gateway.emit({
+		type: "task.routed",
+		taskId,
+		detail: { planMode: decision.planMode },
+	});
 
 	// ── Bundle assembly (R1): building is isolated from USING. The router's
 	// planMode gates attachment; the caller only supplies candidates.
-	bundleAttempted = decision.planMode === "bundle" && options.bundle !== undefined;
+	bundleAttempted =
+		decision.planMode === "bundle" && options.bundle !== undefined;
 	if (bundleAttempted) {
 		let built: ExecutionBundle | undefined;
 		try {
@@ -486,7 +557,11 @@ async function runWithStore(
 			// re-validates through ExecutionBundleSchema, so a plugin cannot
 			// inject an invalid bundle into the prompt prefix; its isolation
 			// means a failing plugin yields the BUILT bundle, never a miss row.
-			bundle = await transformExecutionBundleThrough(built, plugins, pluginHookCtx);
+			bundle = await transformExecutionBundleThrough(
+				built,
+				plugins,
+				pluginHookCtx,
+			);
 			bundleUsed = true;
 		}
 	}
@@ -499,7 +574,10 @@ async function runWithStore(
 	// Grounding figure (NFR-3 approximation): fixed prefix = system prompt
 	// + spec bytes, computed once where the prompt is built.
 	let systemPrompt = buildWorkerSystemPrompt(options.specMarkdown);
-	let groundingTokens = estimateGroundingTokens(systemPrompt, options.specMarkdown);
+	let groundingTokens = estimateGroundingTokens(
+		systemPrompt,
+		options.specMarkdown,
+	);
 	if (bundleUsed && bundle) {
 		const section = bundleGroundingSection(bundle);
 		systemPrompt += section;
@@ -516,13 +594,20 @@ async function runWithStore(
 			modelId: prewalkActive ? options.prewalk!.modelId : options.model,
 			cwd: options.cwd,
 			systemPrompt,
-			...(options.sessionTimeoutMs === undefined ? {} : { timeoutMs: options.sessionTimeoutMs }),
+			...(options.sessionTimeoutMs === undefined
+				? {}
+				: { timeoutMs: options.sessionTimeoutMs }),
 		});
-		gateway.emit({ type: "session.spawned", taskId, sessionId: `${taskId}-worker` });
+		gateway.emit({
+			type: "session.spawned",
+			taskId,
+			sessionId: `${taskId}-worker`,
+		});
 	} catch (err) {
-		const cause = err instanceof SessionHostError
-			? `session host error (${err.code}): ${err.message}`
-			: `session spawn failed: ${err instanceof Error ? err.message : String(err)}`;
+		const cause =
+			err instanceof SessionHostError
+				? `session host error (${err.code}): ${err.message}`
+				: `session spawn failed: ${err instanceof Error ? err.message : String(err)}`;
 		return failRun(cause);
 	}
 
@@ -538,7 +623,11 @@ async function runWithStore(
 		void attachPrewalk(handle, {
 			executeModelId: options.model,
 			decide: ({ contextTokensAtSwap }) =>
-				decidePrewalkSwap({ contextTokensAtSwap, remainingTurnsEstimate, pricing }),
+				decidePrewalkSwap({
+					contextTokensAtSwap,
+					remainingTurnsEstimate,
+					pricing,
+				}),
 			onSwap: ({ decision: d }) => {
 				store.recordRoutingFeedback(repo, "prewalk", 1);
 				console.error(`prewalk: swapped to ${options.model} (${d.reason})`);
@@ -560,9 +649,10 @@ async function runWithStore(
 	try {
 		await handle.prompt(buildWorkerPromptText(parsed));
 	} catch (err) {
-		const cause = err instanceof SessionHostError
-			? `prompt failed (${err.code}): ${err.message}`
-			: `prompt failed: ${err instanceof Error ? err.message : String(err)}`;
+		const cause =
+			err instanceof SessionHostError
+				? `prompt failed (${err.code}): ${err.message}`
+				: `prompt failed: ${err instanceof Error ? err.message : String(err)}`;
 		handle.close();
 		watchdogs.dispose();
 		unsubscribeEvents();
@@ -583,19 +673,35 @@ async function runWithStore(
 		const cause = observation.watchdogAbort
 			? `watchdog abort: ${observation.watchdogAbort.reason}`
 			: "settled without yield";
-		gateway.emit({ type: "session.exhausted", taskId, sessionId: `${taskId}-worker` });
+		gateway.emit({
+			type: "session.exhausted",
+			taskId,
+			sessionId: `${taskId}-worker`,
+		});
 		return failRun(cause, usage);
 	}
 
 	// ── Verify on the working tree through the environment ladder (M6). ──
-	store.setSessionStatus(`${taskId}-worker`, "yielded", JSON.stringify(yieldPayload));
-	gateway.emit({ type: "session.yielded", taskId, sessionId: `${taskId}-worker` });
+	store.setSessionStatus(
+		`${taskId}-worker`,
+		"yielded",
+		JSON.stringify(yieldPayload),
+	);
+	gateway.emit({
+		type: "session.yielded",
+		taskId,
+		sessionId: `${taskId}-worker`,
+	});
 	const verification = await verifyThroughEnvironment(
 		new HostEnvironmentDriver(),
 		options.cwd,
 		parsed.verificationCommands,
 	);
-	gateway.emit({ type: "verify.completed", taskId, detail: { passed: verification.passed } });
+	gateway.emit({
+		type: "verify.completed",
+		taskId,
+		detail: { passed: verification.passed },
+	});
 
 	if (!verification.passed) {
 		const firstFailure = verification.commands.find((c) => c.exitCode !== 0);
@@ -620,7 +726,7 @@ async function runWithStore(
 						...(c.timedOut ? { reason: "timed out" } : {}),
 						stderrTail: c.stderrTail,
 					})),
-				},
+			},
 			plugins,
 			pluginHookCtx,
 		);
@@ -632,8 +738,14 @@ async function runWithStore(
 		});
 		store.setTaskStatus(taskId, "failed");
 		// Same miss discipline as failRun (see above).
-		if (bundleUsed || !bundleAttempted) store.recordRoutingFeedback(repo, decision.planMode, 0);
-		gateway.emit({ type: "task.failed", taskId, sessionId: `${taskId}-worker`, detail: { cause: "verification failed" } });
+		if (bundleUsed || !bundleAttempted)
+			store.recordRoutingFeedback(repo, decision.planMode, 0);
+		gateway.emit({
+			type: "task.failed",
+			taskId,
+			sessionId: `${taskId}-worker`,
+			detail: { cause: "verification failed" },
+		});
 		return {
 			receipt: {
 				taskId,
@@ -657,15 +769,28 @@ async function runWithStore(
 	// row; unbundled runs keep the generic planMode feedback untouched.
 	let shippedBundleHit: boolean | null = bundleMissRecorded ? false : null;
 	if (bundleUsed && bundle) {
-		shippedBundleHit = isBundleFocused(bundle, yieldPayload.files_changed, options.cwd);
+		shippedBundleHit = isBundleFocused(
+			bundle,
+			yieldPayload.files_changed,
+			options.cwd,
+		);
 	}
 	if (bundleUsed) {
-		store.recordRoutingFeedback(repo, BUNDLE_FEEDBACK_MODE, shippedBundleHit === true ? 1 : 0);
+		store.recordRoutingFeedback(
+			repo,
+			BUNDLE_FEEDBACK_MODE,
+			shippedBundleHit === true ? 1 : 0,
+		);
 	} else if (!bundleAttempted) {
 		store.recordRoutingFeedback(repo, decision.planMode, 1);
 	}
 	store.setTaskStatus(taskId, "completed");
-	gateway.emit({ type: "task.completed", taskId, sessionId: `${taskId}-worker`, detail: { verdict: "ship" } });
+	gateway.emit({
+		type: "task.completed",
+		taskId,
+		sessionId: `${taskId}-worker`,
+		detail: { verdict: "ship" },
+	});
 	return {
 		receipt: {
 			taskId,

@@ -16,7 +16,10 @@
 
 import { execFile } from "node:child_process";
 
-import type { VerificationCommandResult, VerificationResult } from "../contracts/index.ts";
+import type {
+	VerificationCommandResult,
+	VerificationResult,
+} from "../contracts/index.ts";
 import { capTail } from "../guards/artifacts.ts";
 
 // ─── Named limits ────────────────────────────────────────────────────
@@ -40,7 +43,12 @@ export type VerifyExec = (
 	command: string,
 	args: string[],
 	options: { cwd: string; timeoutMs: number },
-) => Promise<{ exitCode: number; stdout: string; stderr: string; timedOut?: boolean }>;
+) => Promise<{
+	exitCode: number;
+	stdout: string;
+	stderr: string;
+	timedOut?: boolean;
+}>;
 
 export interface VerifyOptions {
 	/** Working directory the commands run in (the merged workspace). */
@@ -59,7 +67,11 @@ export interface VerifyOptions {
  * Run one bash command with a hard timeout. Resolves (never rejects):
  * timeouts surface as `timedOut: true` with exit code 124.
  */
-function runBash(command: string, cwd: string, timeoutMs: number): Promise<Omit<VerificationCommandResult, "command">> {
+function runBash(
+	command: string,
+	cwd: string,
+	timeoutMs: number,
+): Promise<Omit<VerificationCommandResult, "command">> {
 	const startedAtMs = Date.now();
 	return new Promise((resolve) => {
 		execFile(
@@ -69,8 +81,12 @@ function runBash(command: string, cwd: string, timeoutMs: number): Promise<Omit<
 			(error, stdout, stderr) => {
 				// Node reports execFile timeouts as killed=true + signal=SIGTERM
 				// (code null) on newer versions, ETIMEDOUT on older/other platforms.
-				const err = error as (NodeJS.ErrnoException & { killed?: boolean; signal?: string }) | null;
-				const timedOut = err?.code === "ETIMEDOUT" || (err?.killed === true && err.signal === "SIGTERM");
+				const err = error as
+					| (NodeJS.ErrnoException & { killed?: boolean; signal?: string })
+					| null;
+				const timedOut =
+					err?.code === "ETIMEDOUT" ||
+					(err?.killed === true && err.signal === "SIGTERM");
 				const exitCode = !err
 					? 0
 					: timedOut
@@ -100,8 +116,12 @@ function runBash(command: string, cwd: string, timeoutMs: number): Promise<Omit<
  * expired, no further command starts. An empty command list passes
  * vacuously.
  */
-export async function runVerification(commands: string[], options: VerifyOptions): Promise<VerificationResult> {
-	const commandTimeoutMs = options.commandTimeoutMs ?? DEFAULT_VERIFY_COMMAND_TIMEOUT_MS;
+export async function runVerification(
+	commands: string[],
+	options: VerifyOptions,
+): Promise<VerificationResult> {
+	const commandTimeoutMs =
+		options.commandTimeoutMs ?? DEFAULT_VERIFY_COMMAND_TIMEOUT_MS;
 	const wallTimeoutMs = options.wallTimeoutMs ?? DEFAULT_VERIFY_WALL_TIMEOUT_MS;
 	const graceMs = options.graceMs ?? DEFAULT_VERIFY_GRACE_MS;
 	const startedAtMs = Date.now();
@@ -111,10 +131,23 @@ export async function runVerification(commands: string[], options: VerifyOptions
 		const remainingWallMs = wallTimeoutMs - (Date.now() - startedAtMs);
 		if (remainingWallMs <= 0) break; // wall expired between commands — no new work starts
 		const timeoutMs = Math.min(commandTimeoutMs, remainingWallMs + graceMs);
-		let result: { exitCode: number; stdout: string; stderr: string; timedOut: boolean };
+		let result: {
+			exitCode: number;
+			stdout: string;
+			stderr: string;
+			timedOut: boolean;
+		};
 		if (options.exec) {
-			const r = await options.exec("/bin/bash", ["-c", command], { cwd: options.cwd, timeoutMs });
-			result = { exitCode: r.exitCode, stdout: r.stdout, stderr: r.stderr, timedOut: r.timedOut === true };
+			const r = await options.exec("/bin/bash", ["-c", command], {
+				cwd: options.cwd,
+				timeoutMs,
+			});
+			result = {
+				exitCode: r.exitCode,
+				stdout: r.stdout,
+				stderr: r.stderr,
+				timedOut: r.timedOut === true,
+			};
 		} else {
 			const r = await runBash(command, options.cwd, timeoutMs);
 			result = {

@@ -33,7 +33,10 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { generateRunId } from "./metrics.ts";
-import { DEFAULT_BATCH_POLL_INTERVAL_MS, DEFAULT_BATCH_JOB_TIMEOUT_MS } from "./config.ts";
+import {
+	DEFAULT_BATCH_POLL_INTERVAL_MS,
+	DEFAULT_BATCH_JOB_TIMEOUT_MS,
+} from "./config.ts";
 import type { Spec } from "./schemas/spec.ts";
 
 // ─── Typed errors ────────────────────────────────────────────────────
@@ -47,6 +50,13 @@ export const BATCH_ERROR_CODES = [
 	"aborted",
 	"items_incomplete",
 	"invalid_output",
+	// Recovery-only: thrown by resumeBatchJob when the job-state file is
+	// absent (nothing was ever submitted, or the state file was deleted).
+	"not_found",
+	// Greenfield-only guard: thrown when a batch item targets a path that
+	// already exists on disk (the single-turn items are context-free, so
+	// overwriting would silently replace content the model never saw).
+	"existing_file",
 ] as const;
 export type BatchErrorCode = (typeof BATCH_ERROR_CODES)[number];
 
@@ -63,8 +73,14 @@ export interface BatchErrorDetail {
  *  names the job id + what to do (resume/resubmit) where applicable. */
 export class BatchError extends Error {
 	readonly code: BatchErrorCode;
-	readonly detail?: BatchErrorDetail;
-	constructor(code: BatchErrorCode, message: string, detail?: BatchErrorDetail) {
+	// `| undefined` (exactOptionalPropertyTypes): the constructor may be
+	// handed an explicitly-undefined detail from spread-through callers.
+	readonly detail?: BatchErrorDetail | undefined;
+	constructor(
+		code: BatchErrorCode,
+		message: string,
+		detail?: BatchErrorDetail,
+	) {
 		super(message);
 		this.name = "BatchError";
 		this.code = code;
@@ -97,7 +113,7 @@ export interface BatchPromptItem {
  *  wrapping JSON in ```json fences; the fence is not part of the output). */
 export function stripCodeFences(text: string): string {
 	const m = /^```(?:json)?\s*\n([\s\S]*?)\n```\s*$/.exec(text.trim());
-	return m ? m[1].trim() : text.trim();
+	return (m?.[1] ?? "").trim() || text.trim();
 }
 
 /**
@@ -113,19 +129,27 @@ export function validateBatchOutput(
 	const text = stripCodeFences(rawText);
 	switch (contract.kind) {
 		case "text":
-			return text.length > 0 ? { ok: true, value: text } : { ok: false, error: "empty text output" };
+			return text.length > 0
+				? { ok: true, value: text }
+				: { ok: false, error: "empty text output" };
 		case "json":
 			try {
 				return { ok: true, value: JSON.parse(text) };
 			} catch (err) {
-				return { ok: false, error: `malformed JSON: ${(err as Error).message}` };
+				return {
+					ok: false,
+					error: `malformed JSON: ${(err as Error).message}`,
+				};
 			}
 		case "json_object": {
 			let value: unknown;
 			try {
 				value = JSON.parse(text);
 			} catch (err) {
-				return { ok: false, error: `malformed JSON object: ${(err as Error).message}` };
+				return {
+					ok: false,
+					error: `malformed JSON object: ${(err as Error).message}`,
+				};
 			}
 			if (typeof value !== "object" || value === null || Array.isArray(value)) {
 				return {
@@ -137,7 +161,10 @@ export function validateBatchOutput(
 				(k) => !(k in (value as Record<string, unknown>)),
 			);
 			if (missing.length > 0) {
-				return { ok: false, error: `missing required key(s): ${missing.join(", ")}` };
+				return {
+					ok: false,
+					error: `missing required key(s): ${missing.join(", ")}`,
+				};
 			}
 			return { ok: true, value };
 		}
@@ -163,7 +190,7 @@ export interface BatchFile {
  *  on it); anything else → "req-<index>". Pure — tested. */
 export function requirementId(requirement: string, index: number): string {
 	const m = /^(R\d+)\s*[:.]/.exec(requirement.trim());
-	return m ? m[1] : `req-${index + 1}`;
+	return m?.[1] ?? `req-${index + 1}`;
 }
 
 /** The single-turn prompt for one requirement — self-contained (goal +
@@ -180,10 +207,10 @@ export function buildBatchPrompt(goal: string, requirement: string): string {
 		requirement,
 		"",
 		"## Output contract",
-		'Respond with ONLY a single JSON object (no markdown fences, no commentary) with exactly these keys:',
+		"Respond with ONLY a single JSON object (no markdown fences, no commentary) with exactly these keys:",
 		'- "requirement": the requirement text you implemented',
 		'- "files": an array of objects, each { "path": "<repo-relative path>", "content": "<full file content>" } —',
-		'  one entry per file the requirement needs; write WHOLE files, never partial edits',
+		"  one entry per file the requirement needs; write WHOLE files, never partial edits",
 		'- "summary": a one-line summary of what you produced',
 	].join("\n");
 }
@@ -201,6 +228,14 @@ export function buildBatchItems(spec: Spec): BatchPromptItem[] {
 
 // ─── File outputs (validated coding outputs) ─────────────────────────
 
+/** Narrow an unknown value to a plain JSON object record (arrays and
+ *  nulls are not objects here); undefined otherwise. */
+function asJsonObject(value: unknown): Record<string, unknown> | undefined {
+	if (typeof value !== "object" || value === null || Array.isArray(value))
+		return undefined;
+	return value as Record<string, unknown>;
+}
+
 /**
  * Extract the files array from a validated coding item's output. Path
  * safety is enforced mechanically: repo-relative only (no absolute paths,
@@ -208,34 +243,61 @@ export function buildBatchItems(spec: Spec): BatchPromptItem[] {
  * Throws typed BatchError("invalid_output") naming the item + the exact
  * problem — the model's output is untrusted input. Pure — tested.
  */
-export function extractBatchFiles(value: unknown, customId: string): BatchFile[] {
+export function extractBatchFiles(
+	value: unknown,
+	customId: string,
+): BatchFile[] {
 	if (typeof value !== "object" || value === null || Array.isArray(value)) {
-		throw new BatchError("invalid_output", `item ${customId}: output is not a JSON object`);
+		throw new BatchError(
+			"invalid_output",
+			`item ${customId}: output is not a JSON object`,
+		);
 	}
 	const files = (value as Record<string, unknown>).files;
 	if (!Array.isArray(files)) {
-		throw new BatchError("invalid_output", `item ${customId}: "files" is not an array`);
+		throw new BatchError(
+			"invalid_output",
+			`item ${customId}: "files" is not an array`,
+		);
 	}
 	const out: BatchFile[] = [];
 	for (let i = 0; i < files.length; i++) {
-		const f = files[i];
-		if (typeof f !== "object" || f === null || Array.isArray(f)) {
-			throw new BatchError("invalid_output", `item ${customId}: files[${i}] is not an object`);
+		const rec = asJsonObject(files[i]);
+		if (rec === undefined) {
+			throw new BatchError(
+				"invalid_output",
+				`item ${customId}: files[${i}] is not an object`,
+			);
 		}
-		const rawPath = (f as Record<string, unknown>).path;
-		const content = (f as Record<string, unknown>).content;
+		const rawPath = rec.path;
+		const content = rec.content;
 		if (typeof rawPath !== "string" || rawPath.trim().length === 0) {
-			throw new BatchError("invalid_output", `item ${customId}: files[${i}].path must be a non-empty string`);
+			throw new BatchError(
+				"invalid_output",
+				`item ${customId}: files[${i}].path must be a non-empty string`,
+			);
 		}
 		if (typeof content !== "string") {
-			throw new BatchError("invalid_output", `item ${customId}: files[${i}].content must be a string`);
+			throw new BatchError(
+				"invalid_output",
+				`item ${customId}: files[${i}].content must be a string`,
+			);
 		}
 		const path = rawPath.trim();
-		if (path.startsWith("/") || /^[A-Za-z]:[\\/]/.test(path) || path.includes("\\")) {
-			throw new BatchError("invalid_output", `item ${customId}: files[${i}].path "${path}" is not repo-relative`);
+		if (
+			path.startsWith("/") ||
+			/^[A-Za-z]:[\\/]/.test(path) ||
+			path.includes("\\")
+		) {
+			throw new BatchError(
+				"invalid_output",
+				`item ${customId}: files[${i}].path "${path}" is not repo-relative`,
+			);
 		}
 		const parts = path.split("/");
-		if (parts.some((part) => part === ".." || part === "." || part.length === 0)) {
+		if (
+			parts.some((part) => part === ".." || part === "." || part.length === 0)
+		) {
 			throw new BatchError(
 				"invalid_output",
 				`item ${customId}: files[${i}].path "${path}" escapes the repo (no "..", ".", or empty segments)`,
@@ -249,7 +311,9 @@ export function extractBatchFiles(value: unknown, customId: string): BatchFile[]
 /** Union of per-item file lists. Two items writing the SAME path must
  *  agree on the content — a conflicting pair is a typed invalid_output
  *  error (deterministic: never silent last-wins). Pure — tested. */
-export function mergeBatchFiles(items: Array<{ customId: string; files: BatchFile[] }>): BatchFile[] {
+export function mergeBatchFiles(
+	items: Array<{ customId: string; files: BatchFile[] }>,
+): BatchFile[] {
 	const byPath = new Map<string, { file: BatchFile; customId: string }>();
 	for (const item of items) {
 		for (const file of item.files) {
@@ -268,8 +332,10 @@ export function mergeBatchFiles(items: Array<{ customId: string; files: BatchFil
 
 // ─── Job state (R4) ─────────────────────────────────────────────────
 
-export type BatchItemStatus = "pending" | "completed" | "invalid" | "failed" | "missing";
-export type BatchJobStateStatus = "submitting" | "in_progress" | "completed" | "failed" | "aborted";
+export type BatchItemStatus =
+	"pending" | "completed" | "invalid" | "failed" | "missing";
+export type BatchJobStateStatus =
+	"submitting" | "in_progress" | "completed" | "failed" | "aborted";
 
 /** One item's recorded lifecycle: pending → completed | invalid | failed
  *  | missing. invalid keeps the raw output for inspection; failed carries
@@ -277,10 +343,12 @@ export type BatchJobStateStatus = "submitting" | "in_progress" | "completed" | "
 export interface BatchItemRecord {
 	custom_id: string;
 	status: BatchItemStatus;
-	/** Raw model output text (completed/invalid). */
-	output?: string;
+	/** Raw model output text (completed/invalid). Optional AND nullable
+	 *  under exactOptionalPropertyTypes — collectors may pass an
+	 *  explicitly-undefined output from a raw provider record. */
+	output?: string | undefined;
 	/** Precise failure reason (invalid/failed/missing). */
-	error?: string;
+	error?: string | undefined;
 }
 
 /**
@@ -303,15 +371,27 @@ export interface BatchJobState {
 	submitted_at: string;
 	updated_at: string;
 	/** The submitted prompts (custom id + text + contract). */
-	prompts: Array<{ custom_id: string; prompt: string; contract: BatchOutputContract }>;
+	prompts: Array<{
+		custom_id: string;
+		prompt: string;
+		contract: BatchOutputContract;
+	}>;
 	/** Per-item status, in build order. */
 	items: BatchItemRecord[];
 	/** Aggregate provider usage (collected items only). */
-	usage?: { prompt_tokens: number; completion_tokens: number; cost_usd: number };
+	usage?: {
+		prompt_tokens: number;
+		completion_tokens: number;
+		cost_usd: number;
+	};
 }
 
 /** The job-state file path for a run. */
-export function batchJobStatePath(metricsDir: string, project: string, runId: string): string {
+export function batchJobStatePath(
+	metricsDir: string,
+	project: string,
+	runId: string,
+): string {
 	return join(metricsDir, project, `${runId}.batch.json`);
 }
 
@@ -330,7 +410,11 @@ export function writeBatchJobState(
 }
 
 /** Read a run's job state; null when missing/unreadable. */
-export function readBatchJobState(metricsDir: string, project: string, runId: string): BatchJobState | null {
+export function readBatchJobState(
+	metricsDir: string,
+	project: string,
+	runId: string,
+): BatchJobState | null {
 	try {
 		const parsed = JSON.parse(
 			readFileSync(batchJobStatePath(metricsDir, project, runId), "utf-8"),
@@ -366,18 +450,22 @@ export interface BatchJobCounts {
 	failed: number;
 }
 
-/** One raw result item as the provider returns it (pre-validation). */
+/** One raw result item as the provider returns it (pre-validation).
+ *  The optional fields are also nullable (`| undefined`) under
+ *  exactOptionalPropertyTypes: parsers build these records from sparse
+ *  provider payloads where an absent field is indistinguishable from an
+ *  explicitly-undefined one. */
 export interface BatchRawItem {
 	customId: string;
 	/** true when the provider produced an output (2xx, no provider error). */
 	ok: boolean;
 	/** The raw model output text (present when ok). */
-	text?: string;
-	statusCode?: number;
-	error?: string;
-	promptTokens?: number;
-	completionTokens?: number;
-	costUsd?: number;
+	text?: string | undefined;
+	statusCode?: number | undefined;
+	error?: string | undefined;
+	promptTokens?: number | undefined;
+	completionTokens?: number | undefined;
+	costUsd?: number | undefined;
 }
 
 /** A batch backend: submit a job, poll its status, collect its results.
@@ -387,9 +475,14 @@ export interface BatchProvider {
 	readonly name: string;
 	/** Submit a job of single-turn prompts. Resolves with the provider-side
 	 *  job id + its initial phase. */
-	submit(model: string, items: BatchPromptItem[]): Promise<{ jobId: string; phase: BatchJobPhase }>;
+	submit(
+		model: string,
+		items: BatchPromptItem[],
+	): Promise<{ jobId: string; phase: BatchJobPhase }>;
 	/** Poll the job's phase + request counts. */
-	status(jobId: string): Promise<{ phase: BatchJobPhase; counts: BatchJobCounts }>;
+	status(
+		jobId: string,
+	): Promise<{ phase: BatchJobPhase; counts: BatchJobCounts }>;
 	/** Retrieve the job's raw results (one entry per completed item). */
 	results(jobId: string): Promise<BatchRawItem[]>;
 }
@@ -401,7 +494,10 @@ export interface FakeBatchProviderOptions {
 	completeAfterPolls?: number;
 	/** Scripted terminal phase instead of "completed" ("failed" |
 	 *  "expired" | "cancelled"). */
-	terminalPhase?: Exclude<BatchJobPhase, "validating" | "in_progress" | "completed">;
+	terminalPhase?: Exclude<
+		BatchJobPhase,
+		"validating" | "in_progress" | "completed"
+	>;
 	/** Scripted item outputs by customId (default: a valid files JSON
 	 *  naming `<customId>.txt`). */
 	outputs?: Record<string, string>;
@@ -426,39 +522,53 @@ export class FakeBatchProvider implements BatchProvider {
 
 	constructor(private readonly opts: FakeBatchProviderOptions = {}) {}
 
-	async submit(model: string, items: BatchPromptItem[]): Promise<{ jobId: string; phase: BatchJobPhase }> {
+	// Not async (require-await): these fake calls never suspend — explicit
+	// Promise.reject/resolve keeps the interface's exact rejection/resolution
+	// semantics without a pointless async wrapper.
+	submit(
+		_model: string,
+		items: BatchPromptItem[],
+	): Promise<{ jobId: string; phase: BatchJobPhase }> {
 		if (this.opts.submitError !== undefined) {
-			throw new BatchError("submit_failed", this.opts.submitError);
+			return Promise.reject(
+				new BatchError("submit_failed", this.opts.submitError),
+			);
 		}
 		this.submitCalls++;
 		this.jobId = `fake-batch-${this.submitCalls}`;
 		this.lastItems = items;
-		return { jobId: this.jobId, phase: "validating" };
+		return Promise.resolve({ jobId: this.jobId, phase: "validating" });
 	}
 
-	async status(jobId: string): Promise<{ phase: BatchJobPhase; counts: BatchJobCounts }> {
+	status(): Promise<{ phase: BatchJobPhase; counts: BatchJobCounts }> {
 		this.pollCalls++;
 		const done = this.pollCalls >= (this.opts.completeAfterPolls ?? 2);
 		const phase: BatchJobPhase = !done
 			? "in_progress"
 			: (this.opts.terminalPhase ?? "completed");
-		return {
+		return Promise.resolve({
 			phase,
 			counts: {
 				total: this.lastItems.length,
 				completed: phase === "completed" ? this.lastItems.length : 0,
 				failed: 0,
 			},
-		};
+		});
 	}
 
-	async results(jobId: string): Promise<BatchRawItem[]> {
+	results(): Promise<BatchRawItem[]> {
 		const out: BatchRawItem[] = [];
 		for (const item of this.lastItems) {
 			const id = item.customId;
 			if (this.opts.missing?.includes(id)) continue;
-			if (this.opts.itemErrors?.[id] !== undefined) {
-				out.push({ customId: id, ok: false, statusCode: 500, error: this.opts.itemErrors[id] });
+			const scriptedError = this.opts.itemErrors?.[id];
+			if (scriptedError !== undefined) {
+				out.push({
+					customId: id,
+					ok: false,
+					statusCode: 500,
+					error: scriptedError,
+				});
 				continue;
 			}
 			const text = this.opts.outputs?.[id] ?? this.defaultOutput(id);
@@ -472,7 +582,7 @@ export class FakeBatchProvider implements BatchProvider {
 				costUsd: 0.0001,
 			});
 		}
-		return out;
+		return Promise.resolve(out);
 	}
 
 	/** Default scripted output: a contract-valid files JSON for `id`. */
@@ -539,7 +649,10 @@ export class OpenRouterBatchProvider implements BatchProvider {
 
 	constructor(opts: OpenRouterBatchProviderOptions = {}) {
 		this.apiKey = opts.apiKey ?? process.env.OPENROUTER_API_KEY;
-		this.baseUrl = (opts.baseUrl ?? DEFAULT_OPENROUTER_BASE_URL).replace(/\/+$/, "");
+		this.baseUrl = (opts.baseUrl ?? DEFAULT_OPENROUTER_BASE_URL).replace(
+			/\/+$/,
+			"",
+		);
 		this.fetchImpl = opts.fetchImpl ?? fetch;
 	}
 
@@ -571,11 +684,17 @@ export class OpenRouterBatchProvider implements BatchProvider {
 			const data = (await res.json()) as Record<string, unknown>;
 			return data ?? {};
 		} catch {
-			throw new BatchError("http_error", "OpenRouter returned a non-JSON response");
+			throw new BatchError(
+				"http_error",
+				"OpenRouter returned a non-JSON response",
+			);
 		}
 	}
 
-	async submit(model: string, items: BatchPromptItem[]): Promise<{ jobId: string; phase: BatchJobPhase }> {
+	async submit(
+		model: string,
+		items: BatchPromptItem[],
+	): Promise<{ jobId: string; phase: BatchJobPhase }> {
 		if (!this.apiKey) {
 			throw new BatchError(
 				"no_api_key",
@@ -584,7 +703,10 @@ export class OpenRouterBatchProvider implements BatchProvider {
 		}
 		const res = await this.request("/chat/batches", {
 			method: "POST",
-			headers: { "Content-Type": "application/json", Authorization: `Bearer ${this.apiKey}` },
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: `Bearer ${this.apiKey}`,
+			},
 			body: JSON.stringify({
 				model,
 				items: items.map((it) => ({
@@ -603,17 +725,22 @@ export class OpenRouterBatchProvider implements BatchProvider {
 		return { jobId: data.id, phase: mapPhase(data.status) };
 	}
 
-	async status(jobId: string): Promise<{ phase: BatchJobPhase; counts: BatchJobCounts }> {
+	async status(
+		jobId: string,
+	): Promise<{ phase: BatchJobPhase; counts: BatchJobCounts }> {
 		if (!this.apiKey) {
 			throw new BatchError(
 				"no_api_key",
 				"OPENROUTER_API_KEY is not set — batch runs need it (see config/task.toml [batch])",
 			);
 		}
-		const res = await this.request(`/chat/batches/${encodeURIComponent(jobId)}`, {
-			method: "GET",
-			headers: { Authorization: `Bearer ${this.apiKey}` },
-		});
+		const res = await this.request(
+			`/chat/batches/${encodeURIComponent(jobId)}`,
+			{
+				method: "GET",
+				headers: { Authorization: `Bearer ${this.apiKey}` },
+			},
+		);
 		const data = await this.json(res);
 		const counts = (data.request_counts ?? {}) as Record<string, unknown>;
 		return {
@@ -633,10 +760,13 @@ export class OpenRouterBatchProvider implements BatchProvider {
 				"OPENROUTER_API_KEY is not set — batch runs need it (see config/task.toml [batch])",
 			);
 		}
-		const res = await this.request(`/chat/batches/${encodeURIComponent(jobId)}/results`, {
-			method: "GET",
-			headers: { Authorization: `Bearer ${this.apiKey}` },
-		});
+		const res = await this.request(
+			`/chat/batches/${encodeURIComponent(jobId)}/results`,
+			{
+				method: "GET",
+				headers: { Authorization: `Bearer ${this.apiKey}` },
+			},
+		);
 		const text = await res.text().catch(() => "");
 		const out: BatchRawItem[] = [];
 		for (const line of text.split("\n")) {
@@ -649,23 +779,36 @@ export class OpenRouterBatchProvider implements BatchProvider {
 				continue; // unparseable line — its item surfaces as "missing"
 			}
 			const response = (rec.response ?? {}) as Record<string, unknown>;
-			const statusCode = typeof response.status_code === "number" ? response.status_code : 200;
+			const statusCode =
+				typeof response.status_code === "number" ? response.status_code : 200;
 			const body = (response.body ?? {}) as Record<string, unknown>;
 			const choices = Array.isArray(body.choices) ? body.choices : [];
-			const message = (choices[0] as Record<string, unknown> | undefined)?.message as
-				| Record<string, unknown>
-				| undefined;
-			const content = typeof message?.content === "string" ? message.content : undefined;
+			const message = (choices[0] as Record<string, unknown> | undefined)
+				?.message as Record<string, unknown> | undefined;
+			const content =
+				typeof message?.content === "string" ? message.content : undefined;
 			const usage = (body.usage ?? {}) as Record<string, unknown>;
-			const error = response.error;
+			const error =
+				typeof response.error === "string" || response.error === undefined
+					? response.error
+					: JSON.stringify(response.error);
 			out.push({
-				customId: typeof rec.custom_id === "string" ? rec.custom_id : String(rec.id ?? ""),
+				customId:
+					typeof rec.custom_id === "string"
+						? rec.custom_id
+						: typeof rec.id === "string" || typeof rec.id === "number"
+							? String(rec.id)
+							: "",
 				ok: statusCode >= 200 && statusCode < 300 && error === undefined,
 				text: content,
 				statusCode,
 				error: error !== undefined ? String(error) : undefined,
-				promptTokens: typeof usage.prompt_tokens === "number" ? usage.prompt_tokens : 0,
-				completionTokens: typeof usage.completion_tokens === "number" ? usage.completion_tokens : 0,
+				promptTokens:
+					typeof usage.prompt_tokens === "number" ? usage.prompt_tokens : 0,
+				completionTokens:
+					typeof usage.completion_tokens === "number"
+						? usage.completion_tokens
+						: 0,
 				costUsd: typeof body.cost === "number" ? body.cost : undefined,
 			});
 		}
@@ -676,7 +819,8 @@ export class OpenRouterBatchProvider implements BatchProvider {
 /** Normalize a provider status string; unknown → "in_progress" (forward
  *  compatible — the lane only branches on the terminal phases). */
 function mapPhase(raw: unknown): BatchJobPhase {
-	return typeof raw === "string" && (BATCH_JOB_PHASES as readonly string[]).includes(raw)
+	return typeof raw === "string" &&
+		(BATCH_JOB_PHASES as readonly string[]).includes(raw)
 		? (raw as BatchJobPhase)
 		: "in_progress";
 }
@@ -695,13 +839,15 @@ export interface BatchLaneOptions {
 	model: string;
 	/** The batch backend. Fake in hermetic tests; OpenRouter in production. */
 	provider: BatchProvider;
-	/** Poll interval (ms). Default: DEFAULT_BATCH_POLL_INTERVAL_MS (30s). */
-	pollIntervalMs?: number;
+	/** Poll interval (ms). Default: DEFAULT_BATCH_POLL_INTERVAL_MS (30s).
+	 *  Optional AND nullable under exactOptionalPropertyTypes — recovery
+	 *  callers forward their own `T | undefined` options verbatim. */
+	pollIntervalMs?: number | undefined;
 	/** Wall budget for polling to a terminal phase (ms). Default:
 	 *  DEFAULT_BATCH_JOB_TIMEOUT_MS (24h — the lane's advertised
 	 *  turnaround; the job keeps running provider-side on timeout, and the
 	 *  job-state file records the job id to resume). */
-	jobTimeoutMs?: number;
+	jobTimeoutMs?: number | undefined;
 	/** Metrics dir for the job-state file (R4). Omitted → state is
 	 *  in-memory only (no persistence). */
 	metricsDir?: string;
@@ -720,14 +866,14 @@ export interface BatchLaneOptions {
 	resubmitCustomIds?: string[];
 	/** Abort signal — an abort mid-flight records the job state as
 	 *  "aborted" (typed + recoverable) and throws BatchError("aborted"). */
-	signal?: AbortSignal;
+	signal?: AbortSignal | undefined;
 	/** Lane progress events (the orchestrator relays them to the task
 	 *  tool's progress view; unknown event types are ignored there). */
-	onUpdate?: (event: BatchLaneUpdate) => void;
+	onUpdate?: ((event: BatchLaneUpdate) => void) | undefined;
 	/** Injectable sleep — hermetic tests skip real poll delays. */
-	sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
+	sleep?: ((ms: number, signal?: AbortSignal) => Promise<void>) | undefined;
 	/** Injectable clock (deterministic deadline tests). */
-	now?: () => number;
+	now?: (() => number) | undefined;
 }
 
 export interface BatchLaneResult {
@@ -745,7 +891,10 @@ export interface BatchLaneResult {
 
 /** Abort-aware sleep: resolves immediately on abort (the lane loop then
  *  observes signal.aborted and records the typed aborted state). */
-export async function sleepDefault(ms: number, signal?: AbortSignal): Promise<void> {
+export async function sleepDefault(
+	ms: number,
+	signal?: AbortSignal,
+): Promise<void> {
 	if (signal?.aborted) return;
 	await new Promise<void>((resolve) => {
 		const timer = setTimeout(() => {
@@ -775,7 +924,9 @@ export async function sleepDefault(ms: number, signal?: AbortSignal): Promise<vo
  * - items_incomplete — the job completed but n items failed validation;
  *   BatchError.detail.items names exactly which (the resubmission set).
  */
-export async function runBatchLane(opts: BatchLaneOptions): Promise<BatchLaneResult> {
+export async function runBatchLane(
+	opts: BatchLaneOptions,
+): Promise<BatchLaneResult> {
 	const runId = opts.runId ?? generateRunId();
 	const pollIntervalMs = opts.pollIntervalMs ?? DEFAULT_BATCH_POLL_INTERVAL_MS;
 	const jobTimeoutMs = opts.jobTimeoutMs ?? DEFAULT_BATCH_JOB_TIMEOUT_MS;
@@ -794,7 +945,10 @@ export async function runBatchLane(opts: BatchLaneOptions): Promise<BatchLaneRes
 		writeBatchJobState(state, { metricsDir: opts.metricsDir, project });
 	};
 	const stamp = (): string => new Date().toISOString();
-	const makeState = (status: BatchJobStateStatus, extra: Partial<BatchJobState> = {}): BatchJobState => ({
+	const makeState = (
+		status: BatchJobStateStatus,
+		extra: Partial<BatchJobState> = {},
+	): BatchJobState => ({
 		kind: "batch-job",
 		schema: 1,
 		run_id: runId,
@@ -803,8 +957,15 @@ export async function runBatchLane(opts: BatchLaneOptions): Promise<BatchLaneRes
 		status,
 		submitted_at: stamp(),
 		updated_at: stamp(),
-		prompts: items.map((i) => ({ custom_id: i.customId, prompt: i.prompt, contract: i.contract })),
-		items: items.map((i) => ({ custom_id: i.customId, status: "pending" as const })),
+		prompts: items.map((i) => ({
+			custom_id: i.customId,
+			prompt: i.prompt,
+			contract: i.contract,
+		})),
+		items: items.map((i) => ({
+			custom_id: i.customId,
+			status: "pending" as const,
+		})),
 		...extra,
 	});
 
@@ -825,10 +986,18 @@ export async function runBatchLane(opts: BatchLaneOptions): Promise<BatchLaneRes
 			persist({ ...state, status: "failed", updated_at: stamp() });
 			throw err instanceof BatchError
 				? err
-				: new BatchError("submit_failed", `batch submit failed: ${(err as Error).message}`);
+				: new BatchError(
+						"submit_failed",
+						`batch submit failed: ${(err as Error).message}`,
+					);
 		}
 	}
-	state = { ...state, job_id: jobId, status: "in_progress", updated_at: stamp() };
+	state = {
+		...state,
+		job_id: jobId,
+		status: "in_progress",
+		updated_at: stamp(),
+	};
 	persist(state);
 	opts.onUpdate?.({ type: "batch_submitted", jobId });
 
@@ -862,14 +1031,20 @@ export async function runBatchLane(opts: BatchLaneOptions): Promise<BatchLaneRes
 			persist({ ...state, updated_at: stamp() });
 			throw err instanceof BatchError
 				? err
-				: new BatchError("http_error", `batch status poll failed: ${(err as Error).message}`);
+				: new BatchError(
+						"http_error",
+						`batch status poll failed: ${(err as Error).message}`,
+					);
 		}
 		persist({ ...state, updated_at: stamp() });
 		opts.onUpdate?.({ type: "batch_status", phase, counts });
 		if (phase === "completed") break;
 		if (phase === "failed" || phase === "expired" || phase === "cancelled") {
 			persist({ ...state, status: "failed", updated_at: stamp() });
-			throw new BatchError("job_failed", `batch job ${jobId} reached terminal phase "${phase}"`);
+			throw new BatchError(
+				"job_failed",
+				`batch job ${jobId} reached terminal phase "${phase}"`,
+			);
 		}
 		await (opts.sleep ?? sleepDefault)(pollIntervalMs, opts.signal);
 	}
@@ -882,7 +1057,10 @@ export async function runBatchLane(opts: BatchLaneOptions): Promise<BatchLaneRes
 		persist({ ...state, updated_at: stamp() });
 		throw err instanceof BatchError
 			? err
-			: new BatchError("http_error", `batch results retrieval failed: ${(err as Error).message}`);
+			: new BatchError(
+					"http_error",
+					`batch results retrieval failed: ${(err as Error).message}`,
+				);
 	}
 	const byId = new Map(raw.map((r) => [r.customId, r]));
 	const records: BatchItemRecord[] = [];
@@ -893,7 +1071,11 @@ export async function runBatchLane(opts: BatchLaneOptions): Promise<BatchLaneRes
 	for (const item of items) {
 		const rec = byId.get(item.customId);
 		if (rec === undefined) {
-			records.push({ custom_id: item.customId, status: "missing", error: "absent from the batch results payload" });
+			records.push({
+				custom_id: item.customId,
+				status: "missing",
+				error: "absent from the batch results payload",
+			});
 			continue;
 		}
 		promptTokens += rec.promptTokens ?? 0;
@@ -909,22 +1091,39 @@ export async function runBatchLane(opts: BatchLaneOptions): Promise<BatchLaneRes
 		}
 		const validated = validateBatchOutput(item.contract, rec.text ?? "");
 		if (!validated.ok) {
-			records.push({ custom_id: item.customId, status: "invalid", output: rec.text, error: validated.error });
+			records.push({
+				custom_id: item.customId,
+				status: "invalid",
+				output: rec.text,
+				error: validated.error,
+			});
 			continue;
 		}
 		outputs[item.customId] = validated.value;
-		records.push({ custom_id: item.customId, status: "completed", output: rec.text });
+		records.push({
+			custom_id: item.customId,
+			status: "completed",
+			output: rec.text,
+		});
 	}
 	const failedCount = records.filter((r) => r.status !== "completed").length;
 	state = {
 		...state,
 		status: failedCount === 0 ? "completed" : "failed",
 		items: records,
-		usage: { prompt_tokens: promptTokens, completion_tokens: completionTokens, cost_usd: costUsd },
+		usage: {
+			prompt_tokens: promptTokens,
+			completion_tokens: completionTokens,
+			cost_usd: costUsd,
+		},
 		updated_at: stamp(),
 	};
 	persist(state);
-	opts.onUpdate?.({ type: "batch_collected", completed: records.length - failedCount, total: records.length });
+	opts.onUpdate?.({
+		type: "batch_collected",
+		completed: records.length - failedCount,
+		total: records.length,
+	});
 	if (failedCount > 0) {
 		throw new BatchError(
 			"items_incomplete",
@@ -939,7 +1138,11 @@ export async function runBatchLane(opts: BatchLaneOptions): Promise<BatchLaneRes
 		jobId,
 		items: records,
 		outputs,
-		usage: { prompt_tokens: promptTokens, completion_tokens: completionTokens, cost_usd: costUsd },
+		usage: {
+			prompt_tokens: promptTokens,
+			completion_tokens: completionTokens,
+			cost_usd: costUsd,
+		},
 		durationMs: now() - startedMs,
 	};
 }
@@ -953,24 +1156,22 @@ export async function runBatchLane(opts: BatchLaneOptions): Promise<BatchLaneRes
  *
  * Throws BatchError("not_found") when no state file exists for the run.
  */
-export async function resumeBatchJob(
-	opts: {
-		metricsDir: string;
-		project: string;
-		runId: string;
-		/** The ORIGINAL spec the job was submitted with. */
-		spec: Spec;
-		/** Batch model id (config [batch].model). */
-		model: string;
-		provider: BatchProvider;
-		pollIntervalMs?: number;
-		jobTimeoutMs?: number;
-		signal?: AbortSignal;
-		onUpdate?: (event: BatchLaneUpdate) => void;
-		sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
-		now?: () => number;
-	},
-): Promise<BatchLaneResult> {
+export async function resumeBatchJob(opts: {
+	metricsDir: string;
+	project: string;
+	runId: string;
+	/** The ORIGINAL spec the job was submitted with. */
+	spec: Spec;
+	/** Batch model id (config [batch].model). */
+	model: string;
+	provider: BatchProvider;
+	pollIntervalMs?: number;
+	jobTimeoutMs?: number;
+	signal?: AbortSignal;
+	onUpdate?: (event: BatchLaneUpdate) => void;
+	sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
+	now?: () => number;
+}): Promise<BatchLaneResult> {
 	const state = readBatchJobState(opts.metricsDir, opts.project, opts.runId);
 	if (!state?.job_id) {
 		throw new BatchError(
@@ -994,4 +1195,3 @@ export async function resumeBatchJob(
 		now: opts.now,
 	});
 }
-

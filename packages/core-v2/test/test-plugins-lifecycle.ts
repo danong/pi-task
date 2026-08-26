@@ -22,7 +22,10 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import type { TaskLedgerRow, TaskPlugin } from "../src/contracts/task-plugin.ts";
+import type {
+	TaskLedgerRow,
+	TaskPlugin,
+} from "../src/contracts/task-plugin.ts";
 import { InMemoryTaskGateway } from "../src/gateway/index.ts";
 import {
 	emitLifecycleEventToPlugins,
@@ -31,8 +34,21 @@ import {
 import { loadPluginsFromToml } from "../src/plugins/loader.ts";
 import { LIFECYCLE_COLLECTOR_MAX_EVENTS } from "../src/plugins/builtin/lifecycle-collector.ts";
 
-const PLUGIN_PATH = join(dirname(fileURLToPath(import.meta.url)), "..", "src", "plugins", "builtin", "lifecycle-collector.ts");
-const TASK_RUNNER_PATH = join(dirname(fileURLToPath(import.meta.url)), "..", "src", "daemon", "task-runner.ts");
+const PLUGIN_PATH = join(
+	dirname(fileURLToPath(import.meta.url)),
+	"..",
+	"src",
+	"plugins",
+	"builtin",
+	"lifecycle-collector.ts",
+);
+const TASK_RUNNER_PATH = join(
+	dirname(fileURLToPath(import.meta.url)),
+	"..",
+	"src",
+	"daemon",
+	"task-runner.ts",
+);
 
 function rowsDouble(): { tasks: Map<string, TaskLedgerRow> } {
 	return { tasks: new Map<string, TaskLedgerRow>() };
@@ -48,14 +64,23 @@ export async function runTests(): Promise<void> {
 	try {
 		// ── Loaded by path through the M4b loader ─────────────────────────
 		const tomlPath = join(dir, "task.toml");
-		writeFileSync(tomlPath, `[plugins]\npaths = ["${JSON.stringify(PLUGIN_PATH).slice(1, -1)}"]\n`, "utf-8");
+		writeFileSync(
+			tomlPath,
+			`[plugins]\npaths = ["${JSON.stringify(PLUGIN_PATH).slice(1, -1)}"]\n`,
+			"utf-8",
+		);
 		const plugins = await loadPluginsFromToml(tomlPath, dir);
-		check(plugins.length === 1 && plugins[0]!.name === "lifecycle-collector",
-			"the shipped lifecycle-collector module loads by path with its declared name");
+		check(
+			plugins.length === 1 && plugins[0]!.name === "lifecycle-collector",
+			"the shipped lifecycle-collector module loads by path with its declared name",
+		);
 
 		const plugin = plugins[0]!;
-		check(typeof plugin.registerTriggers === "function" && typeof plugin.onLifecycleEvent === "function",
-			"lifecycle-collector exposes both trigger and event hooks");
+		check(
+			typeof plugin.registerTriggers === "function" &&
+				typeof plugin.onLifecycleEvent === "function",
+			"lifecycle-collector exposes both trigger and event hooks",
+		);
 
 		// ── Trigger side: REAL gateway subscription via registerTriggers ──
 		const gateway = new InMemoryTaskGateway({
@@ -64,12 +89,26 @@ export async function runTests(): Promise<void> {
 		});
 		registerPluginTriggers((p) => p.registerTriggers!(gateway), [plugin]);
 		gateway.emit({ type: "task.queued", taskId: "t1" });
-		gateway.emit({ type: "task.routed", taskId: "t1", detail: { planMode: "cold" } });
-		const journal = (plugin as unknown as { journal: Array<{ type: string; taskId: string }> }).journal;
-		check(journal.length === 2, `registerTriggers subscription captured gateway events (${journal.length})`);
-		check(journal[0]!.type === "task.queued" && journal[1]!.type === "task.routed",
-			"journal preserves emission order");
-		check(journal.every((e) => e.taskId === "t1"), "journal entries carry the event payloads");
+		gateway.emit({
+			type: "task.routed",
+			taskId: "t1",
+			detail: { planMode: "cold" },
+		});
+		const journal = (
+			plugin as unknown as { journal: Array<{ type: string; taskId: string }> }
+		).journal;
+		check(
+			journal.length === 2,
+			`registerTriggers subscription captured gateway events (${journal.length})`,
+		);
+		check(
+			journal[0]!.type === "task.queued" && journal[1]!.type === "task.routed",
+			"journal preserves emission order",
+		);
+		check(
+			journal.every((e) => e.taskId === "t1"),
+			"journal entries carry the event payloads",
+		);
 
 		// Unsubscribe plumbing stays real and idempotent per gateway contract.
 		let secondSeen = false;
@@ -77,23 +116,41 @@ export async function runTests(): Promise<void> {
 			secondSeen = true;
 		});
 		off();
-		gateway.emit({ type: "task.completed", taskId: "t1", detail: { verdict: "ship" } });
+		gateway.emit({
+			type: "task.completed",
+			taskId: "t1",
+			detail: { verdict: "ship" },
+		});
 		check(secondSeen === false, "unsubscribe removes exactly its own handler");
 
 		// ── Event side: onLifecycleEvent through the fan-out helper ───────
 		const journalLenBefore = journal.length;
-		emitLifecycleEventToPlugins({ type: "verify.completed", taskId: "t2", detail: { passed: true } }, [plugin]);
-		check(journal.length === journalLenBefore + 1 && journal[journal.length - 1]!.taskId === "t2",
-			"onLifecycleEvent captures events fanned out by the hooks layer (task-runner path)");
+		emitLifecycleEventToPlugins(
+			{ type: "verify.completed", taskId: "t2", detail: { passed: true } },
+			[plugin],
+		);
+		check(
+			journal.length === journalLenBefore + 1 &&
+				journal[journal.length - 1]!.taskId === "t2",
+			"onLifecycleEvent captures events fanned out by the hooks layer (task-runner path)",
+		);
 
 		// ── Bounded journal (oldest drops) ─────────────────────────────────
 		for (let i = 0; i < LIFECYCLE_COLLECTOR_MAX_EVENTS + 10; i += 1) {
-			emitLifecycleEventToPlugins({ type: "task.queued", taskId: `burst-${i}` }, [plugin]);
+			emitLifecycleEventToPlugins(
+				{ type: "task.queued", taskId: `burst-${i}` },
+				[plugin],
+			);
 		}
-		check(journal.length === LIFECYCLE_COLLECTOR_MAX_EVENTS,
-			`journal stays bounded at ${LIFECYCLE_COLLECTOR_MAX_EVENTS}`);
-		check(journal[journal.length - 1]!.taskId === `burst-${LIFECYCLE_COLLECTOR_MAX_EVENTS + 9}`,
-			"bounded journal keeps the NEWEST events");
+		check(
+			journal.length === LIFECYCLE_COLLECTOR_MAX_EVENTS,
+			`journal stays bounded at ${LIFECYCLE_COLLECTOR_MAX_EVENTS}`,
+		);
+		check(
+			journal[journal.length - 1]!.taskId ===
+				`burst-${LIFECYCLE_COLLECTOR_MAX_EVENTS + 9}`,
+			"bounded journal keeps the NEWEST events",
+		);
 
 		// ── Throw isolation: throwing siblings never block collection ─────
 		const freshGateway = new InMemoryTaskGateway({
@@ -108,13 +165,25 @@ export async function runTests(): Promise<void> {
 				throw new Error("sync boom");
 			},
 		};
-		emitLifecycleEventToPlugins({ type: "task.failed", taskId: "t3", detail: { cause: "x" } }, [thrower, plugin], {
-			onHookError: (e) => sinkErrors.push(e),
-		});
-		check(sinkErrors.length === 1 && String(sinkErrors[0]).includes("thrower-sibling"),
-			"a throwing sibling is reported through the sink");
-		const lastEntry = (plugin as unknown as { journal: Array<{ taskId: string }> }).journal.at(-1);
-		check(lastEntry?.taskId === "t3", "a throwing sibling never blocks lifecycle-collector's own capture");
+		emitLifecycleEventToPlugins(
+			{ type: "task.failed", taskId: "t3", detail: { cause: "x" } },
+			[thrower, plugin],
+			{
+				onHookError: (e) => sinkErrors.push(e),
+			},
+		);
+		check(
+			sinkErrors.length === 1 &&
+				String(sinkErrors[0]).includes("thrower-sibling"),
+			"a throwing sibling is reported through the sink",
+		);
+		const lastEntry = (
+			plugin as unknown as { journal: Array<{ taskId: string }> }
+		).journal.at(-1);
+		check(
+			lastEntry?.taskId === "t3",
+			"a throwing sibling never blocks lifecycle-collector's own capture",
+		);
 
 		const brokenRegistrar: TaskPlugin = {
 			name: "broken-registrar",
@@ -123,37 +192,57 @@ export async function runTests(): Promise<void> {
 			},
 		};
 		const bootSink: unknown[] = [];
-		registerPluginTriggers((p) => p.registerTriggers!(freshGateway), [brokenRegistrar, plugin], {
-			onHookError: (e) => bootSink.push(e),
-		});
-		check(bootSink.some((e) => String(e).includes("broken-registrar")),
-			"a throwing registerTriggers is reported, not fatal to boot");
+		registerPluginTriggers(
+			(p) => p.registerTriggers!(freshGateway),
+			[brokenRegistrar, plugin],
+			{
+				onHookError: (e) => bootSink.push(e),
+			},
+		);
+		check(
+			bootSink.some((e) => String(e).includes("broken-registrar")),
+			"a throwing registerTriggers is reported, not fatal to boot",
+		);
 
 		// ── Duplication-gone proof (R2) ───────────────────────────────────
 		const runnerSource = readFileSync(TASK_RUNNER_PATH, "utf-8");
-		check(!runnerSource.includes("function describeTool"),
-			"task-runner no longer declares its own describeTool (R2)");
-		check(!/tool:\$\{toolName\}/.test(runnerSource),
-			"no duplicated tool-descriptor formatting remains in core (R2)");
+		check(
+			!runnerSource.includes("function describeTool"),
+			"task-runner no longer declares its own describeTool (R2)",
+		);
+		check(
+			!/tool:\$\{toolName\}/.test(runnerSource),
+			"no duplicated tool-descriptor formatting remains in core (R2)",
+		);
 
 		// The moved helper lives verbatim in the plugin module.
 		const pluginSource = readFileSync(PLUGIN_PATH, "utf-8");
-		check(pluginSource.includes("export function describeTool") && /`tool:\$\{toolName\}`/.test(pluginSource),
-			"describeTool moved verbatim into the plugin module (R2)");
+		check(
+			pluginSource.includes("export function describeTool") &&
+				/`tool:\$\{toolName\}`/.test(pluginSource),
+			"describeTool moved verbatim into the plugin module (R2)",
+		);
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}
 
 	if (errors.length > 0) {
-		throw new Error(`lifecycle-collector plugin tests failed:\n  ${errors.join("\n  ")}`);
+		throw new Error(
+			`lifecycle-collector plugin tests failed:\n  ${errors.join("\n  ")}`,
+		);
 	}
-	console.log("✓ plugin lifecycle-collector: path-loaded, gateway-triggered, event-fanned, bounded, throw-isolated, core deduplicated");
+	console.log(
+		"✓ plugin lifecycle-collector: path-loaded, gateway-triggered, event-fanned, bounded, throw-isolated, core deduplicated",
+	);
 }
 
 const invokedAs = process.argv[1];
-if (invokedAs !== undefined && import.meta.url.endsWith(invokedAs.split("/").pop() ?? "")) {
+if (
+	invokedAs !== undefined &&
+	import.meta.url.endsWith(invokedAs.split("/").pop() ?? "")
+) {
 	runTests().catch((err) => {
-		console.error(err.message ?? err);
+		console.error(err instanceof Error ? err.message : String(err));
 		process.exit(1);
 	});
 }

@@ -5,11 +5,22 @@
  * zero network; verification commands are fast real bash.
  */
 
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import type { SessionHandle, SessionHost, SessionHostConfig, SessionHostEvent } from "../src/sessions/host.ts";
+import type {
+	SessionHandle,
+	SessionHost,
+	SessionHostEvent,
+} from "../src/sessions/host.ts";
 import { startDaemon } from "../src/daemon/start.ts";
 import {
 	buildWorkerSystemPrompt,
@@ -45,7 +56,13 @@ const FAKE_SESSION_STATS = {
 	toolCalls: 2,
 	toolResults: 2,
 	totalMessages: 4,
-	tokens: { input: 1000, output: 250, cacheRead: 200, cacheWrite: 300, total: 1750 },
+	tokens: {
+		input: 1000,
+		output: 250,
+		cacheRead: 200,
+		cacheWrite: 300,
+		total: 1750,
+	},
 	cost: 0.0123,
 } as const;
 
@@ -61,14 +78,24 @@ class FakeHandle implements SessionHandle {
 	) {}
 	get result() {
 		return this.behavior === "yield"
-			? { files_changed: this.files.map((f) => f.path), summary: "done", commit_ids: ["c1"], deviations: [] }
+			? {
+					files_changed: this.files.map((f) => f.path),
+					summary: "done",
+					commit_ids: ["c1"],
+					deviations: [],
+				}
 			: undefined;
 	}
 	subscribe(listener: (event: SessionHostEvent) => void): () => void {
 		listener({ type: "turnStart" });
 		if (this.behavior !== "error") {
 			listener({ type: "toolStart", toolName: "bash", toolCallId: "t1" });
-			listener({ type: "toolEnd", toolName: "bash", toolCallId: "t1", isError: false });
+			listener({
+				type: "toolEnd",
+				toolName: "bash",
+				toolCallId: "t1",
+				isError: false,
+			});
 			listener({ type: "settled" });
 		}
 		if (this.behavior === "yield") {
@@ -76,29 +103,37 @@ class FakeHandle implements SessionHandle {
 		}
 		return () => undefined;
 	}
-	async prompt(): Promise<void> {
-		this.turns += 1;
-		for (const f of this.files) {
-			writeFileSync(f.path, f.content, "utf-8");
-		}
-		if (this.behavior === "error") {
-			throw new Error("boom");
-		}
+	prompt(): Promise<void> {
+		return Promise.resolve().then(() => {
+			this.turns += 1;
+			for (const f of this.files) {
+				writeFileSync(f.path, f.content, "utf-8");
+			}
+			if (this.behavior === "error") {
+				throw new Error("boom");
+			}
+		});
 	}
 	async abort(): Promise<void> {}
-	async stats() {
-		if (this.statsThrows) throw new Error("stats unavailable on the fake handle");
-		return structuredClone(FAKE_SESSION_STATS);
+	stats() {
+		if (this.statsThrows)
+			return Promise.reject(new Error("stats unavailable on the fake handle"));
+		return Promise.resolve(structuredClone(FAKE_SESSION_STATS));
 	}
-	async setModel(): Promise<void> {
+	setModel(): Promise<void> {
 		this.turns += 0; // no-op; recorded by prewalk-specific fakes
+		return Promise.resolve();
 	}
 	close(): void {}
 }
 
-function fakeHost(behavior: "yield" | "settle" | "error", files: Array<{ path: string; content: string }> = [], statsThrows = false): SessionHost {
+function fakeHost(
+	behavior: "yield" | "settle" | "error",
+	files: Array<{ path: string; content: string }> = [],
+	statsThrows = false,
+): SessionHost {
 	return {
-		spawn: async (_config: SessionHostConfig) => new FakeHandle(behavior, files, statsThrows),
+		spawn: () => Promise.resolve(new FakeHandle(behavior, files, statsThrows)),
 	};
 }
 
@@ -114,7 +149,11 @@ export async function runTests(): Promise<void> {
 		{
 			const parsed = parseTaskSpec(GOOD_SPEC);
 			check(parsed.goal.includes("greeting file"), "goal parsed");
-			check(parsed.requirements.length === 1 && parsed.verificationCommands.length === 1, "sections parsed");
+			check(
+				parsed.requirements.length === 1 &&
+					parsed.verificationCommands.length === 1,
+				"sections parsed",
+			);
 
 			let caught: SpecValidationError | undefined;
 			try {
@@ -122,7 +161,10 @@ export async function runTests(): Promise<void> {
 			} catch (err) {
 				caught = err instanceof SpecValidationError ? err : undefined;
 			}
-			check(caught?.missing === "requirements", "missing requirements rejected typed");
+			check(
+				caught?.missing === "requirements",
+				"missing requirements rejected typed",
+			);
 
 			caught = undefined;
 			try {
@@ -130,16 +172,31 @@ export async function runTests(): Promise<void> {
 			} catch (err) {
 				caught = err instanceof SpecValidationError ? err : undefined;
 			}
-			check(caught?.missing === "verification", "missing verification rejected typed");
+			check(
+				caught?.missing === "verification",
+				"missing verification rejected typed",
+			);
 		}
 
 		// ─── Deterministic prompt + id (R5) ──────────────────────────────
 		{
-			check(buildWorkerSystemPrompt(GOOD_SPEC) === buildWorkerSystemPrompt(GOOD_SPEC),
-				"system prompt is byte-stable for identical inputs");
-			check(!/[0-9a-f]{8}-/.test(buildWorkerSystemPrompt(GOOD_SPEC)), "prompt carries no uuid-like ids");
-			check(deriveTaskId(GOOD_SPEC, "/w") === deriveTaskId(GOOD_SPEC, "/w"), "task id deterministic per input");
-			check(deriveTaskId(GOOD_SPEC, "/w") !== deriveTaskId(GOOD_SPEC, "/other"), "task id varies by cwd");
+			check(
+				buildWorkerSystemPrompt(GOOD_SPEC) ===
+					buildWorkerSystemPrompt(GOOD_SPEC),
+				"system prompt is byte-stable for identical inputs",
+			);
+			check(
+				!/[0-9a-f]{8}-/.test(buildWorkerSystemPrompt(GOOD_SPEC)),
+				"prompt carries no uuid-like ids",
+			);
+			check(
+				deriveTaskId(GOOD_SPEC, "/w") === deriveTaskId(GOOD_SPEC, "/w"),
+				"task id deterministic per input",
+			);
+			check(
+				deriveTaskId(GOOD_SPEC, "/w") !== deriveTaskId(GOOD_SPEC, "/other"),
+				"task id varies by cwd",
+			);
 		}
 
 		// ─── Success path (R6 ship) ──────────────────────────────────────
@@ -153,28 +210,55 @@ export async function runTests(): Promise<void> {
 				artifactsDir,
 				dbPath: join(dir, "success.db"),
 				model: "openrouter/stealth/ox-alpha",
-				host: fakeHost("yield", [{ path: join(workDir, "hello.txt"), content: "hi" }]),
+				host: fakeHost("yield", [
+					{ path: join(workDir, "hello.txt"), content: "hi" },
+				]),
 			});
-			check(result.receipt.verdict === "ship", "ship verdict on yield + passing verify");
+			check(
+				result.receipt.verdict === "ship",
+				"ship verdict on yield + passing verify",
+			);
 			check(result.receipt.bundleHit === null, "bundleHit null in M1");
 			// NFR-3: usage flows from the fake's deterministic SessionStats.
-			const expectedGrounding = estimateGroundingTokens(buildWorkerSystemPrompt(GOOD_SPEC), GOOD_SPEC);
-			const expectedCor = computeCor(expectedGrounding, totalInputTokens({ input: 1000, cacheRead: 200, cacheWrite: 300 }));
-			check(result.receipt.costUsd === 0.0123, `ship receipt carries real cost (got ${result.receipt.costUsd})`);
-			check(result.receipt.inputTokens === 1000 && result.receipt.outputTokens === 250 && result.receipt.cacheReadTokens === 200,
-				"ship receipt carries the fake's token counts");
-			check(result.receipt.cor > 0 && Math.abs(result.receipt.cor - expectedCor) < 1e-12,
-				`cor equals grounding / total input for known fixture sizes (got ${result.receipt.cor}, want ${expectedCor})`);
+			const expectedGrounding = estimateGroundingTokens(
+				buildWorkerSystemPrompt(GOOD_SPEC),
+				GOOD_SPEC,
+			);
+			const expectedCor = computeCor(
+				expectedGrounding,
+				totalInputTokens({ input: 1000, cacheRead: 200, cacheWrite: 300 }),
+			);
+			check(
+				result.receipt.costUsd === 0.0123,
+				`ship receipt carries real cost (got ${result.receipt.costUsd})`,
+			);
+			check(
+				result.receipt.inputTokens === 1000 &&
+					result.receipt.outputTokens === 250 &&
+					result.receipt.cacheReadTokens === 200,
+				"ship receipt carries the fake's token counts",
+			);
+			check(
+				result.receipt.cor > 0 &&
+					Math.abs(result.receipt.cor - expectedCor) < 1e-12,
+				`cor equals grounding / total input for known fixture sizes (got ${result.receipt.cor}, want ${expectedCor})`,
+			);
 			check(result.verificationPassed === true, "verification passed");
 			check(existsSync(join(workDir, "hello.txt")), "worker file written");
 
 			const store = new LedgerStore(join(dir, "success.db"));
 			const task = store.getTask(result.taskId);
 			check(task?.status === "completed", "task row completed");
-			check(task?.planMode !== null && task?.planMode !== undefined, "plan_mode recorded");
+			check(
+				task?.planMode !== null && task?.planMode !== undefined,
+				"plan_mode recorded",
+			);
 			const session = store.getMicroSession(`${result.taskId}-worker`);
 			check(session?.status === "yielded", "session row yielded");
-			check(session?.yieldPayload?.includes("hello.txt") === true, "yield payload persisted");
+			check(
+				session?.yieldPayload?.includes("hello.txt") === true,
+				"yield payload persisted",
+			);
 			store.close();
 		}
 
@@ -183,19 +267,39 @@ export async function runTests(): Promise<void> {
 			const dbPath = join(dir, "settle.db");
 			const result = await runTask({
 				specMarkdown: GOOD_SPEC,
-				cwd: (() => { const d = join(dir, "settle"); mkdirSync(d, { recursive: true }); return d; })(),
+				cwd: (() => {
+					const d = join(dir, "settle");
+					mkdirSync(d, { recursive: true });
+					return d;
+				})(),
 				artifactsDir: join(dir, "artifacts-settle"),
 				dbPath,
 				model: "openrouter/stealth/ox-alpha",
 				host: fakeHost("settle"),
 			});
-			check(result.receipt.verdict === "failed", "failed verdict on settle without yield");
-			const artifactPath = join(dir, "artifacts-settle", `${result.taskId}.failure.json`);
+			check(
+				result.receipt.verdict === "failed",
+				"failed verdict on settle without yield",
+			);
+			const artifactPath = join(
+				dir,
+				"artifacts-settle",
+				`${result.taskId}.failure.json`,
+			);
 			check(existsSync(artifactPath), "failure artifact written");
-			check(String(JSON.parse(readFileSync(artifactPath, "utf-8")).cause ?? "").length > 0, "artifact names the cause");
+			const artifact = JSON.parse(readFileSync(artifactPath, "utf-8")) as {
+				cause?: string;
+			};
+			check((artifact.cause ?? "").length > 0, "artifact names the cause");
 			const store = new LedgerStore(dbPath);
-			check(store.getTask(result.taskId)?.status === "failed", "task row failed");
-			check(store.getMicroSession(`${result.taskId}-worker`)?.status === "crashed", "session crashed");
+			check(
+				store.getTask(result.taskId)?.status === "failed",
+				"task row failed",
+			);
+			check(
+				store.getMicroSession(`${result.taskId}-worker`)?.status === "crashed",
+				"session crashed",
+			);
 			store.close();
 		}
 
@@ -209,13 +313,24 @@ export async function runTests(): Promise<void> {
 				artifactsDir: join(dir, "artifacts-vfail"),
 				dbPath: join(dir, "verifyfail.db"),
 				model: "openrouter/stealth/ox-alpha",
-				host: fakeHost("yield", [{ path: join(dir, "verifyfail", "hello.txt"), content: "hi" }]),
+				host: fakeHost("yield", [
+					{ path: join(dir, "verifyfail", "hello.txt"), content: "hi" },
+				]),
 			});
-			check(result.receipt.verdict === "failed", "failed verdict on failing verify");
-			check(result.receipt.costUsd === 0.0123 && result.receipt.inputTokens === 1000,
-				"verification-failure receipt still carries measured usage");
+			check(
+				result.receipt.verdict === "failed",
+				"failed verdict on failing verify",
+			);
+			check(
+				result.receipt.costUsd === 0.0123 &&
+					result.receipt.inputTokens === 1000,
+				"verification-failure receipt still carries measured usage",
+			);
 			check(result.verificationPassed === false, "verificationPassed false");
-			check(result.yieldedResult !== undefined, "yield still captured on verify failure");
+			check(
+				result.yieldedResult !== undefined,
+				"yield still captured on verify failure",
+			);
 		}
 
 		// ─── Re-run collision (review C1/P0): same spec+cwd twice ────────
@@ -224,18 +339,33 @@ export async function runTests(): Promise<void> {
 			mkdirSync(rerunDir, { recursive: true });
 			const dbPath = join(dir, "rerun.db");
 			const first = await runTask({
-				specMarkdown: GOOD_SPEC, cwd: rerunDir, artifactsDir: join(dir, "artifacts-rerun"),
-				dbPath, model: "openrouter/stealth/ox-alpha",
-				host: fakeHost("yield", [{ path: join(rerunDir, "hello.txt"), content: "hi" }]),
+				specMarkdown: GOOD_SPEC,
+				cwd: rerunDir,
+				artifactsDir: join(dir, "artifacts-rerun"),
+				dbPath,
+				model: "openrouter/stealth/ox-alpha",
+				host: fakeHost("yield", [
+					{ path: join(rerunDir, "hello.txt"), content: "hi" },
+				]),
 			});
 			const second = await runTask({
-				specMarkdown: GOOD_SPEC, cwd: rerunDir, artifactsDir: join(dir, "artifacts-rerun"),
-				dbPath, model: "openrouter/stealth/ox-alpha",
-				host: fakeHost("yield", [{ path: join(rerunDir, "hello.txt"), content: "hi" }]),
+				specMarkdown: GOOD_SPEC,
+				cwd: rerunDir,
+				artifactsDir: join(dir, "artifacts-rerun"),
+				dbPath,
+				model: "openrouter/stealth/ox-alpha",
+				host: fakeHost("yield", [
+					{ path: join(rerunDir, "hello.txt"), content: "hi" },
+				]),
 			});
-			check(first.receipt.verdict === "ship" && second.receipt.verdict === "ship",
-				"re-running the same spec must not collide on the PK");
-			check(first.taskId !== second.taskId, "attempts get distinct ids (family + discriminator)");
+			check(
+				first.receipt.verdict === "ship" && second.receipt.verdict === "ship",
+				"re-running the same spec must not collide on the PK",
+			);
+			check(
+				first.taskId !== second.taskId,
+				"attempts get distinct ids (family + discriminator)",
+			);
 		}
 
 		// ─── Boot reconciliation wiring (R4) ─────────────────────────────
@@ -253,11 +383,26 @@ export async function runTests(): Promise<void> {
 			seed.close();
 
 			const daemon = startDaemon(dbPath);
-			check(daemon.reconciled.requeued.includes("stale-1"), "stale in-flight requeued");
-			check(daemon.reconciled.failed.includes("stale-2"), "exhausted retries failed");
-			check(daemon.store.getTask("stale-1")?.status === "queued", "requeued row is queued");
-			check(daemon.store.getTask("stale-2")?.status === "failed", "exhausted row failed");
-			check(daemon.store.getTask("done-1")?.status === "completed", "terminal rows untouched");
+			check(
+				daemon.reconciled.requeued.includes("stale-1"),
+				"stale in-flight requeued",
+			);
+			check(
+				daemon.reconciled.failed.includes("stale-2"),
+				"exhausted retries failed",
+			);
+			check(
+				daemon.store.getTask("stale-1")?.status === "queued",
+				"requeued row is queued",
+			);
+			check(
+				daemon.store.getTask("stale-2")?.status === "failed",
+				"exhausted row failed",
+			);
+			check(
+				daemon.store.getTask("done-1")?.status === "completed",
+				"terminal rows untouched",
+			);
 			daemon.store.close();
 		}
 
@@ -265,9 +410,7 @@ export async function runTests(): Promise<void> {
 		{
 			mkdirSync(join(dir, "spawnfail"), { recursive: true });
 			const badHost: SessionHost = {
-				spawn: async () => {
-					throw new Error("no auth");
-				},
+				spawn: () => Promise.reject(new Error("no auth")),
 			};
 			const result = await runTask({
 				specMarkdown: GOOD_SPEC,
@@ -277,10 +420,18 @@ export async function runTests(): Promise<void> {
 				model: "openrouter/stealth/ox-alpha",
 				host: badHost,
 			});
-			check(result.receipt.verdict === "failed", "failed verdict on spawn failure");
-			check(result.receipt.costUsd === 0 && result.receipt.inputTokens === 0
-				&& result.receipt.outputTokens === 0 && result.receipt.cacheReadTokens === 0 && result.receipt.cor === 0,
-				"spawn-failure receipt carries all-zero usage (no session ever existed)");
+			check(
+				result.receipt.verdict === "failed",
+				"failed verdict on spawn failure",
+			);
+			check(
+				result.receipt.costUsd === 0 &&
+					result.receipt.inputTokens === 0 &&
+					result.receipt.outputTokens === 0 &&
+					result.receipt.cacheReadTokens === 0 &&
+					result.receipt.cor === 0,
+				"spawn-failure receipt carries all-zero usage (no session ever existed)",
+			);
 		}
 
 		// ─── Throwing stats() → zeroed usage, run still completes (NFR-3) ──
@@ -293,13 +444,25 @@ export async function runTests(): Promise<void> {
 				artifactsDir: join(dir, "artifacts-statsthrow"),
 				dbPath: join(dir, "statsthrow.db"),
 				model: "openrouter/stealth/ox-alpha",
-				host: fakeHost("yield", [{ path: join(workDir, "hello.txt"), content: "hi" }], true),
+				host: fakeHost(
+					"yield",
+					[{ path: join(workDir, "hello.txt"), content: "hi" }],
+					true,
+				),
 			});
-			check(result.receipt.verdict === "failed" || result.receipt.verdict === "ship",
-				"throwing stats() does not throw out of runTask — valid receipt returned");
-			check(result.receipt.costUsd === 0 && result.receipt.inputTokens === 0
-				&& result.receipt.outputTokens === 0 && result.receipt.cacheReadTokens === 0 && result.receipt.cor === 0,
-				"throwing stats() zeroes every usage field on the receipt");
+			check(
+				result.receipt.verdict === "failed" ||
+					result.receipt.verdict === "ship",
+				"throwing stats() does not throw out of runTask — valid receipt returned",
+			);
+			check(
+				result.receipt.costUsd === 0 &&
+					result.receipt.inputTokens === 0 &&
+					result.receipt.outputTokens === 0 &&
+					result.receipt.cacheReadTokens === 0 &&
+					result.receipt.cor === 0,
+				"throwing stats() zeroes every usage field on the receipt",
+			);
 		}
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
@@ -308,13 +471,18 @@ export async function runTests(): Promise<void> {
 	if (errors.length > 0) {
 		throw new Error(`daemon tests failed:\n  ${errors.join("\n  ")}`);
 	}
-	console.log("✓ daemon: pipeline paths, deterministic prompt, reconciliation, failure artifacts");
+	console.log(
+		"✓ daemon: pipeline paths, deterministic prompt, reconciliation, failure artifacts",
+	);
 }
 
 const invokedAs = process.argv[1];
-if (invokedAs !== undefined && import.meta.url.endsWith(invokedAs.split("/").pop() ?? "")) {
-	runTests().catch((err) => {
-		console.error(err.message ?? err);
+if (
+	invokedAs !== undefined &&
+	import.meta.url.endsWith(invokedAs.split("/").pop() ?? "")
+) {
+	runTests().catch((err: unknown) => {
+		console.error(err instanceof Error ? err.message : err);
 		process.exit(1);
 	});
 }

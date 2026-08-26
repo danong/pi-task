@@ -27,7 +27,16 @@
  */
 
 import { createHash, randomBytes } from "node:crypto";
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+import {
+	copyFileSync,
+	existsSync,
+	mkdirSync,
+	readdirSync,
+	readFileSync,
+	renameSync,
+	statSync,
+	writeFileSync,
+} from "node:fs";
 import { basename, join } from "node:path";
 import { formatDuration } from "./progress.ts";
 export { formatDuration };
@@ -59,7 +68,10 @@ export interface VerifyPhaseMetrics {
 	/** Adjudicated worker disputes: upheld commands were excluded from the
 	 *  gate by baseline evidence; rejected ones are recorded for the spec
 	 *  author. Absent when no disputes were made. */
-	disputes?: { upheld: string[]; rejected: Array<{ command: string; reason: string }> };
+	disputes?: {
+		upheld: string[];
+		rejected: Array<{ command: string; reason: string }>;
+	};
 	/** Where verification ran: "worker-tree" (single-worker, post-yield,
 	 *  on the worker's commits) | "union-gate" (parallel, post-merge, on
 	 *  the merged tree) | "batch" (batch lane, post-apply, on the tree the
@@ -121,8 +133,10 @@ export interface MetricsConfig {
 	/** The run-pipeline SHAPE that ran (e.g. "code" | "analysis" | "batch"). */
 	shape: string;
 	/** The model channel the run used (sync | flex | batch — M1). Optional:
-	 *  absent for manifests written before the channel landed. */
-	channel?: "sync" | "flex" | "batch";
+	 *  absent for manifests written before the channel landed. (Optional
+	 *  AND nullable under exactOptionalPropertyTypes: builders may pass an
+	 *  explicitly-undefined channel from a pre-channel caller's input.) */
+	channel?: "sync" | "flex" | "batch" | undefined;
 	/** Effective worker sandbox state (R3): enabled AND the host probe passed. */
 	sandbox: boolean;
 }
@@ -132,10 +146,12 @@ export interface RunManifest {
 	/** Wall-clock timestamps of the run lifecycle (ISO strings, task tool +
 	 *  orchestrator). Absent when a direct caller doesn't supply them —
 	 *  backward compatible. received_at: task tool execute starts;
-	 *  dispatched_at: worker session spawns; completed_at: run finishes. */
-	received_at?: string;
-	dispatched_at?: string;
-	completed_at?: string;
+	 *  dispatched_at: worker session spawns; completed_at: run finishes.
+	 *  Optional AND nullable under exactOptionalPropertyTypes — builders
+	 *  forward their own `T | undefined` inputs verbatim. */
+	received_at?: string | undefined;
+	dispatched_at?: string | undefined;
+	completed_at?: string | undefined;
 	/** Main-session tokens consumed before the task call (the main agent's
 	 *  cumulative spend at dispatch — the worker phases are separate).
 	 *  Absent (0) when not supplied. */
@@ -150,8 +166,9 @@ export interface RunManifest {
 		fix_loop: FixLoopPhaseMetrics;
 	};
 	/** Parallel-merge record (R1/R4/R5) — see MergeMetrics. Absent when not
-	 *  supplied (single-worker runs, direct callers). */
-	merge?: MergeMetrics;
+	 *  supplied (single-worker runs, direct callers). Optional AND nullable
+	 *  under exactOptionalPropertyTypes (see received_at). */
+	merge?: MergeMetrics | undefined;
 	totals: {
 		cost_usd: number;
 		duration_ms: number;
@@ -267,7 +284,10 @@ export interface BuildManifestInput {
 export function buildRunManifest(input: BuildManifestInput): RunManifest {
 	const { prewalk, execute, review, fixLoop } = input.phases;
 	const totalCost =
-		(prewalk?.cost_usd ?? 0) + execute.cost_usd + (review?.cost_usd ?? 0) + fixLoop.cost_usd;
+		(prewalk?.cost_usd ?? 0) +
+		execute.cost_usd +
+		(review?.cost_usd ?? 0) +
+		fixLoop.cost_usd;
 
 	return {
 		run_id: input.runId ?? generateRunId(input.now),
@@ -279,9 +299,13 @@ export function buildRunManifest(input: BuildManifestInput): RunManifest {
 			swap_trigger: input.config.swapTrigger ?? "first-edit",
 			checklist: input.config.checklist ?? true,
 			review_forked: input.config.reviewForked,
-			...(input.config.serviceTier ? { service_tier: input.config.serviceTier } : {}),
+			...(input.config.serviceTier
+				? { service_tier: input.config.serviceTier }
+				: {}),
 			sandbox: input.config.sandbox ?? false,
-			channel: input.config.channel,
+			...(input.config.channel !== undefined
+				? { channel: input.config.channel }
+				: {}),
 			shape: input.config.shape ?? "code",
 		},
 		task: {
@@ -360,7 +384,16 @@ export interface PhaseSplit {
 }
 
 function zeroUsage(): WorkerUsage {
-	return { turns: 0, tokens_in: 0, tokens_out: 0, cache_read: 0, cache_write: 0, cost_usd: 0, reads: 0, edits: 0 };
+	return {
+		turns: 0,
+		tokens_in: 0,
+		tokens_out: 0,
+		cache_read: 0,
+		cache_write: 0,
+		cost_usd: 0,
+		reads: 0,
+		edits: 0,
+	};
 }
 
 /** Per-field diff of two cumulative usage snapshots (b − a), floored at 0. */
@@ -377,7 +410,13 @@ function diffUsage(a: WorkerUsage, b: WorkerUsage): WorkerUsage {
 	};
 }
 
-function phaseFrom(model: string, usage: WorkerUsage, turns: number, reads: number, durationMs: number): PhaseMetrics {
+function phaseFrom(
+	model: string,
+	usage: WorkerUsage,
+	turns: number,
+	reads: number,
+	durationMs: number,
+): PhaseMetrics {
 	return {
 		model,
 		turns,
@@ -406,32 +445,62 @@ export function splitPhases(opts: {
 	executeModel: string;
 	totalDurationMs: number;
 }): PhaseSplit {
-	const { turnUsage, reads, swapTurn, prewalkModel, executeModel, totalDurationMs } = opts;
+	const {
+		turnUsage,
+		reads,
+		swapTurn,
+		prewalkModel,
+		executeModel,
+		totalDurationMs,
+	} = opts;
 	const totalTurns = turnUsage.length;
 	const final = turnUsage[totalTurns - 1] ?? zeroUsage();
 
 	// Reads split by phase boundary (a read with turn <= swapTurn is prewalk).
 	const hasSplit = swapTurn !== null && swapTurn > 0 && totalTurns > 0;
 	const prewalkReads = hasSplit ? reads.filter((r) => r.turn <= swapTurn) : [];
-	const executeReads = hasSplit ? reads.filter((r) => r.turn > swapTurn) : reads;
+	const executeReads = hasSplit
+		? reads.filter((r) => r.turn > swapTurn)
+		: reads;
 
 	if (!hasSplit) {
 		return {
 			prewalk: null,
-			execute: phaseFrom(executeModel, final, totalTurns, executeReads.length, totalDurationMs),
+			execute: phaseFrom(
+				executeModel,
+				final,
+				totalTurns,
+				executeReads.length,
+				totalDurationMs,
+			),
 		};
 	}
 
 	const prewalkTurns = Math.min(swapTurn, totalTurns);
 	const prewalkSnapshot = turnUsage[prewalkTurns - 1] ?? zeroUsage();
 	const executeTurns = totalTurns - prewalkTurns;
-	const prewalkDuration = Math.round((totalDurationMs * prewalkTurns) / Math.max(1, totalTurns));
+	const prewalkDuration = Math.round(
+		(totalDurationMs * prewalkTurns) / Math.max(1, totalTurns),
+	);
 	const executeDuration = totalDurationMs - prewalkDuration;
-	const executeUsage = executeTurns > 0 ? diffUsage(prewalkSnapshot, final) : zeroUsage();
+	const executeUsage =
+		executeTurns > 0 ? diffUsage(prewalkSnapshot, final) : zeroUsage();
 
 	return {
-		prewalk: phaseFrom(prewalkModel, prewalkSnapshot, prewalkTurns, prewalkReads.length, prewalkDuration),
-		execute: phaseFrom(executeModel, executeUsage, executeTurns, executeReads.length, executeDuration),
+		prewalk: phaseFrom(
+			prewalkModel,
+			prewalkSnapshot,
+			prewalkTurns,
+			prewalkReads.length,
+			prewalkDuration,
+		),
+		execute: phaseFrom(
+			executeModel,
+			executeUsage,
+			executeTurns,
+			executeReads.length,
+			executeDuration,
+		),
 	};
 }
 
@@ -446,7 +515,10 @@ export interface ReadDuplication {
  * files (the re-read cost the prewalk was supposed to save). Approximate —
  * approxTokens is content-length/4. Pure.
  */
-export function computeReadDuplication(reads: ReadRecord[], swapTurn: number | null): ReadDuplication {
+export function computeReadDuplication(
+	reads: ReadRecord[],
+	swapTurn: number | null,
+): ReadDuplication {
 	if (swapTurn === null || swapTurn <= 0) return { tokens: 0, files: [] };
 	const prewalkPaths = new Set<string>();
 	const duplicatedFiles = new Set<string>();
@@ -468,9 +540,11 @@ export function computeReadDuplication(reads: ReadRecord[], swapTurn: number | n
  * turn's input-token delta (the last full context size sent). Pure.
  */
 export function contextInheritedTokens(turnUsage: WorkerUsage[]): number {
-	if (turnUsage.length === 0) return 0;
-	if (turnUsage.length === 1) return turnUsage[0].tokens_in;
-	return Math.max(0, turnUsage[turnUsage.length - 1].tokens_in - turnUsage[turnUsage.length - 2].tokens_in);
+	const last = turnUsage[turnUsage.length - 1];
+	if (turnUsage.length === 0 || last === undefined) return 0;
+	if (turnUsage.length === 1) return last.tokens_in;
+	const prev = turnUsage[turnUsage.length - 2] ?? last;
+	return Math.max(0, last.tokens_in - prev.tokens_in);
 }
 
 // ─── Storage (Phase 8) ───────────────────────────────────────────────
@@ -489,7 +563,10 @@ export function deriveProjectName(cwd: string): string {
  * (tmp file + rename, so a crash never leaves a partial manifest). Returns
  * the written path.
  */
-export function writeManifest(manifest: RunManifest, opts: { metricsDir: string; project: string }): string {
+export function writeManifest(
+	manifest: RunManifest,
+	opts: { metricsDir: string; project: string },
+): string {
 	const dir = join(opts.metricsDir, opts.project);
 	mkdirSync(dir, { recursive: true });
 	const target = join(dir, `${manifest.run_id}.json`);
@@ -511,23 +588,25 @@ export interface FailureArtifact {
 	run_id: string;
 	kind: "worker" | "review" | "parallel" | "batch";
 	timestamp: string;
-	spec_hash?: string;
-	tier?: string;
+	// Optional AND nullable under exactOptionalPropertyTypes: the builder
+	// threads its `T | undefined` input fields through verbatim.
+	spec_hash?: string | undefined;
+	tier?: string | undefined;
 	cause: string;
-	turns?: number;
-	idle_ms?: number;
+	turns?: number | undefined;
+	idle_ms?: number | undefined;
 	last_tool?: { name: string; args: string } | null;
-	stderr_tail?: string;
+	stderr_tail?: string | undefined;
 	/** Merge-failure record (R2): present when a parallel run's merge path
 	 *  fails or escalates — names the worker workspaces (NEVER forgotten on
 	 *  merge failure), the dangling worker commit ids, and the conflicted
 	 *  files, so recovery is scripted rather than LLM-discovered. */
-	merge?: MergeFailureRecord;
+	merge?: MergeFailureRecord | undefined;
 	/** Scripted recovery guide (R4): how to stack the preserved workspaces,
 	 *  abandon the AI base/stubs BEFORE pushing (description-less commits
 	 *  refuse push), and resolve add-vs-delete conflicts (:ours/:theirs, not
 	 *  mid-stack abandon). Present on merge/worker-failure artifacts. */
-	recovery?: string;
+	recovery?: string | undefined;
 }
 
 /**
@@ -583,7 +662,7 @@ export function buildFailureArtifact(input: {
 		cause: input.cause,
 		turns: input.turns,
 		idle_ms: input.idleMs,
-		last_tool: input.lastTool,
+		last_tool: input.lastTool ?? null,
 		stderr_tail: input.stderrTail,
 		merge: input.merge,
 		recovery: input.recovery,
@@ -668,8 +747,11 @@ export interface RunSummary {
 /** Nearest-rank percentile of sorted durations; 0 when empty. */
 function percentile(sortedMs: number[], p: number): number {
 	if (sortedMs.length === 0) return 0;
-	const idx = Math.min(sortedMs.length - 1, Math.max(0, Math.ceil((p / 100) * sortedMs.length) - 1));
-	return sortedMs[idx];
+	const idx = Math.min(
+		sortedMs.length - 1,
+		Math.max(0, Math.ceil((p / 100) * sortedMs.length) - 1),
+	);
+	return sortedMs[idx] ?? 0;
 }
 
 /**
@@ -680,9 +762,17 @@ function percentile(sortedMs: number[], p: number): number {
  * worker cannot see. Pure.
  */
 export function runLatencyMs(manifest: RunManifest): number {
-	const received = manifest.received_at !== undefined ? Date.parse(manifest.received_at) : NaN;
-	const completed = manifest.completed_at !== undefined ? Date.parse(manifest.completed_at) : NaN;
-	if (Number.isFinite(received) && Number.isFinite(completed) && completed >= received) {
+	const received =
+		manifest.received_at !== undefined ? Date.parse(manifest.received_at) : NaN;
+	const completed =
+		manifest.completed_at !== undefined
+			? Date.parse(manifest.completed_at)
+			: NaN;
+	if (
+		Number.isFinite(received) &&
+		Number.isFinite(completed) &&
+		completed >= received
+	) {
 		return completed - received;
 	}
 	return manifest.totals?.duration_ms ?? 0;
@@ -694,7 +784,10 @@ export function runLatencyMs(manifest: RunManifest): number {
  * `unreadable` and are skipped; *.failure.json artifacts count in
  * `failures` (they record aborts/timeouts that produced no manifest).
  */
-export function summarizeRuns(metricsDir: string, project?: string): RunSummary {
+export function summarizeRuns(
+	metricsDir: string,
+	project?: string,
+): RunSummary {
 	const rows: RunRow[] = [];
 	let failures = 0;
 	let unreadable = 0;
@@ -714,7 +807,8 @@ export function summarizeRuns(metricsDir: string, project?: string): RunSummary 
 			// Detached-dispatch sidecars (<run_id>.request.json — the run's input;
 			// <run_id>.live.json — the child's heartbeat) are NOT runs: they must
 			// never count as unreadable manifests or inflate the run count.
-			if (name.endsWith(".request.json") || name.endsWith(".live.json")) continue;
+			if (name.endsWith(".request.json") || name.endsWith(".live.json"))
+				continue;
 			if (name.endsWith(".failure.json")) {
 				failures++;
 				continue;
@@ -722,8 +816,11 @@ export function summarizeRuns(metricsDir: string, project?: string): RunSummary 
 			if (!name.endsWith(".json") || name.endsWith(".tmp")) continue;
 			let manifest: RunManifest;
 			try {
-				manifest = JSON.parse(readFileSync(join(dir, name), "utf-8")) as RunManifest;
-				if (typeof manifest.run_id !== "string" || !manifest.phases?.verify) throw new Error("bad shape");
+				manifest = JSON.parse(
+					readFileSync(join(dir, name), "utf-8"),
+				) as RunManifest;
+				if (typeof manifest.run_id !== "string" || !manifest.phases?.verify)
+					throw new Error("bad shape");
 			} catch {
 				unreadable++;
 				continue;
@@ -749,10 +846,12 @@ export function summarizeRuns(metricsDir: string, project?: string): RunSummary 
 	const byTier: Record<string, { count: number; costUsd: number }> = {};
 	const byProject: Record<string, { count: number; costUsd: number }> = {};
 	for (const r of rows) {
-		(byTier[r.tier] ??= { count: 0, costUsd: 0 }).count++;
-		byTier[r.tier].costUsd += r.costUsd;
-		(byProject[r.project] ??= { count: 0, costUsd: 0 }).count++;
-		byProject[r.project].costUsd += r.costUsd;
+		const tierRow = (byTier[r.tier] ??= { count: 0, costUsd: 0 });
+		tierRow.count++;
+		tierRow.costUsd += r.costUsd;
+		const projRow = (byProject[r.project] ??= { count: 0, costUsd: 0 });
+		projRow.count++;
+		projRow.costUsd += r.costUsd;
 	}
 
 	return {
@@ -784,7 +883,10 @@ export interface CompletionView {
 
 /** The most recent terminal runs across projects, newest first. Derives
  *  from <metricsDir>/<project>/*.json + *.failure.json mtimes. */
-export function recentCompletions(metricsDir: string, limit = 5): CompletionView[] {
+export function recentCompletions(
+	metricsDir: string,
+	limit = 5,
+): CompletionView[] {
 	const out: CompletionView[] = [];
 	if (!existsSync(metricsDir)) return out;
 	for (const project of readdirSync(metricsDir, { withFileTypes: true })) {
@@ -800,12 +902,16 @@ export function recentCompletions(metricsDir: string, limit = 5): CompletionView
 			const baseNoJson = name.slice(0, -".json".length);
 			if (/\.(request|live|batch)$/.test(baseNoJson)) continue;
 			const failed = name.endsWith(".failure.json");
-			const runId = failed ? name.slice(0, -".failure.json".length) : name.slice(0, -".json".length);
+			const runId = failed
+				? name.slice(0, -".failure.json".length)
+				: name.slice(0, -".json".length);
 			const path = join(dir, name);
 			let channel = "sync";
 			if (!failed) {
 				try {
-					const m = JSON.parse(readFileSync(path, "utf-8")) as { config?: { channel?: string } };
+					const m = JSON.parse(readFileSync(path, "utf-8")) as {
+						config?: { channel?: string };
+					};
 					channel = m.config?.channel ?? "sync";
 				} catch {
 					/* unreadable manifest — keep sync */
@@ -848,7 +954,9 @@ export function renderTaskStats(summary: RunSummary, maxRows = 10): string[] {
 			);
 		}
 	} else {
-		lines.push("no task runs recorded yet — manifests land in <agent-dir>/results/<project>/.");
+		lines.push(
+			"no task runs recorded yet — manifests land in <agent-dir>/results/<project>/.",
+		);
 	}
 	const tierLine = Object.entries(summary.byTier)
 		.map(([t, v]) => `${t} ${v.count} (${fmtUsd(v.costUsd)})`)
@@ -858,6 +966,7 @@ export function renderTaskStats(summary: RunSummary, maxRows = 10): string[] {
 		.map(([p, v]) => `${p} ${v.count} (${fmtUsd(v.costUsd)})`)
 		.join(" · ");
 	if (projectLine) lines.push(`by project: ${projectLine}`);
-	if (summary.unreadable > 0) lines.push(`${summary.unreadable} unreadable manifest file(s) skipped`);
+	if (summary.unreadable > 0)
+		lines.push(`${summary.unreadable} unreadable manifest file(s) skipped`);
 	return lines;
 }

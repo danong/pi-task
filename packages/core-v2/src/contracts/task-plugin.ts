@@ -55,7 +55,12 @@ export interface TaskLedgerRow {
 export interface RunManifest {
 	taskId: string;
 	runId: string;
-	totals: { costUsd: number; durationMs: number; inputTokens: number; outputTokens: number };
+	totals: {
+		costUsd: number;
+		durationMs: number;
+		inputTokens: number;
+		outputTokens: number;
+	};
 	verifyPassed: boolean;
 	detail?: {
 		sessions?: Array<{
@@ -70,7 +75,10 @@ export interface RunManifest {
  *  Reads are typed rows — never transcripts. */
 export interface TaskGateway {
 	emit(event: TaskLifecycleEvent): void;
-	on(pattern: EventPattern, handler: (event: TaskLifecycleEvent) => void): Unsubscribe;
+	on(
+		pattern: EventPattern,
+		handler: (event: TaskLifecycleEvent) => void,
+	): Unsubscribe;
 	getTaskState(taskId: string): Promise<TaskLedgerRow>;
 	getManifest(taskId: string): Promise<RunManifest>;
 }

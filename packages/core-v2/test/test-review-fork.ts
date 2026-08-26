@@ -13,13 +13,20 @@
 
 import { pathToFileURL } from "node:url";
 
-import { defaultReviewForkScorer, pruneReviewFiles } from "../src/grounding/review-fork.ts";
-import type { FileEntry, ReviewForkScorer } from "../src/grounding/review-fork.ts";
+import {
+	defaultReviewForkScorer,
+	pruneReviewFiles,
+} from "../src/grounding/review-fork.ts";
+import type {
+	FileEntry,
+	ReviewForkScorer,
+} from "../src/grounding/review-fork.ts";
 
 const f = (path: string, bytes: number): FileEntry => ({ path, bytes });
-const paths = (files: readonly FileEntry[]): string[] => files.map((x) => x.path);
+const paths = (files: readonly FileEntry[]): string[] =>
+	files.map((x) => x.path);
 
-export async function runTests(): Promise<void> {
+export function runTests(): Promise<void> {
 	const errors: string[] = [];
 	const check = (cond: boolean, msg: string): void => {
 		if (!cond) errors.push(msg);
@@ -35,7 +42,10 @@ export async function runTests(): Promise<void> {
 		});
 		check(paths(out.kept).includes("b.ts"), "anchor kept despite maxFiles=1");
 		check(paths(out.kept).includes("c.ts"), "keyFile kept despite caps");
-		check(!paths(out.kept).includes("a.ts"), "optional file dropped under tight caps");
+		check(
+			!paths(out.kept).includes("a.ts"),
+			"optional file dropped under tight caps",
+		);
 	}
 
 	// ─── Budget caps respected for optional files ─────────────────────
@@ -44,19 +54,33 @@ export async function runTests(): Promise<void> {
 			files: [f("a.ts", 10), f("b.ts", 10), f("c.ts", 10)],
 			budget: { maxFiles: 2 },
 		});
-		check(paths(out.kept).length === 2, `maxFiles cap respected (got ${out.kept.length})`);
-		check(JSON.stringify(paths(out.dropped)) === JSON.stringify(["c.ts"]),
-			"lexicographic fill keeps a,b drops c");
+		check(
+			paths(out.kept).length === 2,
+			`maxFiles cap respected (got ${out.kept.length})`,
+		);
+		check(
+			JSON.stringify(paths(out.dropped)) === JSON.stringify(["c.ts"]),
+			"lexicographic fill keeps a,b drops c",
+		);
 	}
 	{
 		const out = pruneReviewFiles({
 			files: [f("big.ts", 900), f("small.ts", 100), f("tiny.ts", 10)],
 			budget: { maxBytes: 120 },
 		});
-		check(out.keptBytes === 110, `maxBytes cap respected (kept ${out.keptBytes})`);
-		check(JSON.stringify(paths(out.kept)) === JSON.stringify(["small.ts", "tiny.ts"]),
-			"byte cap fills lexicographically until exhausted");
-		check(paths(out.dropped).includes("big.ts"), "oversized optional file dropped");
+		check(
+			out.keptBytes === 110,
+			`maxBytes cap respected (kept ${out.keptBytes})`,
+		);
+		check(
+			JSON.stringify(paths(out.kept)) ===
+				JSON.stringify(["small.ts", "tiny.ts"]),
+			"byte cap fills lexicographically until exhausted",
+		);
+		check(
+			paths(out.dropped).includes("big.ts"),
+			"oversized optional file dropped",
+		);
 	}
 
 	// ─── Mandatory set alone over budget → still ships (R2 invariant) ─
@@ -66,7 +90,10 @@ export async function runTests(): Promise<void> {
 			anchors: ["must-a.ts", "must-b.ts"],
 			budget: { maxFiles: 0, maxBytes: 1 },
 		});
-		check(paths(out.kept).length === 2, `anchors ship even over impossible caps (got ${out.kept.length})`);
+		check(
+			paths(out.kept).length === 2,
+			`anchors ship even over impossible caps (got ${out.kept.length})`,
+		);
 		check(out.dropped.length === 0, "nothing to drop beyond anchors");
 	}
 
@@ -86,18 +113,27 @@ export async function runTests(): Promise<void> {
 			attemptFiles: ["src/k.ts"],
 			budget: { maxFiles: 2 },
 		});
-		check(paths(out.kept).includes("src/k.ts"),
-			`attempt file survives the merge union under maxFiles=2 (kept ${JSON.stringify(paths(out.kept))})`);
-		check(paths(out.kept).length === 2,
-			"cap still bounds total files around the mandatory attempt set");
-		check(paths(out.dropped).length === 3 && !paths(out.dropped).includes("src/k.ts"),
-			"only non-attempt files were dropped");
+		check(
+			paths(out.kept).includes("src/k.ts"),
+			`attempt file survives the merge union under maxFiles=2 (kept ${JSON.stringify(paths(out.kept))})`,
+		);
+		check(
+			paths(out.kept).length === 2,
+			"cap still bounds total files around the mandatory attempt set",
+		);
+		check(
+			paths(out.dropped).length === 3 &&
+				!paths(out.dropped).includes("src/k.ts"),
+			"only non-attempt files were dropped",
+		);
 
 		// Per-worker commit + combined tree views dedupe into one entry.
 		const mergedViews = [...unionDiff, f("src/k.ts", 350)];
 		const deduped = pruneReviewFiles({ files: mergedViews, budget: {} });
-		check(deduped.kept.filter((x) => x.path === "src/k.ts").length === 1,
-			"same path from per-worker commit and combined tree collapses to one entry");
+		check(
+			deduped.kept.filter((x) => x.path === "src/k.ts").length === 1,
+			"same path from per-worker commit and combined tree collapses to one entry",
+		);
 	}
 
 	// ─── Attempt/anchor files absent from the union still surface ─────
@@ -108,8 +144,11 @@ export async function runTests(): Promise<void> {
 			attemptFiles: ["src/gone.ts"],
 			budget: {},
 		});
-		check(paths(out.kept).includes("docs/spec.md") && paths(out.kept).includes("src/gone.ts"),
-			"union-missing anchor + attempt file synthesized as kept entries");
+		check(
+			paths(out.kept).includes("docs/spec.md") &&
+				paths(out.kept).includes("src/gone.ts"),
+			"union-missing anchor + attempt file synthesized as kept entries",
+		);
 	}
 
 	// ─── Determinism (R3) ─────────────────────────────────────────────
@@ -134,35 +173,47 @@ export async function runTests(): Promise<void> {
 			attemptFiles: ["m.ts"],
 			budget: { maxFiles: 3, maxBytes: 20 },
 		};
-		check(JSON.stringify(pruneReviewFiles(rebuilt)) === first,
-			"structurally-equal inputs decide identically regardless of input order");
+		check(
+			JSON.stringify(pruneReviewFiles(rebuilt)) === first,
+			"structurally-equal inputs decide identically regardless of input order",
+		);
 	}
 
 	// ─── Degenerate inputs stay pure and typed ─────────────────────────
 	{
 		const empty = pruneReviewFiles({ files: [], budget: { maxFiles: 5 } });
-		check(empty.kept.length === 0 && empty.dropped.length === 0 && empty.keptBytes === 0,
-			"empty diff prunes to an empty result");
+		check(
+			empty.kept.length === 0 &&
+				empty.dropped.length === 0 &&
+				empty.keptBytes === 0,
+			"empty diff prunes to an empty result",
+		);
 
 		const negative = pruneReviewFiles({
 			files: [f("neg.ts", -50)],
 			budget: { maxBytes: 100 },
 		});
-		check(negative.kept.length === 1 && negative.kept[0]?.bytes === 0,
-			"negative byte counts clamp to zero (never inflate the budget)");
+		check(
+			negative.kept.length === 1 && negative.kept[0]?.bytes === 0,
+			"negative byte counts clamp to zero (never inflate the budget)",
+		);
 
 		const dupes = pruneReviewFiles({
 			files: [f("d.ts", 10), f("d.ts", 30)],
 			budget: {},
 		});
-		check(dupes.kept.length === 1 && dupes.kept[0]?.bytes === 30,
-			"duplicate paths keep the largest observed size");
+		check(
+			dupes.kept.length === 1 && dupes.kept[0]?.bytes === 30,
+			"duplicate paths keep the largest observed size",
+		);
 	}
 
 	// ─── Pluggable scorer interface stays symmetric (R1) ──────────────
 	{
-		check(defaultReviewForkScorer.name === "bounded-file-budget",
-			"default scorer is named for config selection");
+		check(
+			defaultReviewForkScorer.name === "bounded-file-budget",
+			"default scorer is named for config selection",
+		);
 		const custom: ReviewForkScorer = {
 			name: "keep-nothing",
 			prune: (input) => ({
@@ -175,8 +226,10 @@ export async function runTests(): Promise<void> {
 			files: [f("x.ts", 1)],
 			budget: { maxFiles: 1 },
 		});
-		check(viaInterface.dropped.length === 1 && viaInterface.kept.length === 0,
-			"alternative strategies plug in behind the same interface");
+		check(
+			viaInterface.dropped.length === 1 && viaInterface.kept.length === 0,
+			"alternative strategies plug in behind the same interface",
+		);
 	}
 
 	// ─── Input arrays are not mutated (pure) ───────────────────────────
@@ -184,20 +237,29 @@ export async function runTests(): Promise<void> {
 		const files = [f("b.ts", 2), f("a.ts", 1)];
 		const before = JSON.stringify(files);
 		pruneReviewFiles({ files, budget: { maxFiles: 1 } });
-		check(JSON.stringify(files) === before, "pruneReviewFiles must not mutate its input");
+		check(
+			JSON.stringify(files) === before,
+			"pruneReviewFiles must not mutate its input",
+		);
 	}
 
 	if (errors.length > 0) {
 		throw new Error("test-review-fork failed:\n  ✗ " + errors.join("\n  ✗ "));
 	}
-	console.log("✓ review-fork: anchors/attempt files pinned, caps bounded, merge-union safe, deterministic");
+	console.log(
+		"✓ review-fork: anchors/attempt files pinned, caps bounded, merge-union safe, deterministic",
+	);
+	return Promise.resolve();
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (
+	process.argv[1] &&
+	import.meta.url === pathToFileURL(process.argv[1]).href
+) {
 	runTests()
 		.then(() => process.exit(0))
 		.catch((err) => {
-			console.error(err.message ?? err);
+			console.error(err instanceof Error ? err.message : String(err));
 			process.exit(1);
 		});
 }

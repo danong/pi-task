@@ -20,11 +20,7 @@
  * the tool definitions pure with respect to the SDK.
  */
 
-import type {
-	AgentToolResult,
-	ExtensionContext,
-	ToolDefinition,
-} from "@earendil-works/pi-coding-agent";
+import type { AgentToolResult } from "@earendil-works/pi-coding-agent";
 import { defineTool } from "@earendil-works/pi-coding-agent";
 import type { Static } from "typebox";
 import { Type } from "typebox";
@@ -35,9 +31,12 @@ import type { Yield } from "../contracts/index.ts";
 /** TypeBox parameter schema mirrored from the canonical zod YieldSchema. */
 export const YIELD_PARAMS_SCHEMA = Type.Object({
 	files_changed: Type.Array(Type.String(), {
-		description: "Repository-relative paths of files modified during this session",
+		description:
+			"Repository-relative paths of files modified during this session",
 	}),
-	summary: Type.String({ description: "One-paragraph description of the changes made" }),
+	summary: Type.String({
+		description: "One-paragraph description of the changes made",
+	}),
 	commit_ids: Type.Array(Type.String(), {
 		description: "jj commit IDs created during this session",
 	}),
@@ -60,12 +59,16 @@ export interface YieldCallbacks {
 export function toRepoRelative(cwd: string, p: string): string {
 	const prefix = cwd.replace(/\\/g, "/") + "/";
 	const normalized = p.replace(/\\/g, "/");
-	return normalized.startsWith(prefix) ? normalized.slice(prefix.length) : normalized;
+	return normalized.startsWith(prefix)
+		? normalized.slice(prefix.length)
+		: normalized;
 }
 
 /** Build the engine-side `yield` tool bound to the given host callbacks. */
 export function makeYieldTool(cwd: string, callbacks: YieldCallbacks) {
-	return defineTool<typeof YIELD_PARAMS_SCHEMA, Yield>({
+	// Details carry the contract-valid Yield on success, or validation
+	// issues when the model's payload fails the schema.
+	return defineTool<typeof YIELD_PARAMS_SCHEMA, Yield | { issues: unknown }>({
 		name: "yield",
 		label: "Yield",
 		description:
@@ -75,16 +78,13 @@ export function makeYieldTool(cwd: string, callbacks: YieldCallbacks) {
 		parameters: YIELD_PARAMS_SCHEMA,
 		executionMode: "sequential",
 
-		async execute(
+		execute(
 			_toolCallId: string,
 			params: YieldParams,
-			_signal: AbortSignal | undefined,
-			_onUpdate: undefined,
-			_ctx: ExtensionContext,
-		): Promise<AgentToolResult<any>> {
+		): Promise<AgentToolResult<Yield | { issues: unknown }>> {
 			const parsed = YieldSchema.safeParse(params);
 			if (!parsed.success) {
-				return {
+				return Promise.resolve({
 					content: [
 						{
 							type: "text",
@@ -92,25 +92,32 @@ export function makeYieldTool(cwd: string, callbacks: YieldCallbacks) {
 						},
 					],
 					details: { issues: parsed.error.issues },
-				};
+				});
 			}
 			const payload: Yield = {
 				...parsed.data,
-				files_changed: parsed.data.files_changed.map((p) => toRepoRelative(cwd, p)),
+				files_changed: parsed.data.files_changed.map((p) =>
+					toRepoRelative(cwd, p),
+				),
 			};
 			callbacks.onYield(payload);
-			return {
-				content: [{ type: "text", text: "Yield accepted. Session terminating." }],
+			return Promise.resolve({
+				content: [
+					{ type: "text", text: "Yield accepted. Session terminating." },
+				],
 				details: payload,
 				terminate: true,
-			};
+			});
 		},
 	});
 }
 
 /** TypeBox schema for the minimal checklist tool. */
 export const CHECKLIST_PARAMS_SCHEMA = Type.Union([
-	Type.Object({ action: Type.Literal("init"), items: Type.Array(Type.String()) }),
+	Type.Object({
+		action: Type.Literal("init"),
+		items: Type.Array(Type.String()),
+	}),
 	Type.Object({ action: Type.Literal("done"), index: Type.Integer() }),
 	Type.Object({ action: Type.Literal("status") }),
 ]);
@@ -126,8 +133,13 @@ export interface ChecklistState {
 export const MAX_CHECKLIST_ITEMS = 12;
 
 /** Copy of the pure checklist operations; kept here to avoid v1 imports. */
-export function createChecklist(items: string[], maxItems = MAX_CHECKLIST_ITEMS): ChecklistState {
-	return { items: items.slice(0, maxItems).map((text) => ({ text, done: false })) };
+export function createChecklist(
+	items: string[],
+	maxItems = MAX_CHECKLIST_ITEMS,
+): ChecklistState {
+	return {
+		items: items.slice(0, maxItems).map((text) => ({ text, done: false })),
+	};
 }
 
 export function checklistRemaining(state: ChecklistState): number {
@@ -139,14 +151,23 @@ export function markChecklistDone(
 	index: number,
 ): { ok: true; remaining: number } | { ok: false; error: string } {
 	if (index < 0 || index >= state.items.length) {
-		return { ok: false, error: `Index ${index} invalid (expected 0..${state.items.length - 1}).` };
+		return {
+			ok: false,
+			error: `Index ${index} invalid (expected 0..${state.items.length - 1}).`,
+		};
 	}
 	const item = state.items[index];
 	if (item === undefined) {
-		return { ok: false, error: `Index ${index} invalid (expected 0..${state.items.length - 1}).` };
+		return {
+			ok: false,
+			error: `Index ${index} invalid (expected 0..${state.items.length - 1}).`,
+		};
 	}
 	if (item.done) {
-		return { ok: false, error: `Item ${index} ("${item.text}") was already done.` };
+		return {
+			ok: false,
+			error: `Item ${index} ("${item.text}") was already done.`,
+		};
 	}
 	item.done = true;
 	return { ok: true, remaining: checklistRemaining(state) };
@@ -156,7 +177,9 @@ export function markChecklistDone(
  * Builds the session-scoped checklist tool. State is created lazily on the
  * first `init` action and kept in the host-supplied mutable store.
  */
-export function makeChecklistTool(store: { state: ChecklistState | undefined }) {
+export function makeChecklistTool(store: {
+	state: ChecklistState | undefined;
+}) {
 	return defineTool({
 		name: "checklist",
 		label: "Checklist",
@@ -165,56 +188,67 @@ export function makeChecklistTool(store: { state: ChecklistState | undefined }) 
 			"init replaces the checklist, done marks an item complete, status lists remaining items.",
 		parameters: CHECKLIST_PARAMS_SCHEMA,
 
-		async execute(
+		execute(
 			_toolCallId: string,
 			params: ChecklistParams,
-			_signal: AbortSignal | undefined,
-			_onUpdate: undefined,
-			_ctx: ExtensionContext,
 		): Promise<AgentToolResult<{ status: string }>> {
 			switch (params.action) {
 				case "init": {
 					store.state = createChecklist(params.items);
-					return {
+					return Promise.resolve({
 						content: [
-							{ type: "text", text: `Checklist initialized with ${store.state.items.length} item(s).` },
+							{
+								type: "text",
+								text: `Checklist initialized with ${store.state.items.length} item(s).`,
+							},
 						],
 						details: { status: "initialized" },
-					};
+					});
 				}
 				case "done": {
 					if (!store.state) {
-						return {
-							content: [{ type: "text", text: "No checklist initialized; call init first." }],
+						return Promise.resolve({
+							content: [
+								{
+									type: "text",
+									text: "No checklist initialized; call init first.",
+								},
+							],
 							details: { status: "error:not-initialized" },
-						};
+						});
 					}
 					const mark = markChecklistDone(store.state, params.index);
 					if (!mark.ok) {
-						return {
+						return Promise.resolve({
 							content: [{ type: "text", text: mark.error }],
 							details: { status: "error:invalid-index" },
-						};
+						});
 					}
-					return {
-						content: [{ type: "text", text: `Marked item ${params.index} done (${mark.remaining} remaining).` }],
+					return Promise.resolve({
+						content: [
+							{
+								type: "text",
+								text: `Marked item ${params.index} done (${mark.remaining} remaining).`,
+							},
+						],
 						details: { status: "ok" },
-					};
+					});
 				}
 				case "status": {
 					if (!store.state || store.state.items.length === 0) {
-						return {
+						return Promise.resolve({
 							content: [{ type: "text", text: "No checklist items yet." }],
 							details: { status: "empty" },
-						};
+						});
 					}
 					const lines = store.state.items.map(
-						(item, index) => `${item.done ? "[x]" : "[ ]"} ${index}: ${item.text}`,
+						(item, index) =>
+							`${item.done ? "[x]" : "[ ]"} ${index}: ${item.text}`,
 					);
-					return {
+					return Promise.resolve({
 						content: [{ type: "text", text: lines.join("\n") }],
 						details: { status: "ok" },
-					};
+					});
 				}
 			}
 		},

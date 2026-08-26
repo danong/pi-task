@@ -41,7 +41,8 @@ function makeFakeSession(opts?: { failSetModel?: boolean }): FakeSession {
 		// request()-correlated set_model; the fake rejects when asked to.
 		setModel(model: string): Promise<void> {
 			setModelCalls.push(model);
-			if (opts?.failSetModel) return Promise.reject(new Error(`model not found: ${model}`));
+			if (opts?.failSetModel)
+				return Promise.reject(new Error(`model not found: ${model}`));
 			return Promise.resolve();
 		},
 		sendCommand(): void {},
@@ -74,29 +75,66 @@ export async function runTests(): Promise<void> {
 			executeModel: EXECUTE_MODEL,
 			onSwap: (info) => swaps.push(info),
 		});
-		check(ctrl.active === true, "controller should be active for distinct models");
+		check(
+			ctrl.active === true,
+			"controller should be active for distinct models",
+		);
 
 		fake.emit({ type: "message_end", message: { role: "assistant" } });
 		fake.emit({ type: "message_end", message: { role: "assistant" } });
 		fake.emit({ type: "tool_execution_start", toolName: "edit" });
-		fake.emit({ type: "tool_execution_end", toolName: "edit", toolCallId: "tc-1", isError: false });
+		fake.emit({
+			type: "tool_execution_end",
+			toolName: "edit",
+			toolCallId: "tc-1",
+			isError: false,
+		});
 
-		check(fake.setModelCalls.length === 1, `setModel should be called once, got ${fake.setModelCalls.length}`);
-		check(fake.setModelCalls[0] === EXECUTE_MODEL, `setModel should receive execute model, got ${fake.setModelCalls[0]}`);
+		check(
+			fake.setModelCalls.length === 1,
+			`setModel should be called once, got ${fake.setModelCalls.length}`,
+		);
+		check(
+			fake.setModelCalls[0] === EXECUTE_MODEL,
+			`setModel should receive execute model, got ${fake.setModelCalls[0]}`,
+		);
 		check(ctrl.swapped === true, "controller should report swapped=true");
 		check(swaps.length === 1, `onSwap should fire once, got ${swaps.length}`);
 		if (swaps[0]) {
-			check(swaps[0].turns === 2, `swap turns should be 2 (message_ends before edit), got ${swaps[0].turns}`);
-			check(swaps[0].toolName === "edit", `swap toolName should be "edit", got ${swaps[0].toolName}`);
-			check(swaps[0].toolCallId === "tc-1", `swap toolCallId should be "tc-1", got ${swaps[0].toolCallId}`);
+			check(
+				swaps[0].turns === 2,
+				`swap turns should be 2 (message_ends before edit), got ${swaps[0].turns}`,
+			);
+			check(
+				swaps[0].toolName === "edit",
+				`swap toolName should be "edit", got ${swaps[0].toolName}`,
+			);
+			check(
+				swaps[0].toolCallId === "tc-1",
+				`swap toolCallId should be "tc-1", got ${swaps[0].toolCallId}`,
+			);
 		}
 
 		// No further swaps on later events (including more edits)
 		fake.emit({ type: "message_end", message: { role: "assistant" } });
-		fake.emit({ type: "tool_execution_end", toolName: "edit", toolCallId: "tc-2" });
-		fake.emit({ type: "tool_execution_end", toolName: "write", toolCallId: "tc-3" });
-		check(fake.setModelCalls.length === 1, `setModel must fire exactly once, got ${fake.setModelCalls.length}`);
-		check(swaps.length === 1, `onSwap must fire exactly once, got ${swaps.length}`);
+		fake.emit({
+			type: "tool_execution_end",
+			toolName: "edit",
+			toolCallId: "tc-2",
+		});
+		fake.emit({
+			type: "tool_execution_end",
+			toolName: "write",
+			toolCallId: "tc-3",
+		});
+		check(
+			fake.setModelCalls.length === 1,
+			`setModel must fire exactly once, got ${fake.setModelCalls.length}`,
+		);
+		check(
+			swaps.length === 1,
+			`onSwap must fire exactly once, got ${swaps.length}`,
+		);
 	}
 
 	// 2. write also triggers the swap
@@ -108,9 +146,19 @@ export async function runTests(): Promise<void> {
 			executeModel: EXECUTE_MODEL,
 			onSwap: (info) => swaps.push(info),
 		});
-		fake.emit({ type: "tool_execution_end", toolName: "write", toolCallId: "tc-w" });
-		check(ctrl.swapped === true && swaps.length === 1, "write should trigger the swap");
-		check(swaps[0]?.toolName === "write", `swap toolName should be "write", got ${swaps[0]?.toolName}`);
+		fake.emit({
+			type: "tool_execution_end",
+			toolName: "write",
+			toolCallId: "tc-w",
+		});
+		check(
+			ctrl.swapped === true && swaps.length === 1,
+			"write should trigger the swap",
+		);
+		check(
+			swaps[0]?.toolName === "write",
+			`swap toolName should be "write", got ${swaps[0]?.toolName}`,
+		);
 	}
 
 	// 3. isError edit does not trigger the swap; later successful edit does
@@ -122,19 +170,46 @@ export async function runTests(): Promise<void> {
 			executeModel: EXECUTE_MODEL,
 			onSwap: (info) => swaps.push(info),
 		});
-		fake.emit({ type: "tool_execution_end", toolName: "edit", toolCallId: "tc-bad", isError: true });
-		check(ctrl.swapped === false && swaps.length === 0, "errored edit must not trigger the swap");
+		fake.emit({
+			type: "tool_execution_end",
+			toolName: "edit",
+			toolCallId: "tc-bad",
+			isError: true,
+		});
+		check(
+			ctrl.swapped === false && swaps.length === 0,
+			"errored edit must not trigger the swap",
+		);
 		fake.emit({ type: "message_end", message: { role: "assistant" } });
-		fake.emit({ type: "tool_execution_end", toolName: "edit", toolCallId: "tc-good" });
-		check(ctrl.swapped === true && swaps.length === 1, "successful edit after an errored one should trigger the swap");
-		check(swaps[0]?.turns === 1, `turns should count only assistant message_ends, got ${swaps[0]?.turns}`);
-		check(swaps[0]?.toolCallId === "tc-good", `swap should carry the successful edit's call id, got ${swaps[0]?.toolCallId}`);
+		fake.emit({
+			type: "tool_execution_end",
+			toolName: "edit",
+			toolCallId: "tc-good",
+		});
+		check(
+			ctrl.swapped === true && swaps.length === 1,
+			"successful edit after an errored one should trigger the swap",
+		);
+		check(
+			swaps[0]?.turns === 1,
+			`turns should count only assistant message_ends, got ${swaps[0]?.turns}`,
+		);
+		check(
+			swaps[0]?.toolCallId === "tc-good",
+			`swap should carry the successful edit's call id, got ${swaps[0]?.toolCallId}`,
+		);
 	}
 
 	// 4. Auto-skip: equal models disable the mechanism entirely
 	{
-		check(isPrewalkActive(PREWALK_MODEL, EXECUTE_MODEL) === true, "isPrewalkActive should be true for distinct models");
-		check(isPrewalkActive(EXECUTE_MODEL, EXECUTE_MODEL) === false, "isPrewalkActive should be false for equal models");
+		check(
+			isPrewalkActive(PREWALK_MODEL, EXECUTE_MODEL) === true,
+			"isPrewalkActive should be true for distinct models",
+		);
+		check(
+			isPrewalkActive(EXECUTE_MODEL, EXECUTE_MODEL) === false,
+			"isPrewalkActive should be false for equal models",
+		);
 
 		const fake = makeFakeSession();
 		const swaps: SwapInfo[] = [];
@@ -143,10 +218,23 @@ export async function runTests(): Promise<void> {
 			executeModel: EXECUTE_MODEL,
 			onSwap: (info) => swaps.push(info),
 		});
-		check(ctrl.active === false, "controller should be inactive when models are equal");
-		check(ctrl.swapped === false, "inactive controller should report swapped=false");
-		fake.emit({ type: "tool_execution_end", toolName: "edit", toolCallId: "tc-x" });
-		check(fake.setModelCalls.length === 0, "inactive controller must never call setModel");
+		check(
+			ctrl.active === false,
+			"controller should be inactive when models are equal",
+		);
+		check(
+			ctrl.swapped === false,
+			"inactive controller should report swapped=false",
+		);
+		fake.emit({
+			type: "tool_execution_end",
+			toolName: "edit",
+			toolCallId: "tc-x",
+		});
+		check(
+			fake.setModelCalls.length === 0,
+			"inactive controller must never call setModel",
+		);
 		check(swaps.length === 0, "inactive controller must never fire onSwap");
 		ctrl.detach(); // must be safe to call
 	}
@@ -161,7 +249,10 @@ export async function runTests(): Promise<void> {
 			onSwap: (info) => swaps.push(info),
 		});
 		fake.emit({ type: "tool_execution_end", toolName: "edit" });
-		check(ctrl.swapped === true && swaps.length === 1, "swap should fire before detach");
+		check(
+			ctrl.swapped === true && swaps.length === 1,
+			"swap should fire before detach",
+		);
 		ctrl.detach();
 		ctrl.detach(); // idempotent
 		fake.emit({ type: "tool_execution_end", toolName: "edit" });
@@ -181,13 +272,24 @@ export async function runTests(): Promise<void> {
 			onSwap: (info) => swaps.push(info),
 			onError: (err) => swapErrors.push(err.message),
 		});
-		fake.emit({ type: "tool_execution_end", toolName: "edit", toolCallId: "tc-fail" });
-		check(swaps.length === 1, "onSwap should still fire synchronously on the edit");
+		fake.emit({
+			type: "tool_execution_end",
+			toolName: "edit",
+			toolCallId: "tc-fail",
+		});
+		check(
+			swaps.length === 1,
+			"onSwap should still fire synchronously on the edit",
+		);
 		check(fake.setModelCalls.length === 1, "setModel should be called once");
 		await new Promise((r) => setTimeout(r, 0)); // let the rejection microtask run
-		check(swapErrors.length === 1, `failed swap should surface one error, got ${swapErrors.length}`);
 		check(
-			swapErrors[0] === `model swap to ${EXECUTE_MODEL} failed: model not found: ${EXECUTE_MODEL}`,
+			swapErrors.length === 1,
+			`failed swap should surface one error, got ${swapErrors.length}`,
+		);
+		check(
+			swapErrors[0] ===
+				`model swap to ${EXECUTE_MODEL} failed: model not found: ${EXECUTE_MODEL}`,
 			`error message should be precise, got: ${swapErrors[0]}`,
 		);
 		check(ctrl.swapped === true, "swap should still be reported fired");
@@ -196,15 +298,20 @@ export async function runTests(): Promise<void> {
 	if (errors.length > 0) {
 		throw new Error("test-prewalk failed:\n  ✗ " + errors.join("\n  ✗ "));
 	}
-	console.log("✓ swap on edit/write, once-only, isError ignore, auto-skip, detach, failed-swap error");
+	console.log(
+		"✓ swap on edit/write, once-only, isError ignore, auto-skip, detach, failed-swap error",
+	);
 }
 
 // Direct execution support: `npx tsx extensions/task/test-prewalk.ts`
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (
+	process.argv[1] &&
+	import.meta.url === pathToFileURL(process.argv[1]).href
+) {
 	runTests()
 		.then(() => process.exit(0))
 		.catch((err) => {
-			console.error(err.message ?? err);
+			console.error((err as Error).message ?? err);
 			process.exit(1);
 		});
 }

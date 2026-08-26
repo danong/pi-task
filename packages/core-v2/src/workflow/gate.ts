@@ -29,7 +29,10 @@ export interface RecordPlanApprovalOptions {
 }
 
 /** Write (or flip) this DAG's approval row on the existing ledger. */
-export function recordPlanApproval(store: LedgerStore, options: RecordPlanApprovalOptions): void {
+export function recordPlanApproval(
+	store: LedgerStore,
+	options: RecordPlanApprovalOptions,
+): void {
 	store.setWorkflowApproval(options.dagId, options.approved);
 }
 
@@ -53,9 +56,14 @@ export function requirePlanApproved(store: LedgerStore, dagId: string): void {
 }
 
 /** Non-throwing probe for surfaces that want a status line instead. */
-export function planApprovalStatus(store: LedgerStore, dagIdId: string):
-	| { status: "approved" | "pending" | "unknown"; updatedAt?: string } {
+export function planApprovalStatus(
+	store: LedgerStore,
+	dagIdId: string,
+): { status: "approved" | "pending" | "unknown"; updatedAt?: string } {
 	const row = store.getWorkflowApproval(dagIdId);
 	if (row === null) return { status: "unknown" };
-	return { status: row.approved ? "approved" : "pending", updatedAt: row.updatedAt };
+	return {
+		status: row.approved ? "approved" : "pending",
+		updatedAt: row.updatedAt,
+	};
 }

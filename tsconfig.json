@@ -1,0 +1,32 @@
+{
+	// pi-task repo-wide type gate. Mirrors packages/core-v2/tsconfig.json
+	// flag-for-flag (same strict set) so both engines meet one bar:
+	// tsx-style runners strip types without checking them, which is how
+	// undeclared identifiers ship green. This config typechecks the v1
+	// engine under extensions/ (sources + hermetic tests); core-v2 keeps
+	// its own config (contract FR-11) and is deliberately not duplicated
+	// here.
+	//
+	// Run via: mise run typecheck
+	"compilerOptions": {
+		"target": "ES2022",
+		"lib": ["ES2023"],
+		"module": "NodeNext",
+		"moduleResolution": "NodeNext",
+		"allowImportingTsExtensions": true,
+		"verbatimModuleSyntax": true,
+		"isolatedModules": true,
+		"noEmit": true,
+
+		"strict": true,
+		"noUncheckedIndexedAccess": true,
+		"exactOptionalPropertyTypes": true,
+		"noFallthroughCasesInSwitch": true,
+		"noImplicitOverride": true,
+		"forceConsistentCasingInFileNames": true,
+
+		"types": ["node"],
+		"skipLibCheck": true
+	},
+	"include": ["extensions/**/*.ts"]
+}

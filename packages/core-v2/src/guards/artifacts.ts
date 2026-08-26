@@ -84,8 +84,8 @@ function serializeLastEvent(event: SessionHostEvent | string): string {
 	try {
 		return JSON.stringify(event);
 	} catch {
-		// A cyclic/unserializable event degrades to its string form.
-		return String(event);
+		// A cyclic/unserializable event degrades to a JSON placeholder.
+		return '"[unserializable]"';
 	}
 }
 
@@ -95,12 +95,17 @@ function serializeLastEvent(event: SessionHostEvent | string): string {
  * Never throws: on write failure it reports to stderr and returns
  * `undefined`; on success returns the artifact path.
  */
-export function writeFailureArtifact(options: WriteFailureArtifactOptions): string | undefined {
+export function writeFailureArtifact(
+	options: WriteFailureArtifactOptions,
+): string | undefined {
 	const payload: FailureArtifact = {
 		cause: capTail(options.cause ?? "", FAILURE_CAUSE_MAX_CHARS),
 	};
 	if (options.lastEvent !== undefined) {
-		payload.lastEvent = capTail(serializeLastEvent(options.lastEvent), FAILURE_LAST_EVENT_MAX_CHARS);
+		payload.lastEvent = capTail(
+			serializeLastEvent(options.lastEvent),
+			FAILURE_LAST_EVENT_MAX_CHARS,
+		);
 	}
 	if (options.lastTool !== undefined) {
 		payload.lastTool = capTail(options.lastTool, FAILURE_LAST_TOOL_MAX_CHARS);

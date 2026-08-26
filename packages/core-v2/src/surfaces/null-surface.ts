@@ -26,7 +26,6 @@
 import type {
 	ControlSurface,
 	SurfaceCapabilities,
-	SurfaceCommand,
 	SurfaceEvent,
 	SurfaceStream,
 	SubscriptionLevel,
@@ -37,8 +36,17 @@ import type { TaskReceipt } from "../contracts/payloads.ts";
 
 /** Which surface-event discriminants each QoS level delivers (a partition
  *  of the single SurfaceEvent union: delta ⊃ digest ⊃ receipts). */
-export const SURFACE_LEVEL_EVENTS: Record<SubscriptionLevel, readonly SurfaceEvent["type"][]> = {
-	delta: ["TurnDelta", "ToolActivity", "PermissionRequest", "Receipt", "Escalation"],
+export const SURFACE_LEVEL_EVENTS: Record<
+	SubscriptionLevel,
+	readonly SurfaceEvent["type"][]
+> = {
+	delta: [
+		"TurnDelta",
+		"ToolActivity",
+		"PermissionRequest",
+		"Receipt",
+		"Escalation",
+	],
 	digest: ["ToolActivity", "PermissionRequest", "Receipt", "Escalation"],
 	receipts: ["Receipt", "Escalation"],
 };
@@ -72,8 +80,13 @@ export function projectLifecycleEvent(
 	// event, so a receipts listener on s1 never sees another concurrent
 	// task's outcome, nor an unscoped aggregate row.
 	const isTerminalTask =
-		event.type === "task.completed" || event.type === "task.failed" || event.type === "task.escalated";
-	if (("sessionId" in event ? event.sessionId !== sessionId : false) || (isTerminalTask && !("sessionId" in event))) {
+		event.type === "task.completed" ||
+		event.type === "task.failed" ||
+		event.type === "task.escalated";
+	if (
+		("sessionId" in event ? event.sessionId !== sessionId : false) ||
+		(isTerminalTask && !("sessionId" in event))
+	) {
 		return out;
 	}
 
@@ -90,13 +103,17 @@ export function projectLifecycleEvent(
 				event.type === "task.completed"
 					? event.detail.verdict
 					: event.type === "task.failed"
-					? "failed"
-					: event.detail.verdict,
+						? "failed"
+						: event.detail.verdict,
 			);
 			push(out, { type: "Receipt", receipt });
 			if (event.type === "task.escalated") {
 				// Only task.escalated is retryable/needs-human → Escalation.
-				push(out, { type: "Escalation", taskId: event.taskId, reason: event.detail.verdict });
+				push(out, {
+					type: "Escalation",
+					taskId: event.taskId,
+					reason: event.detail.verdict,
+				});
 			}
 			break;
 		}
@@ -125,7 +142,12 @@ export function projectLifecycleEvent(
 			});
 			break;
 		}
-		default:
+		case "task.queued":
+		case "task.routed":
+		case "verify.completed":
+		case "review.completed":
+		case "merge.completed":
+		case "merge.conflict":
 			// queued/routed/verify/review/merge: no surface event. StatusSnapshot
 			// is daemon state (model/tier/activeTasks); projecting it from a
 			// lifecycle point would fabricate values (review M4 P2-3), so the
@@ -142,7 +164,10 @@ export function projectLifecycleEvent(
  * they are zeroed here rather than guessed — an interactive surface can
  * enrich via gateway.getTaskState/getManifest reads.
  */
-function emptyUsageReceipt(taskId: string, verdict: "ship" | "escalate" | "failed"): TaskReceipt {
+function emptyUsageReceipt(
+	taskId: string,
+	verdict: "ship" | "escalate" | "failed",
+): TaskReceipt {
 	return {
 		taskId,
 		verdict,
@@ -204,7 +229,8 @@ export class NullSurface implements ControlSurface {
 
 		const handle = (raw: unknown): void => {
 			const event = raw as TaskLifecycleEvent;
-			for (const mapped of projectLifecycleEvent(event, sessionId, level)) deliver(mapped);
+			for (const mapped of projectLifecycleEvent(event, sessionId, level))
+				deliver(mapped);
 		};
 
 		const unsubscribe = this.gateway.on(patternFor(level), handle);
@@ -227,7 +253,7 @@ export class NullSurface implements ControlSurface {
 					};
 				},
 			},
-			send(_command: SurfaceCommand): void {
+			send(): void {
 				// Headless: upstream commands are intentionally inert. An
 				// interactive surface forwards Approve/UserMessage/etc. to
 				// the hosting daemon instead.
@@ -245,6 +271,9 @@ export class NullSurface implements ControlSurface {
 }
 
 /** Convenience factory: a named headless surface over `gateway`. */
-export function createNullSurface(gateway: TaskGateway, name = "null"): ControlSurface {
+export function createNullSurface(
+	gateway: TaskGateway,
+	name = "null",
+): ControlSurface {
 	return new NullSurface({ gateway, name });
 }

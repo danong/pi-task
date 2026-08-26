@@ -58,7 +58,10 @@ export interface PrewalkController {
 }
 
 /** True when the prewalk mechanism should run at all. */
-export function isPrewalkActive(prewalkModel: string, executeModel: string): boolean {
+export function isPrewalkActive(
+	prewalkModel: string,
+	executeModel: string,
+): boolean {
 	return prewalkModel !== executeModel;
 }
 
@@ -81,8 +84,18 @@ export function attachPrewalk(
 	let turns = 0;
 	let detached = false;
 
-	const handleEvent = (event: any): void => {
+	const handleEvent = (raw: unknown): void => {
 		if (swapped) return;
+
+		// The RPC event stream is untyped at this seam (worker.ts exposes it as
+		// unknown); narrow to the fields the swap trigger inspects.
+		const event = raw as {
+			type?: string;
+			message?: { role?: string };
+			toolName?: string;
+			isError?: boolean;
+			toolCallId?: string;
+		};
 
 		if (event.type === "message_end" && event.message?.role === "assistant") {
 			turns++;
@@ -91,6 +104,7 @@ export function attachPrewalk(
 
 		if (
 			event.type === "tool_execution_end" &&
+			typeof event.toolName === "string" &&
 			isEditTool(event.toolName) &&
 			!event.isError
 		) {
@@ -101,7 +115,7 @@ export function attachPrewalk(
 			// a failed swap invisible (R6).
 			onSwap?.({
 				turns,
-				toolCallId: event.toolCallId,
+				toolCallId: event.toolCallId ?? "",
 				toolName: event.toolName,
 			});
 			swap.catch((err) => {

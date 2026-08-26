@@ -66,7 +66,8 @@ function normalizeFiles(files: readonly FileEntry[]): Map<string, FileEntry> {
 	for (const f of files) {
 		const bytes = Math.max(0, Math.floor(f.bytes));
 		const existing = m.get(f.path);
-		if (existing === undefined || bytes > existing.bytes) m.set(f.path, { path: f.path, bytes });
+		if (existing === undefined || bytes > existing.bytes)
+			m.set(f.path, { path: f.path, bytes });
 	}
 	return m;
 }
@@ -83,12 +84,18 @@ function dedupStrings(values: readonly string[] | undefined): string[] {
  * dropped; optional files fill remaining budget deterministically by
  * lexicographic path. Caps are enforced on optional files only.
  */
-export function pruneReviewFiles(input: ReviewForkPruneInput): ReviewForkPruneResult {
+export function pruneReviewFiles(
+	input: ReviewForkPruneInput,
+): ReviewForkPruneResult {
 	const fileMap = normalizeFiles(input.files);
 	const anchors = dedupStrings(input.anchors);
 	const keyFiles = dedupStrings(input.keyFiles);
 	const attemptFiles = dedupStrings(input.attemptFiles);
-	const mandatoryPaths = new Set<string>([...anchors, ...keyFiles, ...attemptFiles]);
+	const mandatoryPaths = new Set<string>([
+		...anchors,
+		...keyFiles,
+		...attemptFiles,
+	]);
 
 	// Partition: mandatory entries (including synthesized anchors not in diff)
 	const mandatory: FileEntry[] = [];
@@ -116,8 +123,14 @@ export function pruneReviewFiles(input: ReviewForkPruneInput): ReviewForkPruneRe
 
 	const maxFiles = input.budget.maxFiles;
 	const maxBytes = input.budget.maxBytes;
-	const capFiles = maxFiles !== undefined ? Math.max(0, Math.floor(maxFiles)) : Number.POSITIVE_INFINITY;
-	const capBytes = maxBytes !== undefined ? Math.max(0, Math.floor(maxBytes)) : Number.POSITIVE_INFINITY;
+	const capFiles =
+		maxFiles !== undefined
+			? Math.max(0, Math.floor(maxFiles))
+			: Number.POSITIVE_INFINITY;
+	const capBytes =
+		maxBytes !== undefined
+			? Math.max(0, Math.floor(maxBytes))
+			: Number.POSITIVE_INFINITY;
 
 	let keptBytes = 0;
 	for (const f of mandatory) keptBytes += f.bytes;

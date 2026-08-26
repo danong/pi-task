@@ -80,7 +80,8 @@ export const GROUNDING_CONFIGS: readonly GroundingConfig[] = [
 		label: "v2 daemon (prewalk)",
 		host: "daemon",
 		planMode: "prewalk",
-		description: "v2 daemon prewalk — strong explore, swap to cheap on first edit",
+		description:
+			"v2 daemon prewalk — strong explore, swap to cheap on first edit",
 		strongModel: false,
 	},
 	{
@@ -88,7 +89,8 @@ export const GROUNDING_CONFIGS: readonly GroundingConfig[] = [
 		label: "v2 daemon (bundle)",
 		host: "daemon",
 		planMode: "bundle",
-		description: "v2 daemon bundle — ExecutionBundle on turn 1 (miss → exploration)",
+		description:
+			"v2 daemon bundle — ExecutionBundle on turn 1 (miss → exploration)",
 		strongModel: false,
 	},
 	{
@@ -105,7 +107,8 @@ export const GROUNDING_CONFIGS: readonly GroundingConfig[] = [
 		label: "v2 daemon (fork-pruned)",
 		host: "daemon",
 		planMode: "fork",
-		description: "v2 daemon fork through explicit prune profile (judgment, not transcript)",
+		description:
+			"v2 daemon fork through explicit prune profile (judgment, not transcript)",
 		strongModel: false,
 		pruneProfile: "continuation-pruned",
 	},
@@ -115,7 +118,8 @@ export const GROUNDING_CONFIGS: readonly GroundingConfig[] = [
 		label: "v2 daemon (prewalk-strong)",
 		host: "daemon",
 		planMode: "prewalk",
-		description: "prewalk with pinned strong model (gated — not a baseline change)",
+		description:
+			"prewalk with pinned strong model (gated — not a baseline change)",
 		strongModel: true,
 		modelId: "openrouter/anthropic/claude-strong",
 	},
@@ -124,7 +128,8 @@ export const GROUNDING_CONFIGS: readonly GroundingConfig[] = [
 		label: "v2 daemon (bundle-strong)",
 		host: "daemon",
 		planMode: "bundle",
-		description: "bundle with pinned strong model (gated — not a baseline change)",
+		description:
+			"bundle with pinned strong model (gated — not a baseline change)",
 		strongModel: true,
 		modelId: "openrouter/anthropic/claude-strong",
 	},
@@ -153,11 +158,15 @@ export function filterConfigs(opts: {
 		configs = configs.filter((c) => !c.strongModel);
 	}
 	if (opts.configFilter && opts.configFilter.length > 0) {
-		const unknown = opts.configFilter.filter((id) => !configs.some((c) => c.id === id));
+		const unknown = opts.configFilter.filter(
+			(id) => !configs.some((c) => c.id === id),
+		);
 		// If the filter names a strong id while gated off, report it as unknown
 		// (the caller gated it — they should pass --allow-strong).
 		if (unknown.length > 0) {
-			const allUnknown = opts.configFilter.filter((id) => !GROUNDING_CONFIGS.some((c) => c.id === id));
+			const allUnknown = opts.configFilter.filter(
+				(id) => !GROUNDING_CONFIGS.some((c) => c.id === id),
+			);
 			if (allUnknown.length > 0) {
 				throw new Error(
 					`--config matched no known grounding config: ${allUnknown.join(", ")} (known: ${GROUNDING_CONFIG_IDS.join(", ")})`,

@@ -67,23 +67,33 @@ function inputOf(overrides: InputOverrides = {}): RouteInput {
 		repo: overrides.repo ?? REPO,
 		feedback: overrides.feedback ?? [],
 	};
-	if (overrides.thresholds !== undefined) input.thresholds = overrides.thresholds;
+	if (overrides.thresholds !== undefined)
+		input.thresholds = overrides.thresholds;
 	return input;
 }
 
-function row(repo: string, mode: string, hit: boolean | number): RoutingFeedbackRow {
+function row(
+	repo: string,
+	mode: string,
+	hit: boolean | number,
+): RoutingFeedbackRow {
 	return { repo, mode, hit };
 }
 
 /** n hit rows then m miss rows for (repo, mode). */
-function runs(repo: string, mode: string, hits: number, misses: number): RoutingFeedbackRow[] {
+function runs(
+	repo: string,
+	mode: string,
+	hits: number,
+	misses: number,
+): RoutingFeedbackRow[] {
 	const out: RoutingFeedbackRow[] = [];
 	for (let i = 0; i < hits; i++) out.push(row(repo, mode, 1));
 	for (let i = 0; i < misses; i++) out.push(row(repo, mode, 0));
 	return out;
 }
 
-export async function runTests(): Promise<void> {
+export function runTests(): Promise<void> {
 	const errors: string[] = [];
 	const check = (cond: boolean, msg: string): void => {
 		if (!cond) errors.push(msg);
@@ -93,28 +103,59 @@ export async function runTests(): Promise<void> {
 	{
 		// (d) cold — trivial spec, no continuation.
 		const cold = routeTask(inputOf({ spec: { requirementCount: 1 } }));
-		check(cold.planMode === "cold", `trivial spec → cold, got ${cold.planMode}`);
-		check(cold.tier === "test-tier" && cold.lane === "interactive", "tier name + default lane pass through");
+		check(
+			cold.planMode === "cold",
+			`trivial spec → cold, got ${cold.planMode}`,
+		);
+		check(
+			cold.tier === "test-tier" && cold.lane === "interactive",
+			"tier name + default lane pass through",
+		);
 
 		// (a) prewalk — exploration-heavy default (high count, no notes).
 		const prewalk = routeTask(inputOf({ spec: { requirementCount: 9 } }));
-		check(prewalk.planMode === "prewalk", `exploration-heavy → prewalk, got ${prewalk.planMode}`);
+		check(
+			prewalk.planMode === "prewalk",
+			`exploration-heavy → prewalk, got ${prewalk.planMode}`,
+		);
 
 		// (b) bundle — well-scoped AND telemetry supports it.
-		const bundle = routeTask(inputOf({
-			spec: { requirementCount: 2, hasOrientationNotes: true },
-			feedback: runs(REPO, BUNDLE_FEEDBACK_MODE, 1, 0),
-		}));
-		check(bundle.planMode === "bundle", `well-scoped + supported telemetry → bundle, got ${bundle.planMode}`);
+		const bundle = routeTask(
+			inputOf({
+				spec: { requirementCount: 2, hasOrientationNotes: true },
+				feedback: runs(REPO, BUNDLE_FEEDBACK_MODE, 1, 0),
+			}),
+		);
+		check(
+			bundle.planMode === "bundle",
+			`well-scoped + supported telemetry → bundle, got ${bundle.planMode}`,
+		);
 
 		// (c) fork — explicit continuation with a live parent session.
-		const fork = routeTask(inputOf({
-			spec: { requirementCount: 4, continuesPriorWork: true, hasLiveParentSession: true },
-		}));
-		check(fork.planMode === "fork", `continuation + live parent → fork, got ${fork.planMode}`);
+		const fork = routeTask(
+			inputOf({
+				spec: {
+					requirementCount: 4,
+					continuesPriorWork: true,
+					hasLiveParentSession: true,
+				},
+			}),
+		);
+		check(
+			fork.planMode === "fork",
+			`continuation + live parent → fork, got ${fork.planMode}`,
+		);
 
-		const modes = new Set([cold.planMode, prewalk.planMode, bundle.planMode, fork.planMode]);
-		check(modes.size === 4 && PLAN_MODES.every((m) => modes.has(m)), "all four plan modes reachable");
+		const modes = new Set([
+			cold.planMode,
+			prewalk.planMode,
+			bundle.planMode,
+			fork.planMode,
+		]);
+		check(
+			modes.size === 4 && PLAN_MODES.every((m) => modes.has(m)),
+			"all four plan modes reachable",
+		);
 	}
 
 	// ─── Lane normalization (FR-10: unsupported lanes degrade) ────────
@@ -123,10 +164,21 @@ export async function runTests(): Promise<void> {
 		check(batch.lane === "batch", "tier lane 'batch' passes through");
 		const flex = routeTask(inputOf({ tier: { name: "t", lane: "flex" } }));
 		check(flex.lane === "flex", "tier lane 'flex' passes through");
-		const bogus = routeTask(inputOf({ tier: { name: "t", lane: "carrier-pigeon" } }));
-		check(bogus.lane === "interactive", `unsupported lane degrades to interactive, got ${bogus.lane}`);
-		check(normalizeLane(undefined) === "interactive", "absent lane defaults to interactive");
-		check(ROUTING_LANES.length === 3 && ROUTING_LANES.includes("interactive"), "lane vocabulary (FR-10)");
+		const bogus = routeTask(
+			inputOf({ tier: { name: "t", lane: "carrier-pigeon" } }),
+		);
+		check(
+			bogus.lane === "interactive",
+			`unsupported lane degrades to interactive, got ${bogus.lane}`,
+		);
+		check(
+			normalizeLane(undefined) === "interactive",
+			"absent lane defaults to interactive",
+		);
+		check(
+			ROUTING_LANES.length === 3 && ROUTING_LANES.includes("interactive"),
+			"lane vocabulary (FR-10)",
+		);
 	}
 
 	// ─── Continuation semantics ────────────────────────────────────────
@@ -134,18 +186,33 @@ export async function runTests(): Promise<void> {
 		// Continuation WITHOUT a live parent cannot fork; it routes to
 		// exploration (prewalk), never bundle — the understanding it
 		// continues is unreachable.
-		const orphan = routeTask(inputOf({
-			spec: { requirementCount: 2, hasOrientationNotes: true, continuesPriorWork: true, hasLiveParentSession: false },
-			feedback: runs(REPO, BUNDLE_FEEDBACK_MODE, 5, 0),
-		}));
-		check(orphan.planMode === "prewalk", `continuation without live parent → prewalk, got ${orphan.planMode}`);
+		const orphan = routeTask(
+			inputOf({
+				spec: {
+					requirementCount: 2,
+					hasOrientationNotes: true,
+					continuesPriorWork: true,
+					hasLiveParentSession: false,
+				},
+				feedback: runs(REPO, BUNDLE_FEEDBACK_MODE, 5, 0),
+			}),
+		);
+		check(
+			orphan.planMode === "prewalk",
+			`continuation without live parent → prewalk, got ${orphan.planMode}`,
+		);
 
 		// Continuation + live parent, but fork telemetry is bad → prewalk.
-		const dirtyFork = routeTask(inputOf({
-			spec: { continuesPriorWork: true, hasLiveParentSession: true },
-			feedback: runs(REPO, FORK_FEEDBACK_MODE, 1, 2),
-		}));
-		check(dirtyFork.planMode === "prewalk", `fork disabled by deviation telemetry → prewalk, got ${dirtyFork.planMode}`);
+		const dirtyFork = routeTask(
+			inputOf({
+				spec: { continuesPriorWork: true, hasLiveParentSession: true },
+				feedback: runs(REPO, FORK_FEEDBACK_MODE, 1, 2),
+			}),
+		);
+		check(
+			dirtyFork.planMode === "prewalk",
+			`fork disabled by deviation telemetry → prewalk, got ${dirtyFork.planMode}`,
+		);
 	}
 
 	// ─── Feedback switching ────────────────────────────────────────────
@@ -153,82 +220,140 @@ export async function runTests(): Promise<void> {
 		const bundleSpec = { requirementCount: 2, hasOrientationNotes: true };
 
 		// Hit-rate below threshold (1/3 < 0.7) disables bundle.
-		const low = routeTask(inputOf({
-			spec: bundleSpec,
-			feedback: runs(REPO, BUNDLE_FEEDBACK_MODE, 1, 2),
-		}));
-		check(low.planMode === "prewalk", `bundle hit-rate below threshold disables bundle, got ${low.planMode}`);
+		const low = routeTask(
+			inputOf({
+				spec: bundleSpec,
+				feedback: runs(REPO, BUNDLE_FEEDBACK_MODE, 1, 2),
+			}),
+		);
+		check(
+			low.planMode === "prewalk",
+			`bundle hit-rate below threshold disables bundle, got ${low.planMode}`,
+		);
 
 		// Hit-rate at/above threshold (3/4 = 0.75 ≥ 0.7) keeps bundle.
-		const high = routeTask(inputOf({
-			spec: bundleSpec,
-			feedback: runs(REPO, BUNDLE_FEEDBACK_MODE, 3, 1),
-		}));
-		check(high.planMode === "bundle", `bundle hit-rate above threshold keeps bundle, got ${high.planMode}`);
+		const high = routeTask(
+			inputOf({
+				spec: bundleSpec,
+				feedback: runs(REPO, BUNDLE_FEEDBACK_MODE, 3, 1),
+			}),
+		);
+		check(
+			high.planMode === "bundle",
+			`bundle hit-rate above threshold keeps bundle, got ${high.planMode}`,
+		);
 
 		// Inclusive boundary: exactly the threshold (7/10 = 0.7) still bundles.
-		const exact = routeTask(inputOf({
-			spec: bundleSpec,
-			feedback: runs(REPO, BUNDLE_FEEDBACK_MODE, 7, 3),
-		}));
-		check(exact.planMode === "bundle", `bundle hit-rate exactly at threshold keeps bundle, got ${exact.planMode}`);
+		const exact = routeTask(
+			inputOf({
+				spec: bundleSpec,
+				feedback: runs(REPO, BUNDLE_FEEDBACK_MODE, 7, 3),
+			}),
+		);
+		check(
+			exact.planMode === "bundle",
+			`bundle hit-rate exactly at threshold keeps bundle, got ${exact.planMode}`,
+		);
 
 		// Fork deviation above threshold (2/3 > 0.3) disables fork.
 		const forkSpec = { continuesPriorWork: true, hasLiveParentSession: true };
-		const deviant = routeTask(inputOf({
-			spec: forkSpec,
-			feedback: runs(REPO, FORK_FEEDBACK_MODE, 1, 2),
-		}));
-		check(deviant.planMode !== "fork", `fork deviation above threshold disables fork, got ${deviant.planMode}`);
+		const deviant = routeTask(
+			inputOf({
+				spec: forkSpec,
+				feedback: runs(REPO, FORK_FEEDBACK_MODE, 1, 2),
+			}),
+		);
+		check(
+			deviant.planMode !== "fork",
+			`fork deviation above threshold disables fork, got ${deviant.planMode}`,
+		);
 
 		// Clean fork history keeps fork.
-		const clean = routeTask(inputOf({
-			spec: forkSpec,
-			feedback: runs(REPO, FORK_FEEDBACK_MODE, 2, 0),
-		}));
-		check(clean.planMode === "fork", `clean fork telemetry keeps fork, got ${clean.planMode}`);
+		const clean = routeTask(
+			inputOf({
+				spec: forkSpec,
+				feedback: runs(REPO, FORK_FEEDBACK_MODE, 2, 0),
+			}),
+		);
+		check(
+			clean.planMode === "fork",
+			`clean fork telemetry keeps fork, got ${clean.planMode}`,
+		);
 
 		// Per-repo isolation: telemetry for repo/b must not route repo/a.
-		const isolated = routeTask(inputOf({
-			spec: bundleSpec,
-			feedback: runs("repo/b", BUNDLE_FEEDBACK_MODE, 0, 9),
-		}));
-		check(isolated.planMode === "prewalk", "no telemetry for THIS repo → never bundle (conservative)");
-		const isolatedFork = routeTask(inputOf({
-			spec: forkSpec,
-			feedback: runs("repo/b", FORK_FEEDBACK_MODE, 0, 9),
-		}));
-		check(isolatedFork.planMode === "fork", "other-repo fork telemetry does not disable fork here");
+		const isolated = routeTask(
+			inputOf({
+				spec: bundleSpec,
+				feedback: runs("repo/b", BUNDLE_FEEDBACK_MODE, 0, 9),
+			}),
+		);
+		check(
+			isolated.planMode === "prewalk",
+			"no telemetry for THIS repo → never bundle (conservative)",
+		);
+		const isolatedFork = routeTask(
+			inputOf({
+				spec: forkSpec,
+				feedback: runs("repo/b", FORK_FEEDBACK_MODE, 0, 9),
+			}),
+		);
+		check(
+			isolatedFork.planMode === "fork",
+			"other-repo fork telemetry does not disable fork here",
+		);
 
 		// Unrelated telemetry modes are ignored by the router.
-		const unrelated = routeTask(inputOf({
-			spec: bundleSpec,
-			feedback: runs(REPO, "prewalk", 0, 9),
-		}));
-		check(unrelated.planMode === "prewalk", "non-bundle/fork feedback rows never enable bundle");
+		const unrelated = routeTask(
+			inputOf({
+				spec: bundleSpec,
+				feedback: runs(REPO, "prewalk", 0, 9),
+			}),
+		);
+		check(
+			unrelated.planMode === "prewalk",
+			"non-bundle/fork feedback rows never enable bundle",
+		);
 	}
 
 	// ─── Empty-feedback conservative defaults ──────────────────────────
 	{
 		// Bundle-eligible spec but zero telemetry → never bundle.
-		const noBundle = routeTask(inputOf({
-			spec: { requirementCount: 2, hasOrientationNotes: true },
-		}));
-		check(noBundle.planMode !== "bundle", `empty feedback never bundles, got ${noBundle.planMode}`);
+		const noBundle = routeTask(
+			inputOf({
+				spec: { requirementCount: 2, hasOrientationNotes: true },
+			}),
+		);
+		check(
+			noBundle.planMode !== "bundle",
+			`empty feedback never bundles, got ${noBundle.planMode}`,
+		);
 
 		// No continuation signal → never fork, telemetry or not.
-		const noFork = routeTask(inputOf({
-			spec: { requirementCount: 9 },
-			feedback: [...runs(REPO, BUNDLE_FEEDBACK_MODE, 9, 0), ...runs(REPO, FORK_FEEDBACK_MODE, 9, 0)],
-		}));
-		check(noFork.planMode !== "fork", `fork requires explicit continuation, got ${noFork.planMode}`);
+		const noFork = routeTask(
+			inputOf({
+				spec: { requirementCount: 9 },
+				feedback: [
+					...runs(REPO, BUNDLE_FEEDBACK_MODE, 9, 0),
+					...runs(REPO, FORK_FEEDBACK_MODE, 9, 0),
+				],
+			}),
+		);
+		check(
+			noFork.planMode !== "fork",
+			`fork requires explicit continuation, got ${noFork.planMode}`,
+		);
 
 		// Fork on explicit continuation is allowed with empty feedback
 		// (no evidence against it yet).
-		const forkEmpty = routeTask(inputOf({
-			spec: { continuesPriorWork: true, hasLiveParentSession: true },
-		}));
-		check(forkEmpty.planMode === "fork", "empty feedback: fork allowed on explicit continuation");
+		const forkEmpty = routeTask(
+			inputOf({
+				spec: { continuesPriorWork: true, hasLiveParentSession: true },
+			}),
+		);
+		check(
+			forkEmpty.planMode === "fork",
+			"empty feedback: fork allowed on explicit continuation",
+		);
 	}
 
 	// ─── Aggregation helper ────────────────────────────────────────────
@@ -242,43 +367,85 @@ export async function runTests(): Promise<void> {
 		];
 		const agg = aggregateRoutingFeedback(rows);
 		const aBundle = agg.get("repo/a")?.get("bundle");
-		check(aBundle !== undefined && aBundle.total === 3 && aBundle.hits === 2, "per-repo per-mode totals + hits");
-		check(aBundle !== undefined && Math.abs(aBundle.rate - 2 / 3) < 1e-12, "hit rate computed");
+		check(
+			aBundle !== undefined && aBundle.total === 3 && aBundle.hits === 2,
+			"per-repo per-mode totals + hits",
+		);
+		check(
+			aBundle !== undefined && Math.abs(aBundle.rate - 2 / 3) < 1e-12,
+			"hit rate computed",
+		);
 		const aFork = agg.get("repo/a")?.get("fork");
-		check(aFork !== undefined && aFork.total === 1 && aFork.hits === 0, "boolean hits normalized");
-		check(agg.get("repo/b")?.get("bundle")?.total === 1, "per-repo partitioning");
-		check(aggregateRoutingFeedback([]).size === 0, "empty input → empty aggregate");
+		check(
+			aFork !== undefined && aFork.total === 1 && aFork.hits === 0,
+			"boolean hits normalized",
+		);
+		check(
+			agg.get("repo/b")?.get("bundle")?.total === 1,
+			"per-repo partitioning",
+		);
+		check(
+			aggregateRoutingFeedback([]).size === 0,
+			"empty input → empty aggregate",
+		);
 
-		check(bundleHitRate(undefined) === null, "bundleHitRate: no samples → null");
-		check(forkDeviationRate(undefined) === null, "forkDeviationRate: no samples → null");
+		check(
+			bundleHitRate(undefined) === null,
+			"bundleHitRate: no samples → null",
+		);
+		check(
+			forkDeviationRate(undefined) === null,
+			"forkDeviationRate: no samples → null",
+		);
 		const modes = agg.get("repo/a")!;
-		check(bundleHitRate(modes) === aBundle!.rate, "bundleHitRate reads the bundle mode");
-		check(forkDeviationRate(modes) === 1, "forkDeviationRate = 1 - clean rate (0/1 clean → 1.0 deviation)");
+		check(
+			bundleHitRate(modes) === aBundle!.rate,
+			"bundleHitRate reads the bundle mode",
+		);
+		check(
+			forkDeviationRate(modes) === 1,
+			"forkDeviationRate = 1 - clean rate (0/1 clean → 1.0 deviation)",
+		);
 	}
 
 	// ─── Threshold overrides via config input ──────────────────────────
 	{
 		const lowHitRepo = runs(REPO, BUNDLE_FEEDBACK_MODE, 1, 2); // rate 1/3
-		const lenient = routeTask(inputOf({
-			spec: { requirementCount: 2, hasOrientationNotes: true },
-			feedback: lowHitRepo,
-			thresholds: { bundleMinHitRate: 0.25 },
-		}));
-		check(lenient.planMode === "bundle", `lowered bundleMinHitRate re-enables bundle, got ${lenient.planMode}`);
+		const lenient = routeTask(
+			inputOf({
+				spec: { requirementCount: 2, hasOrientationNotes: true },
+				feedback: lowHitRepo,
+				thresholds: { bundleMinHitRate: 0.25 },
+			}),
+		);
+		check(
+			lenient.planMode === "bundle",
+			`lowered bundleMinHitRate re-enables bundle, got ${lenient.planMode}`,
+		);
 
-		const strictCold = routeTask(inputOf({
-			spec: { requirementCount: 2, hasOrientationNotes: true },
-			feedback: runs(REPO, BUNDLE_FEEDBACK_MODE, 5, 0),
-			thresholds: { coldMaxRequirements: 2 },
-		}));
-		check(strictCold.planMode === "cold", `raised coldMaxRequirements routes count-2 to cold, got ${strictCold.planMode}`);
+		const strictCold = routeTask(
+			inputOf({
+				spec: { requirementCount: 2, hasOrientationNotes: true },
+				feedback: runs(REPO, BUNDLE_FEEDBACK_MODE, 5, 0),
+				thresholds: { coldMaxRequirements: 2 },
+			}),
+		);
+		check(
+			strictCold.planMode === "cold",
+			`raised coldMaxRequirements routes count-2 to cold, got ${strictCold.planMode}`,
+		);
 
-		const tolerantFork = routeTask(inputOf({
-			spec: { continuesPriorWork: true, hasLiveParentSession: true },
-			feedback: runs(REPO, FORK_FEEDBACK_MODE, 1, 2), // deviation 2/3
-			thresholds: { forkMaxDeviationRate: 0.9 },
-		}));
-		check(tolerantFork.planMode === "fork", `raised forkMaxDeviationRate re-enables fork, got ${tolerantFork.planMode}`);
+		const tolerantFork = routeTask(
+			inputOf({
+				spec: { continuesPriorWork: true, hasLiveParentSession: true },
+				feedback: runs(REPO, FORK_FEEDBACK_MODE, 1, 2), // deviation 2/3
+				thresholds: { forkMaxDeviationRate: 0.9 },
+			}),
+		);
+		check(
+			tolerantFork.planMode === "fork",
+			`raised forkMaxDeviationRate re-enables fork, got ${tolerantFork.planMode}`,
+		);
 
 		// Defaults are named constants, not inline magic.
 		check(
@@ -292,20 +459,48 @@ export async function runTests(): Promise<void> {
 
 	// ─── Boundary: requirement-count cutoffs ───────────────────────────
 	{
-		const atCold = routeTask(inputOf({ spec: { requirementCount: DEFAULT_ROUTING_THRESHOLDS.coldMaxRequirements } }));
-		const pastCold = routeTask(inputOf({ spec: { requirementCount: DEFAULT_ROUTING_THRESHOLDS.coldMaxRequirements + 1 } }));
-		check(atCold.planMode === "cold" && pastCold.planMode !== "cold", "cold cutoff inclusive at the threshold");
+		const atCold = routeTask(
+			inputOf({
+				spec: {
+					requirementCount: DEFAULT_ROUTING_THRESHOLDS.coldMaxRequirements,
+				},
+			}),
+		);
+		const pastCold = routeTask(
+			inputOf({
+				spec: {
+					requirementCount: DEFAULT_ROUTING_THRESHOLDS.coldMaxRequirements + 1,
+				},
+			}),
+		);
+		check(
+			atCold.planMode === "cold" && pastCold.planMode !== "cold",
+			"cold cutoff inclusive at the threshold",
+		);
 
-		const atBundle = routeTask(inputOf({
-			spec: { requirementCount: DEFAULT_ROUTING_THRESHOLDS.bundleMaxRequirements, hasOrientationNotes: true },
-			feedback: runs(REPO, BUNDLE_FEEDBACK_MODE, 4, 0),
-		}));
-		const pastBundle = routeTask(inputOf({
-			spec: { requirementCount: DEFAULT_ROUTING_THRESHOLDS.bundleMaxRequirements + 1, hasOrientationNotes: true },
-			feedback: runs(REPO, BUNDLE_FEEDBACK_MODE, 4, 0),
-		}));
-		check(atBundle.planMode === "bundle" && pastBundle.planMode === "prewalk",
-			`bundle cutoff inclusive at the threshold (got ${atBundle.planMode}/${pastBundle.planMode})`);
+		const atBundle = routeTask(
+			inputOf({
+				spec: {
+					requirementCount: DEFAULT_ROUTING_THRESHOLDS.bundleMaxRequirements,
+					hasOrientationNotes: true,
+				},
+				feedback: runs(REPO, BUNDLE_FEEDBACK_MODE, 4, 0),
+			}),
+		);
+		const pastBundle = routeTask(
+			inputOf({
+				spec: {
+					requirementCount:
+						DEFAULT_ROUTING_THRESHOLDS.bundleMaxRequirements + 1,
+					hasOrientationNotes: true,
+				},
+				feedback: runs(REPO, BUNDLE_FEEDBACK_MODE, 4, 0),
+			}),
+		);
+		check(
+			atBundle.planMode === "bundle" && pastBundle.planMode === "prewalk",
+			`bundle cutoff inclusive at the threshold (got ${atBundle.planMode}/${pastBundle.planMode})`,
+		);
 	}
 
 	// ─── Determinism ───────────────────────────────────────────────────
@@ -334,7 +529,10 @@ export async function runTests(): Promise<void> {
 				row("repo/b", "bundle", 0),
 			],
 		});
-		check(JSON.stringify(routeTask(rebuilt)) === first, "structurally-equal inputs decide identically");
+		check(
+			JSON.stringify(routeTask(rebuilt)) === first,
+			"structurally-equal inputs decide identically",
+		);
 	}
 
 	// ─── Input validation (still pure — throws, never reads I/O) ───────
@@ -347,23 +545,37 @@ export async function runTests(): Promise<void> {
 				return err instanceof Error ? err.message : String(err);
 			}
 		};
-		check(expectThrow(() => routeTask(inputOf({ spec: { requirementCount: -1 } }))) !== "",
-			"negative requirement count rejected");
-		check(expectThrow(() => routeTask(inputOf({ spec: { requirementCount: 1.5 } }))) !== "",
-			"non-integer requirement count rejected");
+		check(
+			expectThrow(() =>
+				routeTask(inputOf({ spec: { requirementCount: -1 } })),
+			) !== "",
+			"negative requirement count rejected",
+		);
+		check(
+			expectThrow(() =>
+				routeTask(inputOf({ spec: { requirementCount: 1.5 } })),
+			) !== "",
+			"non-integer requirement count rejected",
+		);
 	}
 
 	if (errors.length > 0) {
 		throw new Error("test-router failed:\n  ✗ " + errors.join("\n  ✗ "));
 	}
-	console.log("✓ router: all modes reachable, feedback switching, empty-feedback defaults, determinism");
+	console.log(
+		"✓ router: all modes reachable, feedback switching, empty-feedback defaults, determinism",
+	);
+	return Promise.resolve();
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (
+	process.argv[1] &&
+	import.meta.url === pathToFileURL(process.argv[1]).href
+) {
 	runTests()
 		.then(() => process.exit(0))
 		.catch((err) => {
-			console.error(err.message ?? err);
+			console.error(err instanceof Error ? err.message : String(err));
 			process.exit(1);
 		});
 }

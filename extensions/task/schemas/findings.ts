@@ -19,16 +19,23 @@ import { StringEnum } from "@earendil-works/pi-ai";
 export const FindingSchema = Type.Object({
 	id: Type.String({ description: "Stable finding id (e.g. F1, F2)" }),
 	priority: StringEnum(["P0", "P1", "P2", "P3"] as const, {
-		description: "P0/P1 block ship and drive the fix loop; P2/P3 are informational",
+		description:
+			"P0/P1 block ship and drive the fix loop; P2/P3 are informational",
 	}),
-	confidence: Type.Number({ minimum: 0, maximum: 1, description: "Reviewer confidence, 0-1" }),
+	confidence: Type.Number({
+		minimum: 0,
+		maximum: 1,
+		description: "Reviewer confidence, 0-1",
+	}),
 	category: Type.String({
 		description:
 			"Finding kind — e.g. security | edge-case | test-quality | design | regression | requirement (open set)",
 	}),
 	file: Type.String({ description: "Primary file the finding concerns" }),
 	description: Type.String({ description: "What the problem is" }),
-	verification: Type.String({ description: "How to confirm the finding is real" }),
+	verification: Type.String({
+		description: "How to confirm the finding is real",
+	}),
 });
 
 export const RequirementStatusSchema = Type.Object({
@@ -43,8 +50,12 @@ export const ReviewResultSchema = Type.Object({
 		description:
 			"ship = no blockers; fix = addressable findings remain; escalate = unresolved P0/P1 after the fix budget",
 	}),
-	findings: Type.Array(FindingSchema, { description: "Prioritized findings (may be empty for a clean review)" }),
-	requirements: Type.Array(RequirementStatusSchema, { description: "Per-requirement status" }),
+	findings: Type.Array(FindingSchema, {
+		description: "Prioritized findings (may be empty for a clean review)",
+	}),
+	requirements: Type.Array(RequirementStatusSchema, {
+		description: "Per-requirement status",
+	}),
 });
 
 export type Finding = Static<typeof FindingSchema>;

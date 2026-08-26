@@ -52,7 +52,8 @@ export function disputeRecordedMessage(command: string): string {
 
 export const DisputeVerificationSchema = Type.Object({
 	command: Type.String({
-		description: "The EXACT verification command being disputed (copy it verbatim from the spec)",
+		description:
+			"The EXACT verification command being disputed (copy it verbatim from the spec)",
 	}),
 	reason: Type.String({
 		description:
@@ -71,19 +72,25 @@ export default function (pi: ExtensionAPI) {
 			"the gate, rejected ones are recorded. Call once per disputed command, any time before yield().",
 		parameters: DisputeVerificationSchema,
 
-		async execute(_toolCallId, params) {
-			const command = (params.command ?? "").trim();
-			const reason = (params.reason ?? "").trim();
+		execute(_toolCallId, params) {
+			const command = params.command.trim();
+			const reason = params.reason.trim();
 			if (command.length === 0 || reason.length === 0) {
-				return {
-					content: [{ type: "text", text: "Both command (verbatim) and reason are required." }],
-					isError: true,
-				};
+				return Promise.resolve({
+					content: [
+						{
+							type: "text",
+							text: "Both command (verbatim) and reason are required.",
+						},
+					],
+					details: {},
+				});
 			}
 			recordDispute({ command, reason });
-			return {
+			return Promise.resolve({
 				content: [{ type: "text", text: disputeRecordedMessage(command) }],
-			};
+				details: { command, reason },
+			});
 		},
 	});
 }

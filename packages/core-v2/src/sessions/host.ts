@@ -21,8 +21,18 @@
  *     silent fallback (R4).
  */
 
-import { createAgentSession, DefaultResourceLoader, getAgentDir, ModelRuntime, resolveCliModel } from "@earendil-works/pi-coding-agent";
-import type { AgentSession, AgentSessionEvent, SessionStats } from "@earendil-works/pi-coding-agent";
+import {
+	createAgentSession,
+	DefaultResourceLoader,
+	getAgentDir,
+	ModelRuntime,
+	resolveCliModel,
+} from "@earendil-works/pi-coding-agent";
+import type {
+	AgentSession,
+	AgentSessionEvent,
+	SessionStats,
+} from "@earendil-works/pi-coding-agent";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 
 import type { Yield } from "../contracts/index.ts";
@@ -34,10 +44,7 @@ export const DEFAULT_WALL_TIMEOUT_MS = 10 * 60 * 1000;
 
 /** Typed error codes for construction and prompt-drive failures. */
 export type SessionHostErrorCode =
-	| "bad_model"
-	| "missing_auth"
-	| "prompt_failed"
-	| "timed_out";
+	"bad_model" | "missing_auth" | "prompt_failed" | "timed_out";
 
 /** Typed error raised for construction and prompt-drive failures. */
 export class SessionHostError extends Error {
@@ -72,7 +79,17 @@ export interface SessionHostConfig {
 }
 
 /** Default tool allowlist: the four built-ins plus the two custom tools. */
-export const DEFAULT_TOOLS = ["read", "grep", "find", "ls", "bash", "edit", "write", "yield", "checklist"];
+export const DEFAULT_TOOLS = [
+	"read",
+	"grep",
+	"find",
+	"ls",
+	"bash",
+	"edit",
+	"write",
+	"yield",
+	"checklist",
+];
 
 /** Settle/turn/tool lifecycle event the host streams to listeners. */
 export type SessionHostEvent =
@@ -121,7 +138,10 @@ export interface SessionHost {
  * prompt: custom prompt plus no extensions/skills/packages/themes/context
  * files, so the host is a hermetic, role-specific island.
  */
-export function buildSessionLoader(cwd: string, systemPrompt: string): DefaultResourceLoader {
+export function buildSessionLoader(
+	cwd: string,
+	systemPrompt: string,
+): DefaultResourceLoader {
 	const agentDir = getAgentDir();
 	return new DefaultResourceLoader({
 		cwd,
@@ -147,11 +167,15 @@ export class DefaultSessionHost implements SessionHost {
 		const runtime = this.#modelRuntime ?? (await ModelRuntime.create());
 
 		// R4 — typed, never-silent model resolution.
-		const resolved = resolveCliModel({ cliModel: config.modelId, modelRuntime: runtime });
+		const resolved = resolveCliModel({
+			cliModel: config.modelId,
+			modelRuntime: runtime,
+		});
 		if (!resolved.model || resolved.error) {
 			throw new SessionHostError(
 				"bad_model",
-				resolved.error ?? `Model "${config.modelId}" not found in the model registry.`,
+				resolved.error ??
+					`Model "${config.modelId}" not found in the model registry.`,
 			);
 		}
 		const model = resolved.model;
@@ -164,7 +188,9 @@ export class DefaultSessionHost implements SessionHost {
 		}
 
 		// Session-scoped state for the custom tools.
-		const checklistStore: { state: ChecklistState | undefined } = { state: undefined };
+		const checklistStore: { state: ChecklistState | undefined } = {
+			state: undefined,
+		};
 		const yielder: { payload: Yield | undefined } = { payload: undefined };
 
 		const loader = buildSessionLoader(config.cwd, config.systemPrompt);
@@ -178,7 +204,11 @@ export class DefaultSessionHost implements SessionHost {
 			modelRuntime: runtime,
 			tools: [...(config.tools ?? DEFAULT_TOOLS)],
 			customTools: [
-				makeYieldTool(config.cwd, { onYield: (payload) => { yielder.payload = payload; } }),
+				makeYieldTool(config.cwd, {
+					onYield: (payload) => {
+						yielder.payload = payload;
+					},
+				}),
 				makeChecklistTool(checklistStore),
 			],
 			sessionManager: SessionManager.inMemory(config.cwd),
@@ -234,15 +264,21 @@ class LiveSession implements SessionHandle {
 		this.#unsubscribe = session.subscribe((event) => this.#forward(event));
 	}
 
-	async stats(): Promise<SessionStats> {
-		return this.#session.getSessionStats();
+	stats(): Promise<SessionStats> {
+		return Promise.resolve(this.#session.getSessionStats());
 	}
 
 	async setModel(modelId: string): Promise<void> {
-		const runtime = this.#runtime ?? await ModelRuntime.create();
-		const resolved = resolveCliModel({ cliModel: modelId, modelRuntime: runtime });
+		const runtime = this.#runtime ?? (await ModelRuntime.create());
+		const resolved = resolveCliModel({
+			cliModel: modelId,
+			modelRuntime: runtime,
+		});
 		if (!resolved.model || resolved.error) {
-			throw new SessionHostError("bad_model", resolved.error ?? `Model "${modelId}" not found.`);
+			throw new SessionHostError(
+				"bad_model",
+				resolved.error ?? `Model "${modelId}" not found.`,
+			);
 		}
 		await this.#session.setModel(resolved.model);
 	}
@@ -278,10 +314,41 @@ class LiveSession implements SessionHandle {
 				this.#emit({ type: "turnStart" });
 				break;
 			case "tool_execution_start":
-				this.#emit({ type: "toolStart", toolName: event.toolName, toolCallId: event.toolCallId });
+				this.#emit({
+					type: "toolStart",
+					toolName: event.toolName,
+					toolCallId: event.toolCallId,
+				});
 				break;
 			case "tool_execution_end":
-				this.#emit({ type: "toolEnd", toolName: event.toolName, toolCallId: event.toolCallId, isError: event.isError });
+				this.#emit({
+					type: "toolEnd",
+					toolName: event.toolName,
+					toolCallId: event.toolCallId,
+					isError: event.isError,
+				});
+				break;
+			case "agent_start":
+			case "agent_end":
+			case "turn_end":
+			case "message_start":
+			case "message_update":
+			case "message_end":
+			case "tool_execution_update":
+			case "queue_update":
+			case "compaction_start":
+			case "entry_appended":
+			case "session_info_changed":
+			case "thinking_level_changed":
+			case "compaction_end":
+			case "auto_retry_start":
+			case "auto_retry_end":
+			case "summarization_retry_scheduled":
+			case "summarization_retry_attempt_start":
+			case "summarization_retry_finished":
+			case "bash_execution_update":
+				// SDK-internal progress events carry nothing the host's typed
+				// stream needs.
 				break;
 			default:
 				break;
@@ -307,21 +374,34 @@ class LiveSession implements SessionHandle {
 		const work = this.#session.prompt(text);
 		const onAbort = new Promise<never>((_resolve, reject) => {
 			const signal = AbortSignal.timeout(this.#timeoutMs);
-			signal.addEventListener("abort", () => reject(new Error(`prompt exceeded ${this.#timeoutMs}ms`)));
+			signal.addEventListener("abort", () =>
+				reject(new Error(`prompt exceeded ${this.#timeoutMs}ms`)),
+			);
 		});
 
 		let outcome: "ok" | "error" | "timeout" = "ok";
 		try {
 			await Promise.race([work, onAbort]);
 		} catch (err) {
-			outcome = (err instanceof Error && err.message.includes("exceeded")) ? "timeout" : "error";
+			outcome =
+				err instanceof Error && err.message.includes("exceeded")
+					? "timeout"
+					: "error";
 			if (outcome === "timeout") {
 				// Release the still-running session so close() is safe.
 				await this.#session.abort();
 			}
 			const message = err instanceof Error ? err.message : String(err);
-			this.#emit({ type: "error", message, code: outcome === "timeout" ? "timed_out" : "prompt_failed" });
-			throw new SessionHostError(outcome === "timeout" ? "timed_out" : "prompt_failed", message, err);
+			this.#emit({
+				type: "error",
+				message,
+				code: outcome === "timeout" ? "timed_out" : "prompt_failed",
+			});
+			throw new SessionHostError(
+				outcome === "timeout" ? "timed_out" : "prompt_failed",
+				message,
+				err,
+			);
 		}
 
 		if (this.#yielder.payload && !this.#result) {

@@ -51,15 +51,25 @@ export type BudgetTier = string;
 
 /** Built-in tier names, in order — the fallback tier set for a missing
  *  config file (and DEFAULT_TASK_CONFIG's tierOrder). */
-export const BUDGET_TIERS = ["max", "full", "economy", "free", "async"] as const;
+export const BUDGET_TIERS = [
+	"max",
+	"full",
+	"economy",
+	"free",
+	"async",
+] as const;
 
 /** A budget MODE: "auto" or any loaded tier name. (Collapses to string —
- *  the dynamic tier vocabulary is the point.) */
-export type BudgetMode = "auto" | BudgetTier;
+ *  the dynamic tier vocabulary is the point.) The `BudgetTier & {}` keeps
+ *  "auto" a distinct literal for consumers that discriminate on it instead
+ *  of collapsing the whole union to `string`. */
+export type BudgetMode = "auto" | (BudgetTier & {});
 
 /** Ordered tier names of a tier table — file order for loaded configs,
  *  built-in order for the defaults. */
-export function tierNames(tiers: Record<BudgetTier, BudgetTierConfig>): string[] {
+export function tierNames(
+	tiers: Record<BudgetTier, BudgetTierConfig>,
+): string[] {
 	return Object.keys(tiers);
 }
 
@@ -76,7 +86,9 @@ export function findTier(
  * (Phase 11 — replaces the hardcoded BUDGET_MODES list in the schema
  * enum, the --task-budget flag choices, and the /task-budget command).
  */
-export function budgetModes(tiers: Record<BudgetTier, BudgetTierConfig>): string[] {
+export function budgetModes(
+	tiers: Record<BudgetTier, BudgetTierConfig>,
+): string[] {
 	return ["auto", ...tierNames(tiers)];
 }
 
@@ -85,8 +97,12 @@ export function budgetModes(tiers: Record<BudgetTier, BudgetTierConfig>): string
  * present (the shipped `[defaults] budget = "full"` shape), else the
  * first loaded tier (file order) — resolution always yields a usable tier.
  */
-export function defaultBudgetFor(tiers: Record<BudgetTier, BudgetTierConfig>): BudgetMode {
-	return DEFAULT_BUDGET_TIER in tiers ? DEFAULT_BUDGET_TIER : (tierNames(tiers)[0] ?? DEFAULT_BUDGET_TIER);
+export function defaultBudgetFor(
+	tiers: Record<BudgetTier, BudgetTierConfig>,
+): BudgetMode {
+	return DEFAULT_BUDGET_TIER in tiers
+		? DEFAULT_BUDGET_TIER
+		: (tierNames(tiers)[0] ?? DEFAULT_BUDGET_TIER);
 }
 
 export interface BudgetTierConfig {
@@ -127,8 +143,10 @@ export interface BudgetTierConfig {
 	 * (tools/service-tier.ts via PI_TASK_SERVICE_TIER). Flex never falls
 	 * back server-side — capacity errors are retried with exponential
 	 * backoff (worker.ts spawnWorkerSessionResilient). Unset → standard.
+	 * Optional AND nullable under exactOptionalPropertyTypes: the loader
+	 * threads a fallback tier's field through verbatim (`T | undefined`).
 	 */
-	serviceTier?: string;
+	serviceTier?: string | undefined;
 	/**
 	 * OpenRouter provider-routing pin for the tier's strong-model calls
 	 * (task.toml `[budget.*] provider_only`): endpoint slugs passed as
@@ -138,8 +156,10 @@ export interface BudgetTierConfig {
 	 * the excluded workhorse is never pinned (a mixed prewalk→swap session
 	 * runs a provider the pin doesn't serve). Unset → OpenRouter's default
 	 * routing. Batch lane unaffected (own endpoint, own request body).
+	 * Optional AND nullable under exactOptionalPropertyTypes (see
+	 * serviceTier).
 	 */
-	providerOnly?: string[];
+	providerOnly?: string[] | undefined;
 }
 
 // ─── Run pipeline SHAPES (the task's shape) ─────────────────────────
@@ -247,17 +267,31 @@ export function channelWatchdogWindows(channel: RunChannel): {
 		case "flex":
 			return { firstEventMs: 25 * 60_000, noProgressMs: 20 * 60_000 };
 		case "batch":
-			return { firstEventMs: Number.MAX_SAFE_INTEGER, noProgressMs: Number.MAX_SAFE_INTEGER };
-		default:
+			return {
+				firstEventMs: Number.MAX_SAFE_INTEGER,
+				noProgressMs: Number.MAX_SAFE_INTEGER,
+			};
+		case "sync":
 			return { firstEventMs: 3 * 60_000, noProgressMs: 10 * 60_000 };
 	}
 }
 
 /** Resolve a shape by name: the loaded set, else the built-ins, else the
  *  code shape. Never throws — a bad name degrades to the default. */
-export function resolveTaskShape(shapeName: string | undefined, shapes: Record<string, TaskShape>): TaskShape {
+export function resolveTaskShape(
+	shapeName: string | undefined,
+	shapes: Record<string, TaskShape>,
+): TaskShape {
 	const name = shapeName ?? "code";
-	return shapes[name] ?? DEFAULT_TASK_SHAPES[name] ?? DEFAULT_TASK_SHAPES.code;
+	// Both lookups are keyed by the same name and every table ships the
+	// "code" entry (DEFAULT_TASK_SHAPES is a const literal) — the chain can
+	// only fall through when the name itself is unknown, and "code" always
+	// resolves.
+	return (
+		shapes[name] ??
+		DEFAULT_TASK_SHAPES[name] ??
+		(DEFAULT_TASK_SHAPES.code as TaskShape)
+	);
 }
 
 /**
@@ -353,7 +387,6 @@ export const DEFAULT_BUDGET_TIERS: Record<BudgetTier, BudgetTierConfig> = {
 /** Default tier for auto/unset — the design doc's `[defaults] budget = "full"`. */
 export const DEFAULT_BUDGET_TIER: BudgetTier = "full";
 
-
 // ─── Batch lane (M2) ───────────────────────────────────────────────
 
 /**
@@ -422,7 +455,8 @@ export const DEFAULT_JOBS: Record<string, JobConfig> = {};
 export function loadJobs(sections: TomlSections): Record<string, JobConfig> {
 	const out: Record<string, JobConfig> = {};
 	const parent = sections["jobs"];
-	if (parent === undefined || typeof parent !== "object" || parent === null) return out;
+	if (parent === undefined || typeof parent !== "object" || parent === null)
+		return out;
 	for (const key of Object.keys(parent)) {
 		const section = subTable(sections, "jobs", key);
 		if (!section) continue;
@@ -623,7 +657,10 @@ type TomlValue = string | boolean | number | TomlValue[];
 type TomlTable = Record<string, TomlValue>;
 /** Parsed TOML: sections may hold scalars or nested tables ([budget.full]
  *  parses as { budget: { full: {...} } }). */
-type TomlSections = Record<string, TomlValue | Record<string, TomlValue | TomlTable>>;
+type TomlSections = Record<
+	string,
+	TomlValue | Record<string, TomlValue | TomlTable>
+>;
 
 const TOML_TO_JSON_SCRIPT =
 	"import tomllib, json, sys; print(json.dumps(tomllib.load(open(sys.argv[1], 'rb'))))";
@@ -636,15 +673,23 @@ function parseTomlFile(path: string): TomlSections {
 		// python traceback is replaced by our own one-line warning.
 		stdio: ["ignore", "pipe", "pipe"],
 	});
-	return JSON.parse(out);
+	return JSON.parse(out) as TomlSections;
 }
 
 /** Coerce a parsed section to a flat scalar/array table (undefined otherwise). */
-function asTable(value: TomlSections[string] | undefined): TomlTable | undefined {
-	if (value === undefined || typeof value !== "object" || value === null) return undefined;
+function asTable(
+	value: TomlSections[string] | undefined,
+): TomlTable | undefined {
+	if (value === undefined || typeof value !== "object" || value === null)
+		return undefined;
 	const out: TomlTable = {};
 	for (const [k, v] of Object.entries(value)) {
-		if (typeof v === "string" || typeof v === "boolean" || typeof v === "number" || Array.isArray(v)) {
+		if (
+			typeof v === "string" ||
+			typeof v === "boolean" ||
+			typeof v === "number" ||
+			Array.isArray(v)
+		) {
 			out[k] = v;
 		}
 	}
@@ -652,11 +697,17 @@ function asTable(value: TomlSections[string] | undefined): TomlTable | undefined
 }
 
 /** Nested table lookup: sections[section][key] as a flat scalar table. */
-function subTable(sections: TomlSections, section: string, key: string): TomlTable | undefined {
+function subTable(
+	sections: TomlSections,
+	section: string,
+	key: string,
+): TomlTable | undefined {
 	const parent = sections[section];
-	if (parent === undefined || typeof parent !== "object" || parent === null) return undefined;
+	if (parent === undefined || typeof parent !== "object" || parent === null)
+		return undefined;
 	const child = (parent as Record<string, TomlValue | TomlTable>)[key];
-	if (child === undefined || typeof child !== "object" || child === null) return undefined;
+	if (child === undefined || typeof child !== "object" || child === null)
+		return undefined;
 	return child as TomlTable;
 }
 
@@ -664,7 +715,10 @@ function str(section: TomlTable | undefined, key: string): string | undefined {
 	const v = section?.[key];
 	return typeof v === "string" ? v : undefined;
 }
-function bool(section: TomlTable | undefined, key: string): boolean | undefined {
+function bool(
+	section: TomlTable | undefined,
+	key: string,
+): boolean | undefined {
 	const v = section?.[key];
 	return typeof v === "boolean" ? v : undefined;
 }
@@ -674,7 +728,11 @@ function int(section: TomlTable | undefined, key: string): number | undefined {
 }
 /** Array of strings; a present-but-invalid value warns and yields [] (the
  *  per-field default) rather than partially loading. */
-function strArray(section: TomlTable | undefined, key: string, label: string): string[] {
+function strArray(
+	section: TomlTable | undefined,
+	key: string,
+	label: string,
+): string[] {
 	const v = section?.[key];
 	if (v === undefined) return [];
 	if (!Array.isArray(v) || v.some((item) => typeof item !== "string")) {
@@ -688,14 +746,24 @@ function warn(message: string): void {
 	console.warn(`task.toml: ${message}`);
 }
 
-function loadTier(sections: TomlSections, tier: BudgetTier): BudgetTierConfig | undefined {
+function loadTier(
+	sections: TomlSections,
+	tier: BudgetTier,
+): BudgetTierConfig | undefined {
 	const section = subTable(sections, "budget", tier);
 	if (section === undefined) return undefined;
 	// Per-key fallback: the built-in config for a tier of the same name, or
 	// the DEFAULT tier's built-in config for a custom tier (Phase 11 — any
 	// [budget.*] section is a usable tier, so custom tiers fall back to the
 	// default tier's template).
-	const fallback = DEFAULT_BUDGET_TIERS[tier] ?? DEFAULT_BUDGET_TIERS[DEFAULT_BUDGET_TIER];
+	const fallback =
+		DEFAULT_BUDGET_TIERS[tier] ?? DEFAULT_BUDGET_TIERS[DEFAULT_BUDGET_TIER];
+	// Unreachable: DEFAULT_BUDGET_TIERS always contains the DEFAULT tier
+	// (shipped table invariant); the guard only narrows the index type.
+	if (fallback === undefined)
+		throw new Error(
+			`built-in budget tier table missing ${DEFAULT_BUDGET_TIER}`,
+		);
 	const label = `[budget.${tier}]`;
 	const model = (key: string, fallbackValue: string): string => {
 		const raw = str(section, key);
@@ -718,7 +786,9 @@ function loadTier(sections: TomlSections, tier: BudgetTier): BudgetTierConfig | 
 	} else {
 		const value = prewalkRaw.trim();
 		if (value.length === 0) {
-			warn(`${label} prewalk_model is empty — using ${fallback.prewalkModel ?? "no prewalk"}`);
+			warn(
+				`${label} prewalk_model is empty — using ${fallback.prewalkModel ?? "no prewalk"}`,
+			);
 			prewalkModel = fallback.prewalkModel;
 		} else {
 			prewalkModel = value === executeModel ? null : value;
@@ -730,7 +800,9 @@ function loadTier(sections: TomlSections, tier: BudgetTier): BudgetTierConfig | 
 	const wallRaw = int(section, "wall_timeout_ms");
 	let wallTimeoutMs = fallback.wallTimeoutMs;
 	if (wallPresent && (wallRaw === undefined || wallRaw <= 0)) {
-		warn(`${label} wall_timeout_ms must be a positive integer (ms) — using ${wallTimeoutMs}`);
+		warn(
+			`${label} wall_timeout_ms must be a positive integer (ms) — using ${wallTimeoutMs}`,
+		);
 	} else if (wallRaw !== undefined) {
 		wallTimeoutMs = wallRaw;
 	}
@@ -744,7 +816,9 @@ function loadTier(sections: TomlSections, tier: BudgetTier): BudgetTierConfig | 
 		if ((VALID_SERVICE_TIERS as readonly string[]).includes(value)) {
 			serviceTier = value;
 		} else {
-			warn(`${label} service_tier must be one of ${VALID_SERVICE_TIERS.join(" | ")} — using ${serviceTier ?? "standard"}`);
+			warn(
+				`${label} service_tier must be one of ${VALID_SERVICE_TIERS.join(" | ")} — using ${serviceTier ?? "standard"}`,
+			);
 		}
 	}
 	// provider_only: OpenRouter endpoint slugs for provider.only (flex
@@ -752,11 +826,15 @@ function loadTier(sections: TomlSections, tier: BudgetTier): BudgetTierConfig | 
 	// entry that is empty/non-string → warn + fallback.
 	let providerOnly = fallback.providerOnly;
 	if (section?.["provider_only"] !== undefined) {
-		const parsed = strArray(section, "provider_only", label).filter((s) => s.trim().length > 0);
+		const parsed = strArray(section, "provider_only", label).filter(
+			(s) => s.trim().length > 0,
+		);
 		if (parsed.length > 0) {
 			providerOnly = parsed;
 		} else {
-			warn(`${label} provider_only must be a non-empty array of endpoint slugs — using ${providerOnly?.join(",") ?? "default routing"}`);
+			warn(
+				`${label} provider_only must be a non-empty array of endpoint slugs — using ${providerOnly?.join(",") ?? "default routing"}`,
+			);
 		}
 	}
 	// turn_budget: positive integer; absent → the fallback tier's budget;
@@ -765,14 +843,16 @@ function loadTier(sections: TomlSections, tier: BudgetTier): BudgetTierConfig | 
 	const turnRaw = int(section, "turn_budget");
 	let turnBudget = fallback.turnBudget;
 	if (turnPresent && (turnRaw === undefined || turnRaw <= 0)) {
-		warn(`${label} turn_budget must be a positive integer — using ${turnBudget}`);
+		warn(
+			`${label} turn_budget must be a positive integer — using ${turnBudget}`,
+		);
 	} else if (turnRaw !== undefined) {
 		turnBudget = turnRaw;
 	}
 	// shape: the run-pipeline shape name (a [shapes.*] section); absent →
 	// the fallback tier's; empty → warn + fallback.
 	const shapeRaw = str(section, "shape");
-	let shape = fallback.shape ?? "code";
+	let shape = fallback.shape;
 	if (shapeRaw !== undefined) {
 		const value = shapeRaw.trim();
 		if (value.length === 0) {
@@ -800,37 +880,62 @@ function loadTier(sections: TomlSections, tier: BudgetTier): BudgetTierConfig | 
  * warn-and-fallback to the built-in shape of the same name, else the
  * code shape. A missing table degrades silently to undefined (no shape).
  */
-function loadShape(sections: TomlSections, name: string): TaskShape | undefined {
+function loadShape(
+	sections: TomlSections,
+	name: string,
+): TaskShape | undefined {
 	const section = subTable(sections, "shapes", name);
 	if (section === undefined) return undefined;
 	const fallback = DEFAULT_TASK_SHAPES[name] ?? DEFAULT_TASK_SHAPES.code;
+	// Unreachable: DEFAULT_TASK_SHAPES always contains "code" (const literal
+	// invariant); the guard only narrows the index type.
+	if (fallback === undefined)
+		throw new Error("built-in shape table missing 'code'");
 	const label = `[shapes.${name}]`;
 	const b = (key: string, fallbackValue: boolean): boolean => {
 		const raw = bool(section, key);
 		if (raw === undefined) return fallbackValue;
 		return raw;
 	};
-	const slot = (key: string, fallbackValue: "execute" | "prewalk"): "execute" | "prewalk" => {
+	const slot = (
+		key: string,
+		fallbackValue: "execute" | "prewalk",
+	): "execute" | "prewalk" => {
 		const raw = str(section, key);
 		if (raw === "execute" || raw === "prewalk") return raw;
-		if (raw !== undefined) warn(`${label} ${key} must be "execute" | "prewalk" — using ${fallbackValue}`);
+		if (raw !== undefined)
+			warn(
+				`${label} ${key} must be "execute" | "prewalk" — using ${fallbackValue}`,
+			);
 		return fallbackValue;
 	};
 	// The REVIEW slot's full vocabulary includes "review" (the tier's review
 	// model — the code shape's default): the shipped [shapes.code] section
 	// declares it explicitly, so it must parse without a warning.
-	const reviewSlot = (key: string, fallbackValue: "review" | "prewalk"): "review" | "prewalk" => {
+	const reviewSlot = (
+		key: string,
+		fallbackValue: "review" | "prewalk",
+	): "review" | "prewalk" => {
 		const raw = str(section, key);
 		if (raw === "review" || raw === "prewalk") return raw;
-		if (raw !== undefined) warn(`${label} ${key} must be "review" | "prewalk" — using ${fallbackValue}`);
+		if (raw !== undefined)
+			warn(
+				`${label} ${key} must be "review" | "prewalk" — using ${fallbackValue}`,
+			);
 		return fallbackValue;
 	};
 	const channelRaw = str(section, "channel");
 	let channel: RunChannel = fallback.channel;
-	if (channelRaw === "sync" || channelRaw === "flex" || channelRaw === "batch") {
+	if (
+		channelRaw === "sync" ||
+		channelRaw === "flex" ||
+		channelRaw === "batch"
+	) {
 		channel = channelRaw;
 	} else if (channelRaw !== undefined) {
-		warn(`${label} channel must be "sync" | "flex" | "batch" — using ${channel}`);
+		warn(
+			`${label} channel must be "sync" | "flex" | "batch" — using ${channel}`,
+		);
 	}
 	return {
 		channel,
@@ -838,9 +943,11 @@ function loadShape(sections: TomlSections, name: string): TaskShape | undefined 
 		swap: b("swap", fallback.swap),
 		workModel: slot("work_model", fallback.workModel),
 		reviewModel: reviewSlot("review_model", fallback.reviewModel),
-		review: strArray(section, "review", label).length > 0 || section?.["review"] !== undefined
-			? strArray(section, "review", label)
-			: fallback.review,
+		review:
+			strArray(section, "review", label).length > 0 ||
+			section?.["review"] !== undefined
+				? strArray(section, "review", label)
+				: fallback.review,
 	};
 }
 
@@ -866,8 +973,13 @@ function loadSandbox(sections: TomlSections): SandboxConfig {
 	// network: "allow" | "isolate"; invalid → warn + "allow".
 	const networkRaw = str(section, "network");
 	let network: SandboxNetworkMode = fallback.network;
-	if (networkRaw !== undefined && !(SANDBOX_NETWORK_MODES as readonly string[]).includes(networkRaw)) {
-		warn(`${label} network "${networkRaw}" is not one of ${SANDBOX_NETWORK_MODES.join(" | ")} — using "allow"`);
+	if (
+		networkRaw !== undefined &&
+		!(SANDBOX_NETWORK_MODES as readonly string[]).includes(networkRaw)
+	) {
+		warn(
+			`${label} network "${networkRaw}" is not one of ${SANDBOX_NETWORK_MODES.join(" | ")} — using "allow"`,
+		);
 	} else if (networkRaw !== undefined) {
 		network = networkRaw as SandboxNetworkMode;
 	}
@@ -893,7 +1005,10 @@ function loadBatch(sections: TomlSections): BatchLaneConfig {
 	const modelPresent = section?.["model"] !== undefined;
 	const modelRaw = str(section, "model");
 	let model = fallback.model;
-	if (modelPresent && (modelRaw === undefined || modelRaw.trim().length === 0)) {
+	if (
+		modelPresent &&
+		(modelRaw === undefined || modelRaw.trim().length === 0)
+	) {
 		warn(`${label} model must be a non-empty string — using ${fallback.model}`);
 	} else if (modelRaw !== undefined) {
 		model = modelRaw.trim();
@@ -905,7 +1020,9 @@ function loadBatch(sections: TomlSections): BatchLaneConfig {
 		const present = section?.[key] !== undefined;
 		const raw = int(section, key);
 		if (present && (raw === undefined || raw <= 0)) {
-			warn(`${label} ${key} must be a positive integer (ms) — using ${fallbackValue}`);
+			warn(
+				`${label} ${key} must be a positive integer (ms) — using ${fallbackValue}`,
+			);
 			return fallbackValue;
 		}
 		return raw ?? fallbackValue;
@@ -945,7 +1062,9 @@ export function loadTaskConfig(configPath?: string): TaskConfig {
 			return structuredClone(DEFAULT_TASK_CONFIG);
 		}
 	} catch (err) {
-		warn(`unreadable/invalid TOML at ${path} — using built-in defaults (${(err as Error).message})`);
+		warn(
+			`unreadable/invalid TOML at ${path} — using built-in defaults (${(err as Error).message})`,
+		);
 		return structuredClone(DEFAULT_TASK_CONFIG);
 	}
 
@@ -953,7 +1072,11 @@ export function loadTaskConfig(configPath?: string): TaskConfig {
 	const tiers: Record<BudgetTier, BudgetTierConfig> = {};
 	const tierOrder: string[] = [];
 	const budgetParent = sections["budget"];
-	if (budgetParent !== undefined && typeof budgetParent === "object" && budgetParent !== null) {
+	if (
+		budgetParent !== undefined &&
+		typeof budgetParent === "object" &&
+		budgetParent !== null
+	) {
 		for (const key of Object.keys(budgetParent)) {
 			const loaded = loadTier(sections, key);
 			if (loaded !== undefined) {
@@ -966,7 +1089,11 @@ export function loadTaskConfig(configPath?: string): TaskConfig {
 	// same "no tier configuration" semantics as a missing file).
 	if (tierOrder.length === 0) {
 		for (const tier of BUDGET_TIERS) {
-			tiers[tier] = DEFAULT_BUDGET_TIERS[tier];
+			// Guard (not an assertion): DEFAULT_BUDGET_TIERS ships every
+			// BUDGET_TIERS name, so this never skips in practice.
+			const builtIn = DEFAULT_BUDGET_TIERS[tier];
+			if (builtIn === undefined) continue;
+			tiers[tier] = builtIn;
 			tierOrder.push(tier);
 		}
 	}
@@ -976,7 +1103,11 @@ export function loadTaskConfig(configPath?: string): TaskConfig {
 	// [shapes.*] → the built-in set.
 	const shapes: Record<string, TaskShape> = {};
 	const shapesParent = sections["shapes"];
-	if (shapesParent !== undefined && typeof shapesParent === "object" && shapesParent !== null) {
+	if (
+		shapesParent !== undefined &&
+		typeof shapesParent === "object" &&
+		shapesParent !== null
+	) {
 		for (const key of Object.keys(shapesParent)) {
 			const loaded = loadShape(sections, key);
 			if (loaded !== undefined) shapes[key] = loaded;
@@ -992,8 +1123,14 @@ export function loadTaskConfig(configPath?: string): TaskConfig {
 	const defaults = asTable(sections["defaults"]);
 	const budgetRaw = str(defaults, "budget");
 	let budget: BudgetMode = defaultBudgetFor(tiers);
-	if (budgetRaw !== undefined && budgetRaw !== "auto" && !(budgetRaw in tiers)) {
-		warn(`[defaults] budget "${budgetRaw}" is not one of ${budgetModes(tiers).join(" | ")} — using "${budget}"`);
+	if (
+		budgetRaw !== undefined &&
+		budgetRaw !== "auto" &&
+		!(budgetRaw in tiers)
+	) {
+		warn(
+			`[defaults] budget "${budgetRaw}" is not one of ${budgetModes(tiers).join(" | ")} — using "${budget}"`,
+		);
 	} else if (budgetRaw !== undefined) {
 		budget = budgetRaw;
 	}
@@ -1001,11 +1138,15 @@ export function loadTaskConfig(configPath?: string): TaskConfig {
 	// [defaults] prewalk_min_requirements: integer >= 0; invalid → warn +
 	// the built-in default (3). 0 effectively enables prewalk on every task
 	// (requirements.length >= 0) — the explicit opt-IN for old behavior.
-	const prewalkMinPresent = defaults?.["prewalk_min_requirements"] !== undefined;
+	const prewalkMinPresent =
+		defaults?.["prewalk_min_requirements"] !== undefined;
 	const prewalkMinRaw = int(defaults, "prewalk_min_requirements");
-	let prewalkMinRequirements = DEFAULT_TASK_CONFIG.defaults.prewalkMinRequirements;
+	let prewalkMinRequirements =
+		DEFAULT_TASK_CONFIG.defaults.prewalkMinRequirements;
 	if (prewalkMinPresent && (prewalkMinRaw === undefined || prewalkMinRaw < 0)) {
-		warn(`[defaults] prewalk_min_requirements must be an integer >= 0 — using ${prewalkMinRequirements}`);
+		warn(
+			`[defaults] prewalk_min_requirements must be an integer >= 0 — using ${prewalkMinRequirements}`,
+		);
 	} else if (prewalkMinRaw !== undefined) {
 		prewalkMinRequirements = prewalkMinRaw;
 	}
@@ -1026,7 +1167,9 @@ export function loadTaskConfig(configPath?: string): TaskConfig {
 	const toolRaw = int(defaults, "tool_timeout_ms");
 	let toolTimeoutMs = DEFAULT_TASK_CONFIG.defaults.toolTimeoutMs;
 	if (toolPresent && (toolRaw === undefined || toolRaw <= 0)) {
-		warn(`[defaults] tool_timeout_ms must be a positive integer (ms) — using ${toolTimeoutMs}`);
+		warn(
+			`[defaults] tool_timeout_ms must be a positive integer (ms) — using ${toolTimeoutMs}`,
+		);
 	} else if (toolRaw !== undefined) {
 		toolTimeoutMs = toolRaw;
 	}
@@ -1035,9 +1178,12 @@ export function loadTaskConfig(configPath?: string): TaskConfig {
 	// warn + the built-in 15-min default (mirrors tool_timeout_ms).
 	const verifyPresent = defaults?.["verification_timeout_ms"] !== undefined;
 	const verifyRaw = int(defaults, "verification_timeout_ms");
-	let verificationTimeoutMs = DEFAULT_TASK_CONFIG.defaults.verificationTimeoutMs;
+	let verificationTimeoutMs =
+		DEFAULT_TASK_CONFIG.defaults.verificationTimeoutMs;
 	if (verifyPresent && (verifyRaw === undefined || verifyRaw <= 0)) {
-		warn(`[defaults] verification_timeout_ms must be a positive integer (ms) — using ${verificationTimeoutMs}`);
+		warn(
+			`[defaults] verification_timeout_ms must be a positive integer (ms) — using ${verificationTimeoutMs}`,
+		);
 	} else if (verifyRaw !== undefined) {
 		verificationTimeoutMs = verifyRaw;
 	}
@@ -1048,8 +1194,13 @@ export function loadTaskConfig(configPath?: string): TaskConfig {
 	const reviewWallPresent = defaults?.["review_wall_timeout_ms"] !== undefined;
 	const reviewWallRaw = int(defaults, "review_wall_timeout_ms");
 	let reviewWallTimeoutMs = DEFAULT_TASK_CONFIG.defaults.reviewWallTimeoutMs;
-	if (reviewWallPresent && (reviewWallRaw === undefined || reviewWallRaw <= 0)) {
-		warn(`[defaults] review_wall_timeout_ms must be a positive integer (ms) — using ${reviewWallTimeoutMs}`);
+	if (
+		reviewWallPresent &&
+		(reviewWallRaw === undefined || reviewWallRaw <= 0)
+	) {
+		warn(
+			`[defaults] review_wall_timeout_ms must be a positive integer (ms) — using ${reviewWallTimeoutMs}`,
+		);
 	} else if (reviewWallRaw !== undefined) {
 		reviewWallTimeoutMs = reviewWallRaw;
 	}
@@ -1062,7 +1213,9 @@ export function loadTaskConfig(configPath?: string): TaskConfig {
 	const slimRaw = bool(defaults, "slim_worker_prompt");
 	let slimWorkerPrompt = DEFAULT_TASK_CONFIG.defaults.slimWorkerPrompt;
 	if (slimPresent && slimRaw === undefined) {
-		warn(`[defaults] slim_worker_prompt must be a boolean — using ${slimWorkerPrompt}`);
+		warn(
+			`[defaults] slim_worker_prompt must be a boolean — using ${slimWorkerPrompt}`,
+		);
 	} else if (slimRaw !== undefined) {
 		slimWorkerPrompt = slimRaw;
 	}
@@ -1074,7 +1227,9 @@ export function loadTaskConfig(configPath?: string): TaskConfig {
 	const nameRaw = str(defaults, "ai_author_name");
 	let aiAuthorName = DEFAULT_TASK_CONFIG.defaults.aiAuthorName;
 	if (namePresent && nameRaw === undefined) {
-		warn(`[defaults] ai_author_name must be a string — using "${aiAuthorName}"`);
+		warn(
+			`[defaults] ai_author_name must be a string — using "${aiAuthorName}"`,
+		);
 	} else if (nameRaw !== undefined) {
 		aiAuthorName = nameRaw;
 	}
@@ -1082,7 +1237,9 @@ export function loadTaskConfig(configPath?: string): TaskConfig {
 	const emailRaw = str(defaults, "ai_author_email");
 	let aiAuthorEmail = DEFAULT_TASK_CONFIG.defaults.aiAuthorEmail;
 	if (emailPresent && emailRaw === undefined) {
-		warn(`[defaults] ai_author_email must be a string — using "${aiAuthorEmail}"`);
+		warn(
+			`[defaults] ai_author_email must be a string — using "${aiAuthorEmail}"`,
+		);
 	} else if (emailRaw !== undefined) {
 		aiAuthorEmail = emailRaw;
 	}

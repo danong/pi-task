@@ -26,15 +26,17 @@ import type { LedgerStore } from "../ledger/store.ts";
 import type { DagNode } from "../workflow/dag.ts";
 import { validateSpec } from "../workflow/plan.ts";
 import { nodeSummaryFromReceipt } from "../workflow/receipts.ts";
-import type { CanonicalDag, CanonicalDagNode, NormalizedV2Node } from "./types.ts";
+import type {
+	CanonicalDag,
+	CanonicalDagNode,
+	NormalizedV2Node,
+} from "./types.ts";
 
 /**
  * The v2 node executor seam: one canonical node → verdict + receipt.
  * Omitted (undefined) = dry mode (the built-in deterministic executor).
  */
-export type V2NodeExecutor = (
-	node: CanonicalDagNode,
-) => Promise<{
+export type V2NodeExecutor = (node: CanonicalDagNode) => Promise<{
 	verdict: "completed" | "failed";
 	cause?: string | undefined;
 	receipt?: TaskReceipt | undefined;
@@ -45,12 +47,18 @@ export type V2NodeExecutor = (
  * synthetic commit id per requirement, matching the dry v1 executor's
  * convention so dry-side normalized shapes are comparable by design.
  */
-export function dryReceiptFor(nodeId: string, requirementCount: number): TaskReceipt {
+export function dryReceiptFor(
+	nodeId: string,
+	requirementCount: number,
+): TaskReceipt {
 	return TaskReceiptSchema.parse({
 		taskId: nodeId,
 		verdict: "ship",
 		filesChanged: requirementCount,
-		commitIds: Array.from({ length: requirementCount }, (_, i) => `${nodeId}-c${i + 1}`),
+		commitIds: Array.from(
+			{ length: requirementCount },
+			(_, i) => `${nodeId}-c${i + 1}`,
+		),
 		turns: 0,
 		costUsd: 0,
 		inputTokens: 0,
@@ -80,7 +88,11 @@ function schedulerVerdictToReceiptVerdict(
  */
 export function normalizeV2Node(options: {
 	node: CanonicalDagNode;
-	result: { id: string; verdict: "completed" | "failed" | "skipped"; cause?: string | undefined };
+	result: {
+		id: string;
+		verdict: "completed" | "failed" | "skipped";
+		cause?: string | undefined;
+	};
 	receipt?: TaskReceipt | undefined;
 }): NormalizedV2Node {
 	const spec = validateSpec(options.node.specMarkdown);
@@ -106,7 +118,10 @@ export function normalizeV2Node(options: {
 		verificationCommands: [...spec.verificationCommands],
 		verificationPassed: receipt.verdict === "ship",
 		commitCount: new Set(receipt.commitIds).size,
-		filesChanged: Array.from({ length: receipt.filesChanged }, (_, i) => `${options.node.id}-f${i + 1}`),
+		filesChanged: Array.from(
+			{ length: receipt.filesChanged },
+			(_, i) => `${options.node.id}-f${i + 1}`,
+		),
 		skipped: false,
 		costUsd: receipt.costUsd,
 		turns: receipt.turns,
@@ -146,7 +161,8 @@ export async function runV2Build(options: {
 		maxParallel: options.maxParallel,
 		runNode: async (nodeId) => {
 			const node = options.dag.nodes.find((n) => n.id === nodeId);
-			if (node === undefined) throw new Error(`runV2Build: unknown node "${nodeId}"`);
+			if (node === undefined)
+				throw new Error(`runV2Build: unknown node "${nodeId}"`);
 			if (options.executor === undefined) {
 				const spec = validateSpec(node.specMarkdown);
 				receipts.set(node.id, dryReceiptFor(node.id, spec.requirements.length));
@@ -163,9 +179,13 @@ export async function runV2Build(options: {
 		const node = options.dag.nodes.find((n) => n.id === id);
 		const result = schedule.results.get(id);
 		if (node === undefined || result === undefined) {
-			throw new Error(`runV2Build: scheduler produced no result for node "${id}"`);
+			throw new Error(
+				`runV2Build: scheduler produced no result for node "${id}"`,
+			);
 		}
-		normalized.push(normalizeV2Node({ node, result, receipt: receipts.get(id) }));
+		normalized.push(
+			normalizeV2Node({ node, result, receipt: receipts.get(id) }),
+		);
 	}
 	return normalized;
 }

@@ -36,9 +36,10 @@ import { BuildGateError, runBuild } from "../src/workflow/build.ts";
 const APPROVED_ID = "dag-approved";
 
 function specWith(dependsOn: string[]): string {
-	const deps = dependsOn.length === 0
-		? ""
-		: `\n## Depends On\n${dependsOn.map((d) => `- ${d}`).join("\n")}\n`;
+	const deps =
+		dependsOn.length === 0
+			? ""
+			: `\n## Depends On\n${dependsOn.map((d) => `- ${d}`).join("\n")}\n`;
 	return `## Goal\ng\n\n## Requirements\n- R1: x\n\n## Verification\n- true${deps}`;
 }
 
@@ -97,15 +98,25 @@ export async function runTests(): Promise<void> {
 			const { runNode, fake } = makeRunNode();
 			let caught: BuildGateError | undefined;
 			try {
-				await runBuild({ dagId: "never-planned", nodes: [node("a")], store, runNode });
+				await runBuild({
+					dagId: "never-planned",
+					nodes: [node("a")],
+					store,
+					runNode,
+				});
 			} catch (err) {
 				if (err instanceof BuildGateError) caught = err;
 			}
 			check(caught !== undefined, "unknown DAG refuses typed (BuildGateError)");
 			check(caught?.dagId === "never-planned", "typed error carries the dagId");
-			check(caught?.message.includes("plan --approve") === true,
-				`refusal guides to plan --approve, got ${caught?.message}`);
-			check(fake.invocations.length === 0, "nothing dispatched when refused at the gate");
+			check(
+				caught?.message.includes("plan --approve") === true,
+				`refusal guides to plan --approve, got ${caught?.message}`,
+			);
+			check(
+				fake.invocations.length === 0,
+				"nothing dispatched when refused at the gate",
+			);
 			store.close();
 		}
 
@@ -116,12 +127,19 @@ export async function runTests(): Promise<void> {
 			const { runNode, fake } = makeRunNode();
 			let caught: BuildGateError | undefined;
 			try {
-				await runBuild({ dagId: "dag-dry", nodes: [node("a")], store, runNode });
+				await runBuild({
+					dagId: "dag-dry",
+					nodes: [node("a")],
+					store,
+					runNode,
+				});
 			} catch (err) {
 				if (err instanceof BuildGateError) caught = err;
 			}
-			check(caught !== undefined && caught.message.includes("NOT approved"),
-				"dry-run DAG refuses typed with the not-approved guidance");
+			check(
+				caught !== undefined && caught.message.includes("NOT approved"),
+				"dry-run DAG refuses typed with the not-approved guidance",
+			);
 			check(fake.invocations.length === 0, "dry-run DAG dispatches nothing");
 			store.close();
 		}
@@ -164,22 +182,33 @@ export async function runTests(): Promise<void> {
 			fake.invocations.forEach((id, i) => pos.set(id, i));
 			check(fake.invocations.length === 5, "every node executes exactly once");
 			check(
-				pos.get("a")! < pos.get("b")! && pos.get("a")! < pos.get("c")! && pos.get("b")! < pos.get("c")!,
+				pos.get("a")! < pos.get("b")! &&
+					pos.get("a")! < pos.get("c")! &&
+					pos.get("b")! < pos.get("c")!,
 				`execution order is topological, got ${fake.invocations.join(",")}`,
 			);
-			check(result.results.get("c")?.verdict === "completed" &&
-				result.results.get("a")?.verdict === "completed",
-				"all results completed on a clean graph");
+			check(
+				result.results.get("c")?.verdict === "completed" &&
+					result.results.get("a")?.verdict === "completed",
+				"all results completed on a clean graph",
+			);
 
 			// R3: every node emits routed -> completed via the REAL gateway.
 			const events = gateway.listEvents();
 			for (const id of ["a", "b", "c", "d1", "d2"]) {
-				check(events.some((e) => e.type === "task.routed" && e.taskId === id),
-					`node ${id} emitted task.routed`);
-				check(events.some((e) => e.type === "task.completed" && e.taskId === id),
-					`node ${id} emitted task.completed`);
+				check(
+					events.some((e) => e.type === "task.routed" && e.taskId === id),
+					`node ${id} emitted task.routed`,
+				);
+				check(
+					events.some((e) => e.type === "task.completed" && e.taskId === id),
+					`node ${id} emitted task.completed`,
+				);
 			}
-			check(events.every((e) => e.type !== "task.failed"), "no failure events on a clean graph");
+			check(
+				events.every((e) => e.type !== "task.failed"),
+				"no failure events on a clean graph",
+			);
 			store.close();
 		}
 
@@ -198,10 +227,14 @@ export async function runTests(): Promise<void> {
 				runNode,
 				maxParallel: 3,
 			});
-			check(result.maxObservedConcurrency <= 3,
-				`fan-out limited to max_parallel=3, got ${result.maxObservedConcurrency}`);
-			check(result.maxObservedConcurrency > 1,
-				`ready-set actually runs concurrently, got ${result.maxObservedConcurrency}`);
+			check(
+				result.maxObservedConcurrency <= 3,
+				`fan-out limited to max_parallel=3, got ${result.maxObservedConcurrency}`,
+			);
+			check(
+				result.maxObservedConcurrency > 1,
+				`ready-set actually runs concurrently, got ${result.maxObservedConcurrency}`,
+			);
 			check(fake.invocations.length === 6, "all six roots still executed");
 
 			// Never above the DAG's declared ceiling even with a bigger budget.
@@ -212,8 +245,10 @@ export async function runTests(): Promise<void> {
 				runNode,
 				maxParallel: 999,
 			});
-			check(capped.maxObservedConcurrency <= 6,
-				`fan-out never exceeds the ready-set size, got ${capped.maxObservedConcurrency}`);
+			check(
+				capped.maxObservedConcurrency <= 6,
+				`fan-out never exceeds the ready-set size, got ${capped.maxObservedConcurrency}`,
+			);
 
 			// Invalid budgets degrade to a sane default instead of hanging.
 			const degenerate = await runBuild({
@@ -223,7 +258,10 @@ export async function runTests(): Promise<void> {
 				runNode,
 				maxParallel: -2,
 			});
-			check(degenerate.results.size === 6, "non-positive max_parallel degrades to the default and completes");
+			check(
+				degenerate.results.size === 6,
+				"non-positive max_parallel degrades to the default and completes",
+			);
 			store.close();
 		}
 
@@ -247,35 +285,66 @@ export async function runTests(): Promise<void> {
 				gateway,
 			});
 
-			check(result.results.get("a")?.verdict === "failed", "the scripted node failed");
-			check(result.results.get("b")?.verdict === "skipped", "direct dependent skipped");
-			check(result.results.get("c")?.verdict === "skipped", "transitive dependent skipped");
-			check(result.results.get("independent")?.verdict === "completed",
-				"independent branch unaffected by short-circuit");
+			check(
+				result.results.get("a")?.verdict === "failed",
+				"the scripted node failed",
+			);
+			check(
+				result.results.get("b")?.verdict === "skipped",
+				"direct dependent skipped",
+			);
+			check(
+				result.results.get("c")?.verdict === "skipped",
+				"transitive dependent skipped",
+			);
+			check(
+				result.results.get("independent")?.verdict === "completed",
+				"independent branch unaffected by short-circuit",
+			);
 
 			// Skipped dependents NEVER spawn.
-			check(!fake.invocations.includes("b") && !fake.invocations.includes("c"),
-				`skipped dependents never spawn, invocations were ${fake.invocations.join(",")}`);
+			check(
+				!fake.invocations.includes("b") && !fake.invocations.includes("c"),
+				`skipped dependents never spawn, invocations were ${fake.invocations.join(",")}`,
+			);
 
 			// Typed skip cause names the blocker.
-			check(result.results.get("b")?.cause?.includes('"a"') === true,
-				`skip cause names the failed dependency, got ${result.results.get("b")?.cause}`);
+			check(
+				result.results.get("b")?.cause?.includes('"a"') === true,
+				`skip cause names the failed dependency, got ${result.results.get("b")?.cause}`,
+			);
 
 			// Every node has routed + a terminal event, including skips.
 			const events = gateway.listEvents();
 			for (const id of ["a", "b", "c", "independent"]) {
-				check(events.some((e) => e.type === "task.routed" && e.taskId === id),
-					`node ${id} emitted task.routed`);
+				check(
+					events.some((e) => e.type === "task.routed" && e.taskId === id),
+					`node ${id} emitted task.routed`,
+				);
 			}
-			check(events.some((e) => e.type === "task.completed" && e.taskId === "independent"),
-				"completed node emits task.completed");
+			check(
+				events.some(
+					(e) => e.type === "task.completed" && e.taskId === "independent",
+				),
+				"completed node emits task.completed",
+			);
 			for (const id of ["a", "b", "c"]) {
-				const terminal = events.find((e) => e.type === "task.failed" && e.taskId === id);
-				check(terminal !== undefined, `node ${id} has a terminal task.failed event`);
+				const terminal = events.find(
+					(e) => e.type === "task.failed" && e.taskId === id,
+				);
+				check(
+					terminal !== undefined,
+					`node ${id} has a terminal task.failed event`,
+				);
 			}
-			const skipEvent = events.find((e) => e.type === "task.failed" && e.taskId === "b");
-			check(skipEvent?.type === "task.failed" && skipEvent.detail.cause.includes("skipped"),
-				"skipped dependent's terminal event carries the skipped cause");
+			const skipEvent = events.find(
+				(e) => e.type === "task.failed" && e.taskId === "b",
+			);
+			check(
+				skipEvent?.type === "task.failed" &&
+					skipEvent.detail.cause.includes("skipped"),
+				"skipped dependent's terminal event carries the skipped cause",
+			);
 			store.close();
 		}
 	} finally {
@@ -283,16 +352,23 @@ export async function runTests(): Promise<void> {
 	}
 
 	if (errors.length > 0) {
-		throw new Error("test-workflow-build failed:\n  ✗ " + errors.join("\n  ✗ "));
+		throw new Error(
+			"test-workflow-build failed:\n  ✗ " + errors.join("\n  ✗ "),
+		);
 	}
-	console.log("✓ workflow-build: gate refusal, topological order, fan-out limiting, dependent short-circuit");
+	console.log(
+		"✓ workflow-build: gate refusal, topological order, fan-out limiting, dependent short-circuit",
+	);
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (
+	process.argv[1] &&
+	import.meta.url === pathToFileURL(process.argv[1]).href
+) {
 	runTests()
 		.then(() => process.exit(0))
 		.catch((err) => {
-			console.error(err.message ?? err);
+			console.error(err instanceof Error ? err.message : String(err));
 			process.exit(1);
 		});
 }

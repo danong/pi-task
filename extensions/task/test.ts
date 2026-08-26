@@ -84,6 +84,9 @@ async function main(): Promise<void> {
 }
 
 main().catch((err) => {
-	console.error("TEST RUNNER FAILED:", err.message ?? err);
+	console.error(
+		"TEST RUNNER FAILED:",
+		err instanceof Error ? err.message : err,
+	);
 	process.exit(1);
 });

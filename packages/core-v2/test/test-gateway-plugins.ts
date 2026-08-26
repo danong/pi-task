@@ -28,7 +28,11 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import type { ExecutionBundle } from "../src/contracts/index.ts";
-import type { TaskLedgerRow, TaskLifecycleEvent, TaskPlugin } from "../src/contracts/task-plugin.ts";
+import type {
+	TaskLedgerRow,
+	TaskLifecycleEvent,
+	TaskPlugin,
+} from "../src/contracts/task-plugin.ts";
 import { InMemoryTaskGateway } from "../src/gateway/index.ts";
 import {
 	emitLifecycleEventToPlugins,
@@ -44,7 +48,12 @@ import {
 } from "../src/plugins/loader.ts";
 import { runTask } from "../src/daemon/task-runner.ts";
 import { LedgerStore } from "../src/ledger/store.ts";
-import type { SessionHandle, SessionHost, SessionHostConfig, SessionHostEvent } from "../src/sessions/host.ts";
+import type {
+	SessionHandle,
+	SessionHost,
+	SessionHostConfig,
+	SessionHostEvent,
+} from "../src/sessions/host.ts";
 
 const BUNDLE_SPEC = `## Goal
 Create a greeting file.
@@ -90,29 +99,39 @@ class CapturingHandle implements SessionHandle {
 		private readonly spawns: string[],
 	) {}
 	get result() {
-		return { files_changed: [this.file], summary: "done", commit_ids: ["c1"], deviations: [] };
+		return {
+			files_changed: [this.file],
+			summary: "done",
+			commit_ids: ["c1"],
+			deviations: [],
+		};
 	}
 	subscribe(listener: (event: SessionHostEvent) => void): () => void {
 		listener({ type: "turnStart" });
 		listener({ type: "yielded", payload: this.result });
 		return () => undefined;
 	}
-	async prompt(): Promise<void> {
+	prompt(): Promise<void> {
 		writeFileSync(this.file, "hi", "utf-8");
+		return Promise.resolve();
 	}
-	async abort(): Promise<void> {}
-	async stats() {
-		return structuredClone(FAKE_SESSION_STATS);
+	abort(): Promise<void> {
+		return Promise.resolve();
 	}
-	async setModel(): Promise<void> {}
+	stats() {
+		return Promise.resolve(structuredClone(FAKE_SESSION_STATS));
+	}
+	setModel(): Promise<void> {
+		return Promise.resolve();
+	}
 	close(): void {}
 }
 
 function capturingHost(file: string, spawns: string[]): SessionHost {
 	return {
-		spawn: async (config: SessionHostConfig) => {
+		spawn: (config: SessionHostConfig) => {
 			spawns.push(config.systemPrompt);
-			return new CapturingHandle(file, spawns);
+			return Promise.resolve(new CapturingHandle(file, spawns));
 		},
 	};
 }
@@ -139,8 +158,11 @@ export async function runTests(): Promise<void> {
 
 		// ─── Loader typed failures (R2) ──────────────────────────────────
 		{
-			check(JSON.stringify(readPluginPathsFromToml(join(dir, "nope.toml"), dir)) === "[]",
-				"missing task.toml yields no plugins");
+			check(
+				JSON.stringify(readPluginPathsFromToml(join(dir, "nope.toml"), dir)) ===
+					"[]",
+				"missing task.toml yields no plugins",
+			);
 
 			writeFileSync(join(dir, "bad.toml"), "[plugins\npaths = []", "utf-8");
 			let err: unknown;
@@ -149,20 +171,30 @@ export async function runTests(): Promise<void> {
 			} catch (e) {
 				err = e;
 			}
-			check(err instanceof PluginLoadError && err.code === "invalid_config",
-				"malformed TOML fails typed (invalid_config)");
-			check(err instanceof PluginLoadError && err.guidance.length > 0,
-				"invalid_config carries recoverable guidance");
+			check(
+				err instanceof PluginLoadError && err.code === "invalid_config",
+				"malformed TOML fails typed (invalid_config)",
+			);
+			check(
+				err instanceof PluginLoadError && err.guidance.length > 0,
+				"invalid_config carries recoverable guidance",
+			);
 
-			writeFileSync(join(dir, "shape.toml"), '[plugins]\npaths = "not-an-array"\n', "utf-8");
+			writeFileSync(
+				join(dir, "shape.toml"),
+				'[plugins]\npaths = "not-an-array"\n',
+				"utf-8",
+			);
 			err = undefined;
 			try {
 				await loadPluginsFromToml(join(dir, "shape.toml"), dir);
 			} catch (e) {
 				err = e;
 			}
-			check(err instanceof PluginLoadError && err.code === "invalid_config",
-				"[plugins] with a non-array paths fails typed");
+			check(
+				err instanceof PluginLoadError && err.code === "invalid_config",
+				"[plugins] with a non-array paths fails typed",
+			);
 
 			const relToml = join(dir, "rel.toml");
 			writeFileSync(relToml, '[plugins]\npaths = ["./ghost.mjs"]\n', "utf-8");
@@ -172,10 +204,15 @@ export async function runTests(): Promise<void> {
 			} catch (e) {
 				err = e;
 			}
-			check(err instanceof PluginLoadError && err.code === "not_found",
-				"a declared-but-missing plugin file fails typed (not_found)");
-			check(err instanceof PluginLoadError && err.path === join(dir, "proj", "ghost.mjs"),
-				"relative [plugins] paths resolve against cwd");
+			check(
+				err instanceof PluginLoadError && err.code === "not_found",
+				"a declared-but-missing plugin file fails typed (not_found)",
+			);
+			check(
+				err instanceof PluginLoadError &&
+					err.path === join(dir, "proj", "ghost.mjs"),
+				"relative [plugins] paths resolve against cwd",
+			);
 
 			const ghost = join(dir, "ghost.mjs");
 			err = undefined;
@@ -184,7 +221,10 @@ export async function runTests(): Promise<void> {
 			} catch (e) {
 				err = e;
 			}
-			check(err instanceof PluginLoadError && err.code === "not_found", "direct import of a missing file fails typed");
+			check(
+				err instanceof PluginLoadError && err.code === "not_found",
+				"direct import of a missing file fails typed",
+			);
 
 			const badExport = join(dir, "bad-export.mjs");
 			writeFileSync(badExport, "export default 42;\n", "utf-8");
@@ -194,105 +234,167 @@ export async function runTests(): Promise<void> {
 			} catch (e) {
 				err = e;
 			}
-			check(err instanceof PluginLoadError && err.code === "invalid_export",
-				"a default export without a string name fails typed (invalid_export)");
+			check(
+				err instanceof PluginLoadError && err.code === "invalid_export",
+				"a default export without a string name fails typed (invalid_export)",
+			);
 
 			const boom = join(dir, "boom.mjs");
-			writeFileSync(boom, "throw new Error('module-level explosion');\n", "utf-8");
+			writeFileSync(
+				boom,
+				"throw new Error('module-level explosion');\n",
+				"utf-8",
+			);
 			err = undefined;
 			try {
 				await importPluginAt(boom);
 			} catch (e) {
 				err = e;
 			}
-			check(err instanceof PluginLoadError && err.code === "import_failed",
-				"a module that throws on import fails typed (import_failed)");
+			check(
+				err instanceof PluginLoadError && err.code === "import_failed",
+				"a module that throws on import fails typed (import_failed)",
+			);
 
 			// A toml listing BOTH a good and a bad plugin fails typed rather
 			// than silently skipping the bad entry.
 			const good = join(dir, "good.mjs");
 			writeFileSync(good, 'export default { name: "good" };\n', "utf-8");
-			writeFileSync(relToml, `[plugins]\npaths = ["${JSON.stringify(good).slice(1, -1)}", "./ghost.mjs"]\n`, "utf-8");
+			writeFileSync(
+				relToml,
+				`[plugins]\npaths = ["${JSON.stringify(good).slice(1, -1)}", "./ghost.mjs"]\n`,
+				"utf-8",
+			);
 			err = undefined;
 			try {
 				await loadPluginsFromToml(relToml, dir);
 			} catch (e) {
 				err = e;
 			}
-			check(err instanceof PluginLoadError, "one bad path among good ones fails typed (never silent skip)");
+			check(
+				err instanceof PluginLoadError,
+				"one bad path among good ones fails typed (never silent skip)",
+			);
 		}
 
 		// ─── Valid load round-trip over REAL plugin files (FR-11) ────────
 		{
 			const mjs = join(dir, "real.mjs");
-			writeFileSync(mjs, [
-				"export default {",
-				'  name: "real-mjs-plugin",',
-				"  async transformExecutionBundle(bundle) {",
-				'    return { ...bundle, goal: bundle.goal + "|mjs" };',
-				"  },",
-				"};",
-			].join("\n"), "utf-8");
+			writeFileSync(
+				mjs,
+				[
+					"export default {",
+					'  name: "real-mjs-plugin",',
+					"  async transformExecutionBundle(bundle) {",
+					'    return { ...bundle, goal: bundle.goal + "|mjs" };',
+					"  },",
+					"};",
+				].join("\n"),
+				"utf-8",
+			);
 			const mjsPlugin = await importPluginAt(mjs);
-			check(mjsPlugin.name === "real-mjs-plugin", ".mjs plugin loads with its declared name");
+			check(
+				mjsPlugin.name === "real-mjs-plugin",
+				".mjs plugin loads with its declared name",
+			);
 			const out = await mjsPlugin.transformExecutionBundle!(makeBundle());
-			check(out.goal === "base|mjs", ".mjs plugin hook executes on a real bundle");
+			check(
+				out.goal === "base|mjs",
+				".mjs plugin hook executes on a real bundle",
+			);
 
 			const ts = join(dir, "real.ts");
-			writeFileSync(ts, [
-				"import type { TaskPlugin } from '../src/contracts/task-plugin.ts';",
-				"const plugin: TaskPlugin = {",
-				'  name: "real-ts-plugin",',
-				"  async transformExecutionBundle(bundle) {",
-				'    return { ...bundle, goal: bundle.goal + "|ts" };',
-				"  },",
-				"};",
-				"export default plugin;",
-			].join("\n"), "utf-8");
+			writeFileSync(
+				ts,
+				[
+					"import type { TaskPlugin } from '../src/contracts/task-plugin.ts';",
+					"const plugin: TaskPlugin = {",
+					'  name: "real-ts-plugin",',
+					"  async transformExecutionBundle(bundle) {",
+					'    return { ...bundle, goal: bundle.goal + "|ts" };',
+					"  },",
+					"};",
+					"export default plugin;",
+				].join("\n"),
+				"utf-8",
+			);
 			const tsPlugin = await importPluginAt(ts);
-			check(tsPlugin.name === "real-ts-plugin", ".ts plugin loads through the same loader");
+			check(
+				tsPlugin.name === "real-ts-plugin",
+				".ts plugin loads through the same loader",
+			);
 			const tsOut = await tsPlugin.transformExecutionBundle!(makeBundle());
-			check(tsOut.goal === "base|ts", ".ts plugin hook executes on a real bundle");
+			check(
+				tsOut.goal === "base|ts",
+				".ts plugin hook executes on a real bundle",
+			);
 
 			const roundtrip = await loadPluginsFromToml(
 				(() => {
 					const p = join(dir, "ok.toml");
-					writeFileSync(p, `[plugins]\npaths = ["${JSON.stringify(mjs).slice(1, -1)}"]\n`, "utf-8");
+					writeFileSync(
+						p,
+						`[plugins]\npaths = ["${JSON.stringify(mjs).slice(1, -1)}"]\n`,
+						"utf-8",
+					);
 					return p;
 				})(),
 				dir,
 			);
-			check(roundtrip.length === 1 && roundtrip[0]!.name === "real-mjs-plugin",
-				"loadPluginsFromToml round-trips a valid configuration");
+			check(
+				roundtrip.length === 1 && roundtrip[0]!.name === "real-mjs-plugin",
+				"loadPluginsFromToml round-trips a valid configuration",
+			);
 		}
 
 		// ─── Transform ordering + schema surfacing (R3) ──────────────────
 		{
 			const p1: TaskPlugin = {
 				name: "first",
-				transformExecutionBundle: async (b) => ({ ...b, goal: `${b.goal}|p1` }),
+				transformExecutionBundle: (b) =>
+					Promise.resolve({ ...b, goal: `${b.goal}|p1` }),
 			};
 			const p2: TaskPlugin = {
 				name: "second",
-				transformExecutionBundle: async (b) => ({ ...b, goal: `${b.goal}|p2` }),
+				transformExecutionBundle: (b) =>
+					Promise.resolve({ ...b, goal: `${b.goal}|p2` }),
 			};
-			const ordered = await transformExecutionBundleThrough(makeBundle(), [p1, p2]);
-			check(ordered.goal === "base|p1|p2", "transforms compose sequentially in declaration order");
+			const ordered = await transformExecutionBundleThrough(makeBundle(), [
+				p1,
+				p2,
+			]);
+			check(
+				ordered.goal === "base|p1|p2",
+				"transforms compose sequentially in declaration order",
+			);
 
 			// Schema surfacing: a plugin cannot inject an invalid bundle.
 			const sinkErrors: unknown[] = [];
 			const invalid: TaskPlugin = {
 				name: "invalid-injector",
-				transformExecutionBundle: async () => ({ ...(makeBundle()), taskId: 42 } as unknown as ExecutionBundle),
+				transformExecutionBundle: () =>
+					Promise.resolve({
+						...makeBundle(),
+						taskId: 42,
+					} as unknown as ExecutionBundle),
 			};
-			const guarded = await transformExecutionBundleThrough(makeBundle(), [invalid], {
-				onHookError: (e) => sinkErrors.push(e),
-			});
-			check(guarded.taskId === "t1" && guarded.goal === "base",
-				"an invalid transformed bundle is rejected and the untransformed value proceeds");
-			check(sinkErrors.length === 1 && String(sinkErrors[0]).includes("invalid-injector")
-				&& String(sinkErrors[0]).includes("transformExecutionBundle"),
-				"the rejection is attributed to the plugin name + hook through the sink");
+			const guarded = await transformExecutionBundleThrough(
+				makeBundle(),
+				[invalid],
+				{
+					onHookError: (e) => sinkErrors.push(e),
+				},
+			);
+			check(
+				guarded.taskId === "t1" && guarded.goal === "base",
+				"an invalid transformed bundle is rejected and the untransformed value proceeds",
+			);
+			check(
+				sinkErrors.length === 1 &&
+					String(sinkErrors[0]).includes("invalid-injector") &&
+					String(sinkErrors[0]).includes("transformExecutionBundle"),
+				"the rejection is attributed to the plugin name + hook through the sink",
+			);
 		}
 
 		// ─── Throw isolation (R4) ────────────────────────────────────────
@@ -313,25 +415,49 @@ export async function runTests(): Promise<void> {
 				name: "after",
 				onLifecycleEvent: (e: TaskLifecycleEvent) => seen.push(e.type),
 			};
-			emitLifecycleEventToPlugins({ type: "task.queued", taskId: "t" }, [throwing, after], {
-				onHookError: () => {},
-			});
-			check(JSON.stringify(seen) === JSON.stringify(["task.queued"]),
-				"a throwing onLifecycleEvent never blocks later plugins");
+			emitLifecycleEventToPlugins(
+				{ type: "task.queued", taskId: "t" },
+				[throwing, after],
+				{
+					onHookError: () => {},
+				},
+			);
+			check(
+				JSON.stringify(seen) === JSON.stringify(["task.queued"]),
+				"a throwing onLifecycleEvent never blocks later plugins",
+			);
 
 			const survived = await transformHandoffThrough(
-				{ taskId: "t", uncommittedDiffSummary: "d", filesTouched: ["a.ts"], verificationFailures: [] },
+				{
+					taskId: "t",
+					uncommittedDiffSummary: "d",
+					filesTouched: ["a.ts"],
+					verificationFailures: [],
+				},
 				[
 					rejecting,
-					{ name: "tagger", transformHandoff: async (h) => ({ ...h, filesTouched: [...h.filesTouched, "late.ts"] }) },
+					{
+						name: "tagger",
+						transformHandoff: (h) =>
+							Promise.resolve({
+								...h,
+								filesTouched: [...h.filesTouched, "late.ts"],
+							}),
+					},
 				],
 				{ onHookError: (e) => sinkErrors.push(e) },
 			);
-			check(JSON.stringify(survived.filesTouched) === JSON.stringify(["a.ts", "late.ts"]),
-				"a rejecting transformHandoff yields the untransformed value to later plugins");
-			check(sinkErrors.length === 1 && String(sinkErrors[0]).includes("rejector")
-				&& String(sinkErrors[0]).includes("transformHandoff"),
-				"hook failures are attributed (name + hook) through the configured sink");
+			check(
+				JSON.stringify(survived.filesTouched) ===
+					JSON.stringify(["a.ts", "late.ts"]),
+				"a rejecting transformHandoff yields the untransformed value to later plugins",
+			);
+			check(
+				sinkErrors.length === 1 &&
+					String(sinkErrors[0]).includes("rejector") &&
+					String(sinkErrors[0]).includes("transformHandoff"),
+				"hook failures are attributed (name + hook) through the configured sink",
+			);
 
 			// registerTriggers isolation through the real gateway.
 			const gw = new InMemoryTaskGateway({
@@ -353,11 +479,18 @@ export async function runTests(): Promise<void> {
 					throw new Error("register boom");
 				},
 			};
-			registerPluginTriggers((p) => p.registerTriggers!(gw), [brokenTrigger, triggerPlugin], {
-				onHookError: () => {},
-			});
+			registerPluginTriggers(
+				(p) => p.registerTriggers!(gw),
+				[brokenTrigger, triggerPlugin],
+				{
+					onHookError: () => {},
+				},
+			);
 			gw.emit({ type: "task.queued", taskId: "t1" });
-			check(triggered, "registerTriggers wires subscriptions through the real gateway");
+			check(
+				triggered,
+				"registerTriggers wires subscriptions through the real gateway",
+			);
 			void gw.on; // keep the unsubscribe surface referenced for typing clarity
 		}
 
@@ -375,18 +508,19 @@ export async function runTests(): Promise<void> {
 			const spawns: string[] = [];
 			const tagging: TaskPlugin = {
 				name: "bundle-tagger",
-				transformExecutionBundle: async (b) => ({
-					...b,
-					targetFiles: [
-						...b.targetFiles,
-						{
-							hostPath: "plugin-marker.ts",
-							astOutline: "PLUGIN_MARKER_OUTLINE",
-							outlineTruncated: false,
-							outlineCursor: null,
-						},
-					],
-				}),
+				transformExecutionBundle: (b) =>
+					Promise.resolve({
+						...b,
+						targetFiles: [
+							...b.targetFiles,
+							{
+								hostPath: "plugin-marker.ts",
+								astOutline: "PLUGIN_MARKER_OUTLINE",
+								outlineTruncated: false,
+								outlineCursor: null,
+							},
+						],
+					}),
 			};
 			const result = await runTask({
 				specMarkdown: BUNDLE_SPEC,
@@ -398,10 +532,18 @@ export async function runTests(): Promise<void> {
 				bundle: { targetPaths: [seed] },
 				plugins: [tagging],
 			});
-			check(result.receipt.bundleHit !== null, "the routed bundle run grounded on a bundle");
-			check(spawns.length === 1 && spawns[0]!.includes("plugin-marker.ts"),
-				"transformExecutionBundle ran BEFORE grounding attached (prompt prefix carries the transformed bundle)");
-			check(!spawns[0]!.includes("base|"), "the grounding section stays deterministic over the transformed bundle");
+			check(
+				result.receipt.bundleHit !== null,
+				"the routed bundle run grounded on a bundle",
+			);
+			check(
+				spawns.length === 1 && spawns[0]!.includes("plugin-marker.ts"),
+				"transformExecutionBundle ran BEFORE grounding attached (prompt prefix carries the transformed bundle)",
+			);
+			check(
+				!spawns[0]!.includes("base|"),
+				"the grounding section stays deterministic over the transformed bundle",
+			);
 
 			// A THROWING bundle transformer must not break the run nor leak
 			// its payload into the prompt prefix. Fresh ledger: run 1's miss
@@ -413,7 +555,8 @@ export async function runTests(): Promise<void> {
 			store2.close();
 			const broken: TaskPlugin = {
 				name: "broken-transformer",
-				transformExecutionBundle: () => Promise.reject(new Error("bundle boom")),
+				transformExecutionBundle: () =>
+					Promise.reject(new Error("bundle boom")),
 			};
 			const result2 = await runTask({
 				specMarkdown: BUNDLE_SPEC,
@@ -425,9 +568,14 @@ export async function runTests(): Promise<void> {
 				bundle: { targetPaths: [seed] },
 				plugins: [broken],
 			});
-			check(result2.receipt.bundleHit !== null, "a throwing transformer degrades to the built bundle");
-			check(spawns2.length === 1 && !spawns2[0]!.includes("plugin-marker.ts"),
-				"the untransformed bundle grounds the prompt when a transformer throws");
+			check(
+				result2.receipt.bundleHit !== null,
+				"a throwing transformer degrades to the built bundle",
+			);
+			check(
+				spawns2.length === 1 && !spawns2[0]!.includes("plugin-marker.ts"),
+				"the untransformed bundle grounds the prompt when a transformer throws",
+			);
 		}
 
 		// ─── Daemon wiring: HandoffBundle transform before retry ─────────
@@ -438,7 +586,11 @@ export async function runTests(): Promise<void> {
 			const spawns: string[] = [];
 			const tagging: TaskPlugin = {
 				name: "handoff-tagger",
-				transformHandoff: async (h) => ({ ...h, filesTouched: [...h.filesTouched, "plugin-added.ts"] }),
+				transformHandoff: (h) =>
+					Promise.resolve({
+						...h,
+						filesTouched: [...h.filesTouched, "plugin-added.ts"],
+					}),
 			};
 			const result = await runTask({
 				specMarkdown: FAILING_VERIFY_SPEC,
@@ -449,12 +601,22 @@ export async function runTests(): Promise<void> {
 				host: capturingHost(join(workDir, "hello.txt"), spawns),
 				plugins: [tagging],
 			});
-			check(result.verificationPassed === false, "the failing-verification leg failed as scripted");
-			check(result.handoff !== undefined, "a failed verification produces a retry HandoffBundle");
-			check(result.handoff?.filesTouched.includes("plugin-added.ts") === true,
-				"transformHandoff ran BEFORE the retry consumes the handoff");
-			check(result.handoff?.verificationFailures.length === 1,
-				"the transformed handoff keeps the schema-required failure records");
+			check(
+				result.verificationPassed === false,
+				"the failing-verification leg failed as scripted",
+			);
+			check(
+				result.handoff !== undefined,
+				"a failed verification produces a retry HandoffBundle",
+			);
+			check(
+				result.handoff?.filesTouched.includes("plugin-added.ts") === true,
+				"transformHandoff ran BEFORE the retry consumes the handoff",
+			);
+			check(
+				result.handoff?.verificationFailures.length === 1,
+				"the transformed handoff keeps the schema-required failure records",
+			);
 		}
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
@@ -463,13 +625,18 @@ export async function runTests(): Promise<void> {
 	if (errors.length > 0) {
 		throw new Error(`gateway-plugins tests failed:\n  ${errors.join("\n  ")}`);
 	}
-	console.log("✓ gateway-plugins: typed loader failures, real-path round-trips, transform ordering, schema surfacing, throw isolation, daemon bundle+handoff wiring");
+	console.log(
+		"✓ gateway-plugins: typed loader failures, real-path round-trips, transform ordering, schema surfacing, throw isolation, daemon bundle+handoff wiring",
+	);
 }
 
 const invokedAs = process.argv[1];
-if (invokedAs !== undefined && import.meta.url === pathToFileURL(invokedAs).href) {
-	runTests().catch((err) => {
-		console.error(err.message ?? err);
+if (
+	invokedAs !== undefined &&
+	import.meta.url === pathToFileURL(invokedAs).href
+) {
+	runTests().catch((err: unknown) => {
+		console.error(err instanceof Error ? err.message : String(err));
 		process.exit(1);
 	});
 }

@@ -6,10 +6,7 @@
  */
 
 export type PluginLoadErrorCode =
-	| "not_found"
-	| "invalid_config"
-	| "invalid_export"
-	| "import_failed";
+	"not_found" | "invalid_config" | "invalid_export" | "import_failed";
 
 export class PluginLoadError extends Error {
 	constructor(

@@ -31,7 +31,15 @@
  */
 
 import { execFile, execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	readdirSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
@@ -87,7 +95,7 @@ function jj(args: string[], cwd: string): string {
 function jjAsync(args: string[], cwd: string): Promise<string> {
 	return new Promise((resolve, reject) => {
 		execFile("jj", args, { cwd, env: jjEnv() }, (error, stdout) => {
-			if (error) reject(error);
+			if (error) reject(new Error(error.message));
 			else resolve(stdout.toString());
 		});
 	});
@@ -102,9 +110,13 @@ function initRepo(dir: string): void {
 	// identity. The harness's JJ_CONFIG is stripped by jjEnv().
 	jj(
 		[
-			"--config", 'user.name="Test User"',
-			"--config", 'user.email="user@test.dev"',
-			"git", "init", "--colocate",
+			"--config",
+			'user.name="Test User"',
+			"--config",
+			'user.email="user@test.dev"',
+			"git",
+			"init",
+			"--colocate",
 		],
 		dir,
 	);
@@ -115,7 +127,11 @@ function initRepo(dir: string): void {
 }
 
 /** Remove the workspace and its temp parent dir (createWorkspace parent). */
-async function cleanupWorkspace(projectDir: string, name: string, dir: string): Promise<void> {
+async function cleanupWorkspace(
+	projectDir: string,
+	name: string,
+	dir: string,
+): Promise<void> {
 	await removeWorkspace(projectDir, name, dir);
 	rmSync(dirname(dir), { recursive: true, force: true });
 }
@@ -134,8 +150,14 @@ async function testMechanics(errors: string[]): Promise<void> {
 
 		const ws1 = await createWorkspace(testDir, "mech-1");
 		const ws2 = await createWorkspace(testDir, "mech-2");
-		check(existsSync(join(ws1, "README.md")), "ws1 should materialize base files");
-		check(existsSync(join(ws2, "README.md")), "ws2 should materialize base files");
+		check(
+			existsSync(join(ws1, "README.md")),
+			"ws1 should materialize base files",
+		);
+		check(
+			existsSync(join(ws2, "README.md")),
+			"ws2 should materialize base files",
+		);
 
 		// ws1 makes TWO commits (multi-commit range), ws2 makes one
 		writeFileSync(join(ws1, "a.txt"), "one\n", "utf-8");
@@ -145,23 +167,41 @@ async function testMechanics(errors: string[]): Promise<void> {
 		writeFileSync(join(ws2, "b.txt"), "three\n", "utf-8");
 		jj(["commit", "-m", "mech ws2 c1"], ws2);
 
-		const out = await mergeWorkspacesAtomic(testDir, ["mech-1", "mech-2"], baseChange);
-		check(out.conflicts.length === 0, `merge should be clean, got ${JSON.stringify(out.conflicts)}`);
-		check(out.commit_id.length > 0 && out.files_changed === 3,
-			`merge outcome should carry the merged commit + file count (3 files), got ${out.commit_id} / ${out.files_changed}`);
+		const out = await mergeWorkspacesAtomic(
+			testDir,
+			["mech-1", "mech-2"],
+			baseChange,
+		);
+		check(
+			out.conflicts.length === 0,
+			`merge should be clean, got ${JSON.stringify(out.conflicts)}`,
+		);
+		check(
+			out.commit_id.length > 0 && out.files_changed === 3,
+			`merge outcome should carry the merged commit + file count (3 files), got ${out.commit_id} / ${out.files_changed}`,
+		);
 
 		// All three files land in the main working copy (empty @ on the merged base)
 		for (const f of ["a.txt", "a2.txt", "b.txt"]) {
 			check(existsSync(join(testDir, f)), `${f} should be in the merged tree`);
 		}
 		const st = jj(["st"], testDir);
-		check(st.includes("The working copy has no changes"), `main working copy should be clean after merge, got: ${st}`);
+		check(
+			st.includes("The working copy has no changes"),
+			`main working copy should be clean after merge, got: ${st}`,
+		);
 
 		await cleanupWorkspace(testDir, "mech-1", ws1);
 		await cleanupWorkspace(testDir, "mech-2", ws2);
 		const list = jj(["workspace", "list"], testDir);
-		check(!list.includes("mech-"), `workspace list should only have default, got: ${list}`);
-		check(!existsSync(ws1) && !existsSync(ws2), "workspace dirs should be deleted");
+		check(
+			!list.includes("mech-"),
+			`workspace list should only have default, got: ${list}`,
+		);
+		check(
+			!existsSync(ws1) && !existsSync(ws2),
+			"workspace dirs should be deleted",
+		);
 	} finally {
 		rmSync(testDir, { recursive: true, force: true });
 	}
@@ -188,9 +228,15 @@ async function testFinalStateConflicts(errors: string[]): Promise<void> {
 		writeFileSync(join(c2, "shared.txt"), "a\nB\nc\n", "utf-8");
 		jj(["commit", "-m", "final c2"], c2);
 
-		const out = await mergeWorkspacesAtomic(testDir, ["final-1", "final-2"], baseChange);
-		check(out.conflicts.length === 1 && out.conflicts[0] === "shared.txt",
-			`atomic merge should report shared.txt, got ${JSON.stringify(out.conflicts)}`);
+		const out = await mergeWorkspacesAtomic(
+			testDir,
+			["final-1", "final-2"],
+			baseChange,
+		);
+		check(
+			out.conflicts.length === 1 && out.conflicts[0] === "shared.txt",
+			`atomic merge should report shared.txt, got ${JSON.stringify(out.conflicts)}`,
+		);
 
 		// ...but the conflict is then RESOLVED (markers edited in the main
 		// working copy, squashed into the base). The FINAL-state check must
@@ -199,15 +245,19 @@ async function testFinalStateConflicts(errors: string[]): Promise<void> {
 		writeFileSync(join(testDir, "shared.txt"), "a\nB\nc\n", "utf-8");
 		jj(["squash"], testDir);
 		const finalConflicts = await detectChangeConflicts(testDir, baseChange);
-		check(finalConflicts.length === 0,
-			`final-state detection should be empty after resolution, got ${JSON.stringify(finalConflicts)}`);
+		check(
+			finalConflicts.length === 0,
+			`final-state detection should be empty after resolution, got ${JSON.stringify(finalConflicts)}`,
+		);
 
 		await cleanupWorkspace(testDir, "final-1", c1);
 		await cleanupWorkspace(testDir, "final-2", c2);
 	} finally {
 		rmSync(testDir, { recursive: true, force: true });
 	}
-	console.log("✓ final-state conflicts: per-squash stale, final tree authoritative (R3)");
+	console.log(
+		"✓ final-state conflicts: per-squash stale, final tree authoritative (R3)",
+	);
 }
 
 // ─── Section 4: post-squash commit ids (R5) ──────────────────────────
@@ -229,8 +279,14 @@ async function testPostSquashCommitIds(errors: string[]): Promise<void> {
 		jj(["commit", "-m", "cid w1"], w1);
 		writeFileSync(join(w2, "b.txt"), "two\n", "utf-8");
 		jj(["commit", "-m", "cid w2"], w2);
-		const ws1Commit = jj(["log", "-r", "@-", "-T", "commit_id", "--no-graph"], w1).trim();
-		const ws2Commit = jj(["log", "-r", "@-", "-T", "commit_id", "--no-graph"], w2).trim();
+		const ws1Commit = jj(
+			["log", "-r", "@-", "-T", "commit_id", "--no-graph"],
+			w1,
+		).trim();
+		const ws2Commit = jj(
+			["log", "-r", "@-", "-T", "commit_id", "--no-graph"],
+			w2,
+		).trim();
 
 		await mergeWorkspacesAtomic(testDir, ["cid-1", "cid-2"], baseChange);
 
@@ -239,14 +295,24 @@ async function testPostSquashCommitIds(errors: string[]): Promise<void> {
 		// abandoned by `jj squash`, so returning THEIR ids would report dead
 		// revisions.
 		const baseIdPost = await resolveCommitId(testDir, baseChange);
-		check(baseIdPost.length === 40, `resolved commit id should be a full id, got "${baseIdPost}"`);
-		check(baseIdPost !== baseIdPre, "squashes rewrite the base commit (new commit id)");
-		check(baseIdPost !== ws1Commit && baseIdPost !== ws2Commit,
-			"the surviving id must not be a worker's pre-squash commit id");
+		check(
+			baseIdPost.length === 40,
+			`resolved commit id should be a full id, got "${baseIdPost}"`,
+		);
+		check(
+			baseIdPost !== baseIdPre,
+			"squashes rewrite the base commit (new commit id)",
+		);
+		check(
+			baseIdPost !== ws1Commit && baseIdPost !== ws2Commit,
+			"the surviving id must not be a worker's pre-squash commit id",
+		);
 		try {
 			jj(["log", "-r", baseIdPost, "--no-graph", "-T", "commit_id"], testDir);
 		} catch {
-			errors.push(`[cid] resolved base commit id ${baseIdPost} does not resolve via jj log -r`);
+			errors.push(
+				`[cid] resolved base commit id ${baseIdPost} does not resolve via jj log -r`,
+			);
 		}
 
 		await cleanupWorkspace(testDir, "cid-1", w1);
@@ -254,7 +320,9 @@ async function testPostSquashCommitIds(errors: string[]): Promise<void> {
 	} finally {
 		rmSync(testDir, { recursive: true, force: true });
 	}
-	console.log("✓ post-squash commit ids: base change resolves to ONE surviving id (R5)");
+	console.log(
+		"✓ post-squash commit ids: base change resolves to ONE surviving id (R5)",
+	);
 }
 
 // ─── Section 5: clean-working-copy guard (R1) ────────────────────────
@@ -272,14 +340,24 @@ async function testCleanWorkingCopyGuard(errors: string[]): Promise<void> {
 		await assertCleanWorkingCopy(testDir);
 
 		// Untracked file (user WIP) → throws with the precise message + excerpt.
-		writeFileSync(join(testDir, "stray.txt"), "user work in progress\n", "utf-8");
+		writeFileSync(
+			join(testDir, "stray.txt"),
+			"user work in progress\n",
+			"utf-8",
+		);
 		try {
 			await assertCleanWorkingCopy(testDir);
 			errors.push("guard should throw on an untracked file");
 		} catch (err) {
 			const msg = (err as Error).message;
-			check(msg.includes("task requires a clean working copy"), `guard message, got: ${msg}`);
-			check(msg.includes("stray.txt"), `guard message should name the change in the status excerpt, got: ${msg}`);
+			check(
+				msg.includes("task requires a clean working copy"),
+				`guard message, got: ${msg}`,
+			);
+			check(
+				msg.includes("stray.txt"),
+				`guard message should name the change in the status excerpt, got: ${msg}`,
+			);
 		}
 
 		// Removing it restores a clean state (the mutation-gate restore path).
@@ -287,18 +365,26 @@ async function testCleanWorkingCopyGuard(errors: string[]): Promise<void> {
 		await assertCleanWorkingCopy(testDir);
 
 		// Modified tracked file → throws too.
-		writeFileSync(join(testDir, "README.md"), "# changed by the user\n", "utf-8");
+		writeFileSync(
+			join(testDir, "README.md"),
+			"# changed by the user\n",
+			"utf-8",
+		);
 		try {
 			await assertCleanWorkingCopy(testDir);
 			errors.push("guard should throw on a modified tracked file");
 		} catch (err) {
-			check((err as Error).message.includes("README.md"),
-				`guard message should name the modified file, got: ${(err as Error).message}`);
+			check(
+				(err as Error).message.includes("README.md"),
+				`guard message should name the modified file, got: ${(err as Error).message}`,
+			);
 		}
 	} finally {
 		rmSync(testDir, { recursive: true, force: true });
 	}
-	console.log("✓ assertCleanWorkingCopy: clean passes, untracked/modified throw (R1)");
+	console.log(
+		"✓ assertCleanWorkingCopy: clean passes, untracked/modified throw (R1)",
+	);
 }
 
 // ─── Section 2: conflict surfacing ───────────────────────────────────
@@ -318,24 +404,68 @@ async function testAiTaskBase(errors: string[]): Promise<void> {
 	try {
 		initRepo(testDir);
 		const identityFile = join(testDir, "jj-identity.toml");
-		writeFileSync(identityFile, aiIdentityToml("Pi (deepseek-v4-flash)", "noreply@danong.dev"), "utf-8");
-		const baseChange = await createAiTaskBase(testDir, identityFile, "Handle UTF-8 BOM");
+		writeFileSync(
+			identityFile,
+			aiIdentityToml("Pi (deepseek-v4-flash)", "noreply@danong.dev"),
+			"utf-8",
+		);
+		const baseChange = await createAiTaskBase(
+			testDir,
+			identityFile,
+			"Handle UTF-8 BOM",
+		);
 
-		check(baseChange === jj(["log", "-r", "@", "-T", "change_id", "--no-graph"], testDir).trim(),
-			"createAiTaskBase returns the new @'s change id");
-		const author = jj(["log", "-r", "@", "-T", 'author.name() ++ " <" ++ author.email() ++ ">"', "--no-graph"], testDir);
-		check(author.includes("Pi (deepseek-v4-flash)") && author.includes("noreply@danong.dev"),
-			`merged base authored as the AI identity, got: ${author.trim()}`);
-		const parent = jj(["log", "-r", "@-", "-T", "description.first_line()", "--no-graph"], testDir);
-		check(parent.trim() === "init", `parent is @- (the user's last commit), got: ${parent.trim()}`);
-		const desc = jj(["log", "-r", "@", "-T", "description.first_line()", "--no-graph"], testDir);
-		check(desc.trim() === "task: Handle UTF-8 BOM", `described with the spec goal, got: ${desc.trim()}`);
-		const files = jj(["log", "-r", "@", "-T", "if(empty, 'EMPTY', 'X')", "--no-graph"], testDir);
-		check(files.trim() === "EMPTY", `the base starts empty (workspaces' work lands via squash), got: ${files.trim()}`);
+		check(
+			baseChange ===
+				jj(["log", "-r", "@", "-T", "change_id", "--no-graph"], testDir).trim(),
+			"createAiTaskBase returns the new @'s change id",
+		);
+		const author = jj(
+			[
+				"log",
+				"-r",
+				"@",
+				"-T",
+				'author.name() ++ " <" ++ author.email() ++ ">"',
+				"--no-graph",
+			],
+			testDir,
+		);
+		check(
+			author.includes("Pi (deepseek-v4-flash)") &&
+				author.includes("noreply@danong.dev"),
+			`merged base authored as the AI identity, got: ${author.trim()}`,
+		);
+		const parent = jj(
+			["log", "-r", "@-", "-T", "description.first_line()", "--no-graph"],
+			testDir,
+		);
+		check(
+			parent.trim() === "init",
+			`parent is @- (the user's last commit), got: ${parent.trim()}`,
+		);
+		const desc = jj(
+			["log", "-r", "@", "-T", "description.first_line()", "--no-graph"],
+			testDir,
+		);
+		check(
+			desc.trim() === "task: Handle UTF-8 BOM",
+			`described with the spec goal, got: ${desc.trim()}`,
+		);
+		const files = jj(
+			["log", "-r", "@", "-T", "if(empty, 'EMPTY', 'X')", "--no-graph"],
+			testDir,
+		);
+		check(
+			files.trim() === "EMPTY",
+			`the base starts empty (workspaces' work lands via squash), got: ${files.trim()}`,
+		);
 	} finally {
 		rmSync(testDir, { recursive: true, force: true });
 	}
-	console.log("✓ AI-authored task base: identity + parent + goal description + empty tree");
+	console.log(
+		"✓ AI-authored task base: identity + parent + goal description + empty tree",
+	);
 }
 
 /**
@@ -356,11 +486,20 @@ async function testSingleWorkerIdentity(errors: string[]): Promise<void> {
 	const testDir = mkdtempSync(join(tmpdir(), "pi-task-ws-id-"));
 	try {
 		initRepo(testDir);
-		const userAuthor = jj(["log", "-r", "@-", "-T", "author.email()", "--no-graph"], testDir).trim();
-		check(userAuthor.length > 0 && userAuthor !== "noreply@danong.dev",
-			`the repo's default author is the user's (got ${userAuthor}) — test precondition`);
+		const userAuthor = jj(
+			["log", "-r", "@-", "-T", "author.email()", "--no-graph"],
+			testDir,
+		).trim();
+		check(
+			userAuthor.length > 0 && userAuthor !== "noreply@danong.dev",
+			`the repo's default author is the user's (got ${userAuthor}) — test precondition`,
+		);
 		const identityFile = join(testDir, "jj-identity.toml");
-		writeFileSync(identityFile, aiIdentityToml("Pi (deepseek-v4-flash)", "noreply@danong.dev"), "utf-8");
+		writeFileSync(
+			identityFile,
+			aiIdentityToml("Pi (deepseek-v4-flash)", "noreply@danong.dev"),
+			"utf-8",
+		);
 
 		// 1. Orchestrator roots the worker on the AI-authored base.
 		await createAiTaskBase(testDir, identityFile, "Implement feature");
@@ -376,28 +515,74 @@ async function testSingleWorkerIdentity(errors: string[]): Promise<void> {
 		// 3. The restore step from executeSingle's finally (user identity —
 		// no JJ_CONFIG, the repo config's Test User applies).
 		const restoreEnv = jjEnv();
-		execFileSync("jj", ["new"], { cwd: testDir, encoding: "utf8", env: restoreEnv });
-		const leftover = jj(["log", "-r", "@-", "-T", "if(empty, 'EMPTY', 'X')", "--no-graph"], testDir).trim();
-		check(leftover === "EMPTY", `the worker's leftover WC is empty and abandoned, got: ${leftover}`);
-		execFileSync("jj", ["abandon", "@-"], { cwd: testDir, encoding: "utf8", env: restoreEnv });
+		execFileSync("jj", ["new"], {
+			cwd: testDir,
+			encoding: "utf8",
+			env: restoreEnv,
+		});
+		const leftover = jj(
+			["log", "-r", "@-", "-T", "if(empty, 'EMPTY', 'X')", "--no-graph"],
+			testDir,
+		).trim();
+		check(
+			leftover === "EMPTY",
+			`the worker's leftover WC is empty and abandoned, got: ${leftover}`,
+		);
+		execFileSync("jj", ["abandon", "@-"], {
+			cwd: testDir,
+			encoding: "utf8",
+			env: restoreEnv,
+		});
 
 		// 4. Assertions: work is AI-authored, the WC is back to the user's
 		// identity, and the history is clean (work directly on the user's
 		// commit — no empty AI base, no empty leftover).
-		const workAuthor = jj(["log", "-r", "@-", "-T", "author.email()", "--no-graph"], testDir).trim();
-		check(workAuthor === "noreply@danong.dev", `the worker's commit is AI-authored, got: ${workAuthor}`);
-		const wcAuthor = jj(["log", "-r", "@", "-T", "author.email()", "--no-graph"], testDir).trim();
-		check(wcAuthor === userAuthor, `the restored WC is user-authored, got: ${wcAuthor}`);
-		const parentDesc = jj(["log", "-r", "@-", "-T", "description.first_line()", "--no-graph"], testDir).trim();
-		check(parentDesc === "implement feature", `the result commit is the worker's work, got: ${parentDesc}`);
-		const grandparentDesc = jj(["log", "-r", "@--", "-T", "description.first_line()", "--no-graph"], testDir).trim();
-		check(grandparentDesc === "init", `no empty AI base between the work and the user's commit, got: ${grandparentDesc}`);
-		const wcEmpty = jj(["log", "-r", "@", "-T", "if(empty, 'EMPTY', 'X')", "--no-graph"], testDir).trim();
-		check(wcEmpty === "EMPTY", `the restored WC is empty (no diff vs the work in @-), got: ${wcEmpty}`);
+		const workAuthor = jj(
+			["log", "-r", "@-", "-T", "author.email()", "--no-graph"],
+			testDir,
+		).trim();
+		check(
+			workAuthor === "noreply@danong.dev",
+			`the worker's commit is AI-authored, got: ${workAuthor}`,
+		);
+		const wcAuthor = jj(
+			["log", "-r", "@", "-T", "author.email()", "--no-graph"],
+			testDir,
+		).trim();
+		check(
+			wcAuthor === userAuthor,
+			`the restored WC is user-authored, got: ${wcAuthor}`,
+		);
+		const parentDesc = jj(
+			["log", "-r", "@-", "-T", "description.first_line()", "--no-graph"],
+			testDir,
+		).trim();
+		check(
+			parentDesc === "implement feature",
+			`the result commit is the worker's work, got: ${parentDesc}`,
+		);
+		const grandparentDesc = jj(
+			["log", "-r", "@--", "-T", "description.first_line()", "--no-graph"],
+			testDir,
+		).trim();
+		check(
+			grandparentDesc === "init",
+			`no empty AI base between the work and the user's commit, got: ${grandparentDesc}`,
+		);
+		const wcEmpty = jj(
+			["log", "-r", "@", "-T", "if(empty, 'EMPTY', 'X')", "--no-graph"],
+			testDir,
+		).trim();
+		check(
+			wcEmpty === "EMPTY",
+			`the restored WC is empty (no diff vs the work in @-), got: ${wcEmpty}`,
+		);
 	} finally {
 		rmSync(testDir, { recursive: true, force: true });
 	}
-	console.log("✓ single-worker identity: AI-authored work commit + user-authored restored WC, no empty leftovers");
+	console.log(
+		"✓ single-worker identity: AI-authored work commit + user-authored restored WC, no empty leftovers",
+	);
 }
 
 async function testConflict(errors: string[]): Promise<void> {
@@ -418,13 +603,22 @@ async function testConflict(errors: string[]): Promise<void> {
 		writeFileSync(join(c2, "shared.txt"), "line1\nCHANGED\nline3\n", "utf-8");
 		jj(["commit", "-m", "conf c2"], c2);
 
-		const out = await mergeWorkspacesAtomic(testDir, ["conf-1", "conf-2"], baseChange);
-		check(out.conflicts.length === 1 && out.conflicts[0] === "shared.txt",
-			`expected conflict on shared.txt, got ${JSON.stringify(out.conflicts)}`);
+		const out = await mergeWorkspacesAtomic(
+			testDir,
+			["conf-1", "conf-2"],
+			baseChange,
+		);
+		check(
+			out.conflicts.length === 1 && out.conflicts[0] === "shared.txt",
+			`expected conflict on shared.txt, got ${JSON.stringify(out.conflicts)}`,
+		);
 
 		// Conflict markers are visible in the main working copy
 		const content = readFileSync(join(testDir, "shared.txt"), "utf-8");
-		check(content.includes("<<<<<<<"), "conflict markers should be in the working copy");
+		check(
+			content.includes("<<<<<<<"),
+			"conflict markers should be in the working copy",
+		);
 
 		await cleanupWorkspace(testDir, "conf-1", c1);
 		await cleanupWorkspace(testDir, "conf-2", c2);
@@ -470,26 +664,43 @@ async function testReResolvedSquashTargets(errors: string[]): Promise<void> {
 
 		// Provable integration: every workspace + the main working copy sit
 		// on the current base, and the final base holds EVERY change.
-		await assertMerged(testDir, ["rer-1", "rer-2", "rer-f"], baseChange, { expectedFiles: ["a.txt", "b.txt", "foreign.txt"] });
+		await assertMerged(testDir, ["rer-1", "rer-2", "rer-f"], baseChange, {
+			expectedFiles: ["a.txt", "b.txt", "foreign.txt"],
+		});
 
 		for (const f of ["a.txt", "b.txt", "foreign.txt"]) {
 			check(existsSync(join(testDir, f)), `${f} should be in the merged tree`);
 		}
-		check(jj(["st"], testDir).includes("The working copy has no changes"),
-			"main working copy should be clean after the merges");
+		check(
+			jj(["st"], testDir).includes("The working copy has no changes"),
+			"main working copy should be clean after the merges",
+		);
 
 		// The base change must resolve to EXACTLY ONE visible commit — no
 		// divergence, no work stranded in a hidden/pre-rewrite revision.
 		let baseIds = "";
 		try {
-			baseIds = jj(["log", "-r", baseChange, "--no-graph", "-T", "commit_id"], testDir).trim();
+			baseIds = jj(
+				["log", "-r", baseChange, "--no-graph", "-T", "commit_id"],
+				testDir,
+			).trim();
 		} catch (err) {
-			errors.push(`base change should resolve (got jj error: ${(err as Error).message})`);
+			errors.push(
+				`base change should resolve (got jj error: ${(err as Error).message})`,
+			);
 		}
-		check(/^[0-9a-f]{40}$/.test(baseIds),
-			`base change should resolve to ONE commit id, got: ${JSON.stringify(baseIds)}`);
-		const mainParent = jj(["log", "-r", "@-", "--no-graph", "-T", "commit_id"], testDir).trim();
-		check(mainParent === baseIds, `main @- should BE the merged base, got ${mainParent} vs ${baseIds}`);
+		check(
+			/^[0-9a-f]{40}$/.test(baseIds),
+			`base change should resolve to ONE commit id, got: ${JSON.stringify(baseIds)}`,
+		);
+		const mainParent = jj(
+			["log", "-r", "@-", "--no-graph", "-T", "commit_id"],
+			testDir,
+		).trim();
+		check(
+			mainParent === baseIds,
+			`main @- should BE the merged base, got ${mainParent} vs ${baseIds}`,
+		);
 
 		await cleanupWorkspace(testDir, "rer-1", w1);
 		await cleanupWorkspace(testDir, "rer-2", w2);
@@ -497,7 +708,9 @@ async function testReResolvedSquashTargets(errors: string[]): Promise<void> {
 	} finally {
 		rmSync(testDir, { recursive: true, force: true });
 	}
-	console.log("✓ re-resolved squash targets: foreign base rewrite between merges lands in the CURRENT base (R1)");
+	console.log(
+		"✓ re-resolved squash targets: foreign base rewrite between merges lands in the CURRENT base (R1)",
+	);
 }
 
 // ─── Section 7: provable-integration gate (R2, todo #71 obs 3) ───────
@@ -535,26 +748,40 @@ async function testMergeIntegrityGate(errors: string[]): Promise<void> {
 		// verification pass trivially on a tree without the integrated work.
 		await mergeWorkspacesAtomic(testDir, ["gate-1"], baseChange);
 		try {
-			await assertMerged(testDir, ["gate-1", "gate-2"], baseChange, { expectedFiles: ["a.txt", "b.txt"] });
+			await assertMerged(testDir, ["gate-1", "gate-2"], baseChange, {
+				expectedFiles: ["a.txt", "b.txt"],
+			});
 			errors.push("assertMerged should fail when a workspace was never merged");
 		} catch (err) {
 			const msg = (err as Error).message;
-			check(msg.includes("did NOT integrate"), `gate error should say the merge is not integrated, got: ${msg}`);
-			check(msg.includes("b.txt"), `gate error should name the stranded file, got: ${msg}`);
+			check(
+				msg.includes("did NOT integrate"),
+				`gate error should say the merge is not integrated, got: ${msg}`,
+			);
+			check(
+				msg.includes("b.txt"),
+				`gate error should name the stranded file, got: ${msg}`,
+			);
 		}
 
 		// Merge w2 properly — the gate now passes.
 		await mergeWorkspacesAtomic(testDir, ["gate-2"], baseChange);
-		await assertMerged(testDir, ["gate-1", "gate-2"], baseChange, { expectedFiles: ["a.txt", "b.txt"] });
-		check(existsSync(join(testDir, "a.txt")) && existsSync(join(testDir, "b.txt")),
-			"both workers' files should be in the merged tree");
+		await assertMerged(testDir, ["gate-1", "gate-2"], baseChange, {
+			expectedFiles: ["a.txt", "b.txt"],
+		});
+		check(
+			existsSync(join(testDir, "a.txt")) && existsSync(join(testDir, "b.txt")),
+			"both workers' files should be in the merged tree",
+		);
 
 		await cleanupWorkspace(testDir, "gate-1", w1);
 		await cleanupWorkspace(testDir, "gate-2", w2);
 	} finally {
 		rmSync(testDir, { recursive: true, force: true });
 	}
-	console.log("✓ provable-integration gate: unmerged workspace fails loud, merged passes (R2)");
+	console.log(
+		"✓ provable-integration gate: unmerged workspace fails loud, merged passes (R2)",
+	);
 }
 
 async function testStaleTargetSurfaced(errors: string[]): Promise<void> {
@@ -587,30 +814,43 @@ async function testStaleTargetSurfaced(errors: string[]): Promise<void> {
 			.split("\n")
 			.find((l) => l.startsWith("stale-2:"))!
 			.split(/\s+/)[2];
-		jj(["squash", "--from", `${baseIdPre}..${ws2At}`, "--into", baseIdPre], testDir);
+		jj(
+			["squash", "--from", `${baseIdPre}..${ws2At}`, "--into", baseIdPre],
+			testDir,
+		);
 
 		// The corrupted merge must be surfaced — the gate refuses to verify a
 		// tree without the integrated work (and the base change no longer
 		// resolves to a visible commit holding it).
 		try {
-			await assertMerged(testDir, ["stale-1", "stale-2"], baseChange, { expectedFiles: ["a.txt", "b.txt"] });
-			errors.push("assertMerged should fail after a stale-target squash (work in hidden revision)");
+			await assertMerged(testDir, ["stale-1", "stale-2"], baseChange, {
+				expectedFiles: ["a.txt", "b.txt"],
+			});
+			errors.push(
+				"assertMerged should fail after a stale-target squash (work in hidden revision)",
+			);
 		} catch (err) {
 			const msg = (err as Error).message;
-			check(msg.length > 0 && !msg.includes("unexpected"),
-				`stale-target corruption should fail with a precise error, got: ${msg}`);
+			check(
+				msg.length > 0 && !msg.includes("unexpected"),
+				`stale-target corruption should fail with a precise error, got: ${msg}`,
+			);
 		}
 		// The corrupted state matches the observation: the main working copy
 		// holds NO changes (its chain was detached from the rewritten base).
-		check(diffLines(testDir, "@-", "@").length === 0,
-			"corrupted main working copy should show no changes (verification would pass trivially)");
+		check(
+			diffLines(testDir, "@-", "@").length === 0,
+			"corrupted main working copy should show no changes (verification would pass trivially)",
+		);
 
 		await cleanupWorkspace(testDir, "stale-1", w1);
 		await cleanupWorkspace(testDir, "stale-2", w2);
 	} finally {
 		rmSync(testDir, { recursive: true, force: true });
 	}
-	console.log("✓ stale squash target surfaced: work in hidden revision fails the gate (R2)");
+	console.log(
+		"✓ stale squash target surfaced: work in hidden revision fails the gate (R2)",
+	);
 }
 
 // ─── Section 8b: assertVisibleCommit — a hidden base fails loud (R2) ──
@@ -638,11 +878,16 @@ async function testAssertVisibleCommit(errors: string[]): Promise<void> {
 		} catch (err) {
 			threw = (err as Error).message;
 		}
-		check(threw.includes("NO visible commit"), `hidden base must fail loud, got: ${JSON.stringify(threw)}`);
+		check(
+			threw.includes("NO visible commit"),
+			`hidden base must fail loud, got: ${JSON.stringify(threw)}`,
+		);
 	} finally {
 		rmSync(testDir, { recursive: true, force: true });
 	}
-	console.log("✓ assertVisibleCommit: hidden base change fails loud, visible passes (R2)");
+	console.log(
+		"✓ assertVisibleCommit: hidden base change fails loud, visible passes (R2)",
+	);
 }
 
 // ─── Section 8: divergent change resolution (R1) — divergence is
@@ -687,19 +932,25 @@ async function testDivergentChangeResolution(errors: string[]): Promise<void> {
 				]),
 			);
 			try {
-				divergent = jj(["log", "-r", "divergent()", "--no-graph", "-T", "change_id"], testDir).trim();
+				divergent = jj(
+					["log", "-r", "divergent()", "--no-graph", "-T", "change_id"],
+					testDir,
+				).trim();
 			} catch (err) {
 				// jj 0.43's sibling-op internal error leaves the op log
 				// unhealed — integrate the working copy's op (its own hint).
 				const m = /op integrate ([0-9a-f]+)/.exec((err as Error).message);
-				if (m) {
+				if (m && m[1]) {
 					try {
 						jj(["op", "integrate", m[1]], testDir);
 					} catch {
 						/* already healed by a later racer */
 					}
 				}
-				divergent = jj(["log", "-r", "divergent()", "--no-graph", "-T", "change_id"], testDir).trim();
+				divergent = jj(
+					["log", "-r", "divergent()", "--no-graph", "-T", "change_id"],
+					testDir,
+				).trim();
 			}
 		}
 		if (divergent.length === 0) {
@@ -710,15 +961,22 @@ async function testDivergentChangeResolution(errors: string[]): Promise<void> {
 			// when the race actually forked the op log — warn loudly instead of
 			// failing: producing the artifact is jj's timing, not this package's
 			// behavior. The shape + hidden-commit checks still run.
-			console.warn("  ⚠ jj race produced no divergent change — skipping the R1 divergence-resolution checks");
+			console.warn(
+				"  ⚠ jj race produced no divergent change — skipping the R1 divergence-resolution checks",
+			);
 		} else {
 			const changeId = divergent.slice(0, 12);
 			try {
 				await resolveCommitId(testDir, changeId);
-				errors.push(`resolveCommitId should fail loudly on divergent change ${changeId}`);
+				errors.push(
+					`resolveCommitId should fail loudly on divergent change ${changeId}`,
+				);
 			} catch (err) {
 				const msg = (err as Error).message;
-				check(msg.includes("DIVERGENT"), `divergence error should be explicit, got: ${msg}`);
+				check(
+					msg.includes("DIVERGENT"),
+					`divergence error should be explicit, got: ${msg}`,
+				);
 			}
 		}
 
@@ -729,20 +987,29 @@ async function testDivergentChangeResolution(errors: string[]): Promise<void> {
 			await resolveCommitId(testDir, "@ | @-");
 			errors.push("resolveCommitId should reject multi-commit output");
 		} catch (err) {
-			check((err as Error).message.includes("single 40-hex"),
-				`multi-match error should mention the shape check, got: ${(err as Error).message}`);
+			check(
+				(err as Error).message.includes("single 40-hex"),
+				`multi-match error should mention the shape check, got: ${(err as Error).message}`,
+			);
 		}
 
 		// A change with NO visible commit (all hidden/abandoned) is rejected
 		// with a hint, not silently resolved.
-		const hidden = jj(["log", "-r", "hidden()", "--no-graph", "-T", "change_id"], testDir).trim();
+		const hidden = jj(
+			["log", "-r", "hidden()", "--no-graph", "-T", "change_id"],
+			testDir,
+		).trim();
 		if (hidden.length > 0) {
 			try {
 				await resolveCommitId(testDir, hidden.slice(0, 12));
-				errors.push("resolveCommitId should reject a change with no visible commit");
+				errors.push(
+					"resolveCommitId should reject a change with no visible commit",
+				);
 			} catch (err) {
-				check((err as Error).message.includes("hidden"),
-					`no-visible-commit error should mention hidden, got: ${(err as Error).message}`);
+				check(
+					(err as Error).message.includes("hidden"),
+					`no-visible-commit error should mention hidden, got: ${(err as Error).message}`,
+				);
 			}
 		}
 
@@ -751,14 +1018,17 @@ async function testDivergentChangeResolution(errors: string[]): Promise<void> {
 	} finally {
 		rmSync(testDir, { recursive: true, force: true });
 	}
-	console.log("✓ divergent change resolution: loud failure, never an arbitrary pick (R1)");
+	console.log(
+		"✓ divergent change resolution: loud failure, never an arbitrary pick (R1)",
+	);
 }
 
 // ─── Section 9: fork-proof read-only commands (R3, todo #70) ─────────
 
 /** Ops in the op store (colocated jj 0.43 layout) — unambiguous, no jj call. */
 function opCount(projectDir: string): number {
-	return readdirSync(join(projectDir, ".jj", "repo", "op_store", "operations")).length;
+	return readdirSync(join(projectDir, ".jj", "repo", "op_store", "operations"))
+		.length;
 }
 
 async function testForkProofReadOnly(errors: string[]): Promise<void> {
@@ -775,17 +1045,58 @@ async function testForkProofReadOnly(errors: string[]): Promise<void> {
 		// NOTHING with it.
 		writeFileSync(join(testDir, "dirty.txt"), "wip\n", "utf-8");
 		const n0 = opCount(testDir);
-		jj(["diff", "--from", "@-", "--to", "@", "--summary", "--ignore-working-copy"], testDir);
-		check(opCount(testDir) === n0, "--ignore-working-copy read-only command must not write an op");
+		jj(
+			[
+				"diff",
+				"--from",
+				"@-",
+				"--to",
+				"@",
+				"--summary",
+				"--ignore-working-copy",
+			],
+			testDir,
+		);
+		check(
+			opCount(testDir) === n0,
+			"--ignore-working-copy read-only command must not write an op",
+		);
 		jj(["diff", "--from", "@-", "--to", "@", "--summary"], testDir);
-		check(opCount(testDir) === n0 + 1, "read-only command WITHOUT the flag writes a snapshot op");
+		check(
+			opCount(testDir) === n0 + 1,
+			"read-only command WITHOUT the flag writes a snapshot op",
+		);
 		jj(["commit", "-m", "dirty"], testDir); // back to a clean working copy
 
 		// (b) Concurrent worker commits + orchestrator read-only commands
 		// (with the flag): no op-log fork, no rewritten/duplicated commits.
 		const readOnlyOps: Array<() => Promise<string>> = [
-			() => jjAsync(["diff", "--from", "@-", "--to", "@", "--summary", "--ignore-working-copy"], testDir),
-			() => jjAsync(["log", "-r", "@-", "-T", "change_id", "--no-graph", "--ignore-working-copy"], testDir),
+			() =>
+				jjAsync(
+					[
+						"diff",
+						"--from",
+						"@-",
+						"--to",
+						"@",
+						"--summary",
+						"--ignore-working-copy",
+					],
+					testDir,
+				),
+			() =>
+				jjAsync(
+					[
+						"log",
+						"-r",
+						"@-",
+						"-T",
+						"change_id",
+						"--no-graph",
+						"--ignore-working-copy",
+					],
+					testDir,
+				),
 			() => jjAsync(["file", "list", "--ignore-working-copy"], testDir),
 		];
 		const commits: string[] = [];
@@ -797,33 +1108,57 @@ async function testForkProofReadOnly(errors: string[]): Promise<void> {
 				(async () => {
 					await jjAsync(["commit", "-m", `race c${i}`], testDir);
 				})(),
-				readOnlyOps[i % readOnlyOps.length](),
+				readOnlyOps[i % readOnlyOps.length]!(),
 			]);
-			commits.push(jj(["log", "-r", "@-", "--no-graph", "-T", "commit_id"], testDir).trim());
+			commits.push(
+				jj(
+					["log", "-r", "@-", "--no-graph", "-T", "commit_id"],
+					testDir,
+				).trim(),
+			);
 		}
 
 		// No op-log fork: jj reconciles forks with a "Concurrent modification
 		// detected" op — its absence proves every op was written in one chain.
 		const oplog = jj(["op", "log", "--no-graph"], testDir);
 		check(
-			!oplog.includes("reconcile") && !oplog.includes("Concurrent modification"),
+			!oplog.includes("reconcile") &&
+				!oplog.includes("Concurrent modification"),
 			"concurrent read-only commands must not fork the op log",
 		);
 		// Every worker commit survived intact: visible, right description,
 		// no duplicate/divergent change.
 		for (let i = 0; i < commits.length; i++) {
-			const c = jj(["log", "-r", commits[i], "--no-graph", "-T", `description ++ " hidden=" ++ hidden`], testDir);
+			const c = jj(
+				[
+					"log",
+					"-r",
+					commits[i]!,
+					"--no-graph",
+					"-T",
+					`description ++ " hidden=" ++ hidden`,
+				],
+				testDir,
+			);
 			check(
 				c.includes(`race c${i}`) && !c.includes("hidden=true"),
 				`commit ${i} should be visible and intact, got: ${JSON.stringify(c)}`,
 			);
 		}
-		const divergent = jj(["log", "-r", "divergent()", "--no-graph", "-T", "change_id"], testDir).trim();
-		check(divergent.length === 0, `no divergent changes expected, got: ${divergent.slice(0, 40)}`);
+		const divergent = jj(
+			["log", "-r", "divergent()", "--no-graph", "-T", "change_id"],
+			testDir,
+		).trim();
+		check(
+			divergent.length === 0,
+			`no divergent changes expected, got: ${divergent.slice(0, 40)}`,
+		);
 	} finally {
 		rmSync(testDir, { recursive: true, force: true });
 	}
-	console.log("✓ fork-proof read-only commands: no snapshot ops, no op-log fork under concurrency (R3)");
+	console.log(
+		"✓ fork-proof read-only commands: no snapshot ops, no op-log fork under concurrency (R3)",
+	);
 }
 
 // ─── Section 10: atomic combine (R1) ────────────────────────────────
@@ -861,22 +1196,34 @@ async function testAtomicCombine(errors: string[]): Promise<void> {
 		jj(["commit", "-m", "atom w3"], w3);
 
 		const opsBefore = opCount(testDir);
-		const outcome = await mergeWorkspacesAtomic(testDir, ["atom-1", "atom-2", "atom-3"], baseChange);
+		const outcome = await mergeWorkspacesAtomic(
+			testDir,
+			["atom-1", "atom-2", "atom-3"],
+			baseChange,
+		);
 		const opsAfter = opCount(testDir);
 
-		check(opsAfter - opsBefore === 1,
-			`atomic combine must be ONE jj operation (op delta ${opsAfter - opsBefore})`);
-		check(outcome.conflicts.length === 0,
-			`atomic combine should be clean, got ${JSON.stringify(outcome.conflicts)}`);
-		check(outcome.commit_id.length > 0 && outcome.files_changed === 4,
-			`merge outcome should carry the merged commit + file count (4 files), got ${outcome.commit_id} / ${outcome.files_changed}`);
+		check(
+			opsAfter - opsBefore === 1,
+			`atomic combine must be ONE jj operation (op delta ${opsAfter - opsBefore})`,
+		);
+		check(
+			outcome.conflicts.length === 0,
+			`atomic combine should be clean, got ${JSON.stringify(outcome.conflicts)}`,
+		);
+		check(
+			outcome.commit_id.length > 0 && outcome.files_changed === 4,
+			`merge outcome should carry the merged commit + file count (4 files), got ${outcome.commit_id} / ${outcome.files_changed}`,
+		);
 
 		// Every worker's content is in the merged tree (main working copy).
 		for (const f of ["a1.txt", "a2.txt", "b.txt", "c.txt"]) {
 			check(existsSync(join(testDir, f)), `${f} should be in the merged tree`);
 		}
-		check(jj(["st"], testDir).includes("The working copy has no changes"),
-			"main working copy clean after the atomic combine");
+		check(
+			jj(["st"], testDir).includes("The working copy has no changes"),
+			"main working copy clean after the atomic combine",
+		);
 
 		// Provable integration: every workspace @ sits on the current base,
 		// diff-empty, and the base resolves to ONE visible commit.
@@ -884,8 +1231,14 @@ async function testAtomicCombine(errors: string[]): Promise<void> {
 			expectedFiles: ["a1.txt", "a2.txt", "b.txt", "c.txt"],
 		});
 		const baseId = await resolveCommitId(testDir, baseChange);
-		const mainParent = jj(["log", "-r", "@-", "--no-graph", "-T", "commit_id"], testDir).trim();
-		check(mainParent === baseId, `main @- should BE the merged base, got ${mainParent} vs ${baseId}`);
+		const mainParent = jj(
+			["log", "-r", "@-", "--no-graph", "-T", "commit_id"],
+			testDir,
+		).trim();
+		check(
+			mainParent === baseId,
+			`main @- should BE the merged base, got ${mainParent} vs ${baseId}`,
+		);
 
 		// Cleanup still works (workspaces are empty after the combine).
 		await cleanupWorkspace(testDir, "atom-1", w1);
@@ -894,7 +1247,9 @@ async function testAtomicCombine(errors: string[]): Promise<void> {
 	} finally {
 		rmSync(testDir, { recursive: true, force: true });
 	}
-	console.log("✓ atomic combine: N workspaces in ONE jj op, all content present (R1)");
+	console.log(
+		"✓ atomic combine: N workspaces in ONE jj op, all content present (R1)",
+	);
 }
 
 // ─── Section 11: consistency gate catches dangling commits (R3) ──────
@@ -920,7 +1275,10 @@ async function testConsistencyGateDangling(errors: string[]): Promise<void> {
 		// the ROOT (a visible ancestor of everything — the base change must
 		// NOT diverge; rebasing onto the old hidden base commit would
 		// resurrect it and make the change divergent).
-		const rootCommitId = jj(["log", "-r", "@-", "-T", "commit_id", "--no-graph"], testDir).trim();
+		const rootCommitId = jj(
+			["log", "-r", "@-", "-T", "commit_id", "--no-graph"],
+			testDir,
+		).trim();
 		writeFileSync(join(testDir, "base.txt"), "base\n", "utf-8");
 		jj(["commit", "-m", "base"], testDir);
 		const baseChange = await taskBaseChangeId(testDir);
@@ -947,11 +1305,19 @@ async function testConsistencyGateDangling(errors: string[]): Promise<void> {
 			await assertMerged(testDir, ["dang-1", "dang-2"], baseChange, {
 				expectedFiles: ["a.txt", "b.txt"],
 			});
-			errors.push("assertMerged should fail when a workspace commit dangles outside the merged result");
+			errors.push(
+				"assertMerged should fail when a workspace commit dangles outside the merged result",
+			);
 		} catch (err) {
 			const msg = (err as Error).message;
-			check(msg.includes("merged tree is missing"), `gate should report the missing union file, got: ${msg}`);
-			check(msg.includes("b.txt"), `gate error should name the stranded file, got: ${msg}`);
+			check(
+				msg.includes("merged tree is missing"),
+				`gate should report the missing union file, got: ${msg}`,
+			);
+			check(
+				msg.includes("b.txt"),
+				`gate error should name the stranded file, got: ${msg}`,
+			);
 		}
 
 		// The union-file-presence half of the gate: a file the workers
@@ -960,10 +1326,14 @@ async function testConsistencyGateDangling(errors: string[]): Promise<void> {
 			await assertMerged(testDir, ["dang-1"], baseChange, {
 				expectedFiles: ["a.txt", "never-written.txt"],
 			});
-			errors.push("assertMerged should fail when a worker file is missing from the merged tree");
+			errors.push(
+				"assertMerged should fail when a worker file is missing from the merged tree",
+			);
 		} catch (err) {
-			check((err as Error).message.includes("never-written.txt"),
-				`missing-file error should name the file, got: ${(err as Error).message}`);
+			check(
+				(err as Error).message.includes("never-written.txt"),
+				`missing-file error should name the file, got: ${(err as Error).message}`,
+			);
 		}
 
 		// Recovery: move the detached chain (work commit + empty @) back
@@ -973,21 +1343,31 @@ async function testConsistencyGateDangling(errors: string[]): Promise<void> {
 			.split("\n")
 			.find((l) => l.startsWith("dang-2:"))!
 			.split(/\s+/)[2];
-		const work2 = jj(["log", "-r", `${ws2At}-`, "-T", "commit_id", "--no-graph"], testDir).trim();
-		jj(["rebase", "-s", work2, "-d", await resolveCommitId(testDir, baseChange)], testDir);
+		const work2 = jj(
+			["log", "-r", `${ws2At}-`, "-T", "commit_id", "--no-graph"],
+			testDir,
+		).trim();
+		jj(
+			["rebase", "-s", work2, "-d", await resolveCommitId(testDir, baseChange)],
+			testDir,
+		);
 		await mergeWorkspacesAtomic(testDir, ["dang-2"], baseChange);
 		await assertMerged(testDir, ["dang-1", "dang-2"], baseChange, {
 			expectedFiles: ["a.txt", "b.txt"],
 		});
-		check(existsSync(join(testDir, "a.txt")) && existsSync(join(testDir, "b.txt")),
-			"both workers' files in the merged tree after recovery");
+		check(
+			existsSync(join(testDir, "a.txt")) && existsSync(join(testDir, "b.txt")),
+			"both workers' files in the merged tree after recovery",
+		);
 
 		await cleanupWorkspace(testDir, "dang-1", w1);
 		await cleanupWorkspace(testDir, "dang-2", w2);
 	} finally {
 		rmSync(testDir, { recursive: true, force: true });
 	}
-	console.log("✓ consistency gate: dangling commit fails loud, recovery + union files verified (R3)");
+	console.log(
+		"✓ consistency gate: dangling commit fails loud, recovery + union files verified (R3)",
+	);
 }
 
 // ─── Section 12: deterministic union ladder (R4) ─────────────────────
@@ -1008,7 +1388,11 @@ async function testUnionLadder(errors: string[]): Promise<void> {
 	const testDir = mkdtempSync(join(tmpdir(), "pi-task-ws-union-"));
 	try {
 		initRepo(testDir);
-		writeFileSync(join(testDir, "comments.txt"), "// base note\ncode\n", "utf-8");
+		writeFileSync(
+			join(testDir, "comments.txt"),
+			"// base note\ncode\n",
+			"utf-8",
+		);
 		writeFileSync(join(testDir, "code.txt"), "line1\nline2\nline3\n", "utf-8");
 		writeFileSync(join(testDir, "blob.bin"), Buffer.from([0, 1, 2, 3, 4]));
 		jj(["commit", "-m", "base files"], testDir);
@@ -1029,39 +1413,61 @@ async function testUnionLadder(errors: string[]): Promise<void> {
 
 		await mergeWorkspacesAtomic(testDir, ["uni-1", "uni-2"], baseChange);
 		const conflictsBefore = await detectChangeConflicts(testDir, baseChange);
-		check(conflictsBefore.length === 3, `expected 3 conflicts, got ${JSON.stringify(conflictsBefore)}`);
+		check(
+			conflictsBefore.length === 3,
+			`expected 3 conflicts, got ${JSON.stringify(conflictsBefore)}`,
+		);
 
 		// Rung 2: the union tool — text conflicts resolve deterministically.
 		await resolveConflictsWithUnion(testDir, baseChange, conflictsBefore);
 		const conflictsAfter = await detectChangeConflicts(testDir, baseChange);
 
-		check(!conflictsAfter.includes("comments.txt"),
-			"comment-only conflict should resolve via the union tool");
+		check(
+			!conflictsAfter.includes("comments.txt"),
+			"comment-only conflict should resolve via the union tool",
+		);
 		const comments = readFileSync(join(testDir, "comments.txt"), "utf-8");
-		check(comments.includes("// worker one") && comments.includes("// worker two"),
-			`union should keep BOTH comment versions, got: ${JSON.stringify(comments)}`);
-		check(!comments.includes("<<<<<<<"), "no conflict markers may remain after the union tool");
+		check(
+			comments.includes("// worker one") && comments.includes("// worker two"),
+			`union should keep BOTH comment versions, got: ${JSON.stringify(comments)}`,
+		);
+		check(
+			!comments.includes("<<<<<<<"),
+			"no conflict markers may remain after the union tool",
+		);
 
-		check(!conflictsAfter.includes("code.txt"), "substantive text conflict should also resolve via union");
+		check(
+			!conflictsAfter.includes("code.txt"),
+			"substantive text conflict should also resolve via union",
+		);
 		const code = readFileSync(join(testDir, "code.txt"), "utf-8");
-		check(code.includes("LEFT") && code.includes("RIGHT"),
-			`union should keep BOTH code versions, got: ${JSON.stringify(code)}`);
+		check(
+			code.includes("LEFT") && code.includes("RIGHT"),
+			`union should keep BOTH code versions, got: ${JSON.stringify(code)}`,
+		);
 
 		// Binary conflicts: git merge-file fails (exit 255) → the conflict
 		// REMAINS — escalation, never a false "resolved" with empty content.
-		check(conflictsAfter.includes("blob.bin"),
-			`binary conflict must remain after the union tool (escalation), got ${JSON.stringify(conflictsAfter)}`);
+		check(
+			conflictsAfter.includes("blob.bin"),
+			`binary conflict must remain after the union tool (escalation), got ${JSON.stringify(conflictsAfter)}`,
+		);
 
 		// Escalation payload: the conflicted hunks are retrievable (bounded).
 		const hunks = await conflictHunks(testDir, baseChange, ["blob.bin"]);
-		check("blob.bin" in hunks && hunks["blob.bin"].length > 0, "conflict hunks retrievable for escalation");
+		check(
+			"blob.bin" in hunks && hunks["blob.bin"].length > 0,
+			"conflict hunks retrievable for escalation",
+		);
 
 		await cleanupWorkspace(testDir, "uni-1", w1);
 		await cleanupWorkspace(testDir, "uni-2", w2);
 	} finally {
 		rmSync(testDir, { recursive: true, force: true });
 	}
-	console.log("✓ union ladder: comment + substantive conflicts resolved, binary escalates (R4)");
+	console.log(
+		"✓ union ladder: comment + substantive conflicts resolved, binary escalates (R4)",
+	);
 }
 
 // ─── Section 13: summary parsing (R3/R5 input) ───────────────────────
@@ -1073,17 +1479,38 @@ function testParseSummaryChanges(errors: string[]): void {
 		if (!cond) errors.push(msg);
 	};
 
-	const changes = parseSummaryChanges(["M shared.txt", "A new.txt", "D old.txt", "R {a.txt => renamed.txt}"]);
+	const changes = parseSummaryChanges([
+		"M shared.txt",
+		"A new.txt",
+		"D old.txt",
+		"R {a.txt => renamed.txt}",
+	]);
 	check(changes.length === 4, `expected 4 changes, got ${changes.length}`);
-	check(changes[0].kind === "M" && changes[0].file === "shared.txt", "modified change parsed");
-	check(changes[1].kind === "A" && changes[1].file === "new.txt", "added change parsed");
-	check(changes[2].kind === "D" && changes[2].file === "old.txt", "deleted change parsed");
-	check(changes[3].kind === "R" && changes[3].file === "renamed.txt",
-		`rename should resolve to the NEW path, got ${JSON.stringify(changes[3])}`);
+	check(
+		changes[0]!.kind === "M" && changes[0]!.file === "shared.txt",
+		"modified change parsed",
+	);
+	check(
+		changes[1]!.kind === "A" && changes[1]!.file === "new.txt",
+		"added change parsed",
+	);
+	check(
+		changes[2]!.kind === "D" && changes[2]!.file === "old.txt",
+		"deleted change parsed",
+	);
+	check(
+		changes[3]!.kind === "R" && changes[3]!.file === "renamed.txt",
+		`rename should resolve to the NEW path, got ${JSON.stringify(changes[3]!)}`,
+	);
 	check(parseSummaryChanges([]).length === 0, "empty input → empty changes");
-	check(parseSummaryChanges(["   ", "junk"]).length === 0, "blank/garbage lines skipped");
+	check(
+		parseSummaryChanges(["   ", "junk"]).length === 0,
+		"blank/garbage lines skipped",
+	);
 
-	console.log("✓ parseSummaryChanges: kinds + rename-to-new-path (R3/R5 input)");
+	console.log(
+		"✓ parseSummaryChanges: kinds + rename-to-new-path (R3/R5 input)",
+	);
 }
 
 // ─── Rescue-commit for an aborted single-worker's WIP ────────────────
@@ -1097,22 +1524,45 @@ async function testRescueAbortedWork(errors: string[]): Promise<void> {
 		initRepo(testDir);
 		// Dirty working copy (untracked WIP) → rescue commit preserves it.
 		writeFileSync(join(testDir, "wip.txt"), "half-done\n", "utf-8");
-		await rescueAbortedWorkBestEffort(testDir, new Error("wall-clock budget expired"));
-		const msg = jj(["log", "-r", "@-", "--no-graph", "-T", "description.first_line()"], testDir).trim();
-		check(msg.startsWith("rescue: aborted task run"), `rescue commit named, got: ${msg}`);
-		check(existsSync(join(testDir, "wip.txt")), "rescued file survives in the working copy");
-		check(jj(["file", "list"], testDir).includes("wip.txt"), "rescued file tracked in the rescue commit");
+		await rescueAbortedWorkBestEffort(
+			testDir,
+			new Error("wall-clock budget expired"),
+		);
+		const msg = jj(
+			["log", "-r", "@-", "--no-graph", "-T", "description.first_line()"],
+			testDir,
+		).trim();
+		check(
+			msg.startsWith("rescue: aborted task run"),
+			`rescue commit named, got: ${msg}`,
+		);
+		check(
+			existsSync(join(testDir, "wip.txt")),
+			"rescued file survives in the working copy",
+		);
+		check(
+			jj(["file", "list"], testDir).includes("wip.txt"),
+			"rescued file tracked in the rescue commit",
+		);
 
 		// Clean working copy → NO rescue commit created.
 		jj(["new"], testDir);
-		const before = jj(["log", "-r", "all()", "-T", "description.first_line()"], testDir).trim().length;
+		const before = jj(
+			["log", "-r", "all()", "-T", "description.first_line()"],
+			testDir,
+		).trim().length;
 		await rescueAbortedWorkBestEffort(testDir, new Error("worker error"));
-		const after = jj(["log", "-r", "all()", "-T", "description.first_line()"], testDir).trim().length;
+		const after = jj(
+			["log", "-r", "all()", "-T", "description.first_line()"],
+			testDir,
+		).trim().length;
 		check(before === after, "clean working copy → no rescue commit");
 	} finally {
 		rmSync(testDir, { recursive: true, force: true });
 	}
-	console.log("✓ rescue-commit: aborted single-worker WIP preserved (dirty), skipped when clean");
+	console.log(
+		"✓ rescue-commit: aborted single-worker WIP preserved (dirty), skipped when clean",
+	);
 }
 
 // ─── assertWorkspacesConsumed: the post-squash invariant ─────────────
@@ -1139,9 +1589,15 @@ async function testWorkspacesConsumed(errors: string[]): Promise<void> {
 		writeFileSync(join(w2, "y.txt"), "two\n", "utf-8");
 		jj(["commit", "-m", "con w2"], w2);
 
-		const outcome = await mergeWorkspacesAtomic(testDir, ["con-1", "con-2"], baseChange);
-		check(outcome.commit_id.length > 0 && outcome.files_changed === 2,
-			`atomic outcome fields, got ${outcome.commit_id} / ${outcome.files_changed}`);
+		const outcome = await mergeWorkspacesAtomic(
+			testDir,
+			["con-1", "con-2"],
+			baseChange,
+		);
+		check(
+			outcome.commit_id.length > 0 && outcome.files_changed === 2,
+			`atomic outcome fields, got ${outcome.commit_id} / ${outcome.files_changed}`,
+		);
 
 		// False-alarm regression: move ws-@ BACK onto the pre-merge base
 		// (jj sometimes leaves empty workspace stubs there instead of
@@ -1167,12 +1623,16 @@ async function testWorkspacesConsumed(errors: string[]): Promise<void> {
 		} catch (err) {
 			threw = (err as Error).message;
 		}
-		check(threw.includes("con-3") && threw.includes("did not fully consume"),
-			`leftover workspace must fail with a precise message, got: ${threw}`);
+		check(
+			threw.includes("con-3") && threw.includes("did not fully consume"),
+			`leftover workspace must fail with a precise message, got: ${threw}`,
+		);
 	} finally {
 		rmSync(testDir, { recursive: true, force: true });
 	}
-	console.log("✓ assertWorkspacesConsumed: empty stub on the pre-merge base passes (false-alarm fix); unconsumed work fails");
+	console.log(
+		"✓ assertWorkspacesConsumed: empty stub on the pre-merge base passes (false-alarm fix); unconsumed work fails",
+	);
 }
 
 // ─── assertMerged: the unrebased-stub regression (R3 gate) ───────────
@@ -1193,7 +1653,10 @@ async function testAssertMergedUnrebasedStub(errors: string[]): Promise<void> {
 		const baseChange = await taskBaseChangeId(testDir);
 		// The repo ROOT — a visible ancestor of everything (never rewritten):
 		// rebasing onto it can't resurrect a rewritten change / diverge it.
-		const rootCommitId = jj(["log", "-r", "root()", "--no-graph", "-T", "commit_id"], testDir).trim();
+		const rootCommitId = jj(
+			["log", "-r", "root()", "--no-graph", "-T", "commit_id"],
+			testDir,
+		).trim();
 
 		const w1 = await createWorkspace(testDir, "sg-1");
 		const w2 = await createWorkspace(testDir, "sg-2");
@@ -1202,11 +1665,20 @@ async function testAssertMergedUnrebasedStub(errors: string[]): Promise<void> {
 		writeFileSync(join(w2, "b.txt"), "two\n", "utf-8");
 		jj(["commit", "-m", "sg w2"], w2);
 
-		const outcome = await mergeWorkspacesAtomic(testDir, ["sg-1", "sg-2"], baseChange);
-		check(outcome.files_changed === 2, `atomic outcome, got ${outcome.files_changed}`);
+		const outcome = await mergeWorkspacesAtomic(
+			testDir,
+			["sg-1", "sg-2"],
+			baseChange,
+		);
+		check(
+			outcome.files_changed === 2,
+			`atomic outcome, got ${outcome.files_changed}`,
+		);
 
 		// Normal shape (stubs rebased): the gate passes.
-		await assertMerged(testDir, ["sg-1", "sg-2"], baseChange, { expectedFiles: ["a.txt", "b.txt"] });
+		await assertMerged(testDir, ["sg-1", "sg-2"], baseChange, {
+			expectedFiles: ["a.txt", "b.txt"],
+		});
 
 		// Unrebased-stub shape: move ws-@ BACK onto the pre-merge base — the
 		// empty stub is no longer a descendant of the merged base and its tree
@@ -1214,11 +1686,15 @@ async function testAssertMergedUnrebasedStub(errors: string[]): Promise<void> {
 		// throwaway; the merged tree + working tree hold the union).
 		const w1At = await workspaceCommitId(testDir, "sg-1");
 		jj(["rebase", "-s", w1At, "-o", rootCommitId], testDir);
-		await assertMerged(testDir, ["sg-1", "sg-2"], baseChange, { expectedFiles: ["a.txt", "b.txt"] });
+		await assertMerged(testDir, ["sg-1", "sg-2"], baseChange, {
+			expectedFiles: ["a.txt", "b.txt"],
+		});
 	} finally {
 		rmSync(testDir, { recursive: true, force: true });
 	}
-	console.log("✓ assertMerged: unrebased empty stubs pass (false-alarm regression); union checks gate");
+	console.log(
+		"✓ assertMerged: unrebased empty stubs pass (false-alarm regression); union checks gate",
+	);
 }
 
 // ─── R5: bounded jj calls ────────────────────────────────────────────
@@ -1236,11 +1712,17 @@ async function testJjTimeoutBounded(errors: string[]): Promise<void> {
 		initRepo(testDir);
 
 		// The default bound is ~120s (R5).
-		check(DEFAULT_JJ_TIMEOUT_MS === 120_000, `default jj bound should be 120s, got ${DEFAULT_JJ_TIMEOUT_MS}`);
+		check(
+			DEFAULT_JJ_TIMEOUT_MS === 120_000,
+			`default jj bound should be 120s, got ${DEFAULT_JJ_TIMEOUT_MS}`,
+		);
 
 		// A normal call: bounded, succeeds, no timeout flag.
 		const ok = await execJj(["status"], testDir);
-		check(ok.code === 0, `jj status should succeed, got code ${ok.code}: ${ok.stderr.trim()}`);
+		check(
+			ok.code === 0,
+			`jj status should succeed, got code ${ok.code}: ${ok.stderr.trim()}`,
+		);
 		check(ok.timedOut !== true, "no timedOut flag on a clean call");
 
 		// A 1ms bound: the call is killed — it must return (bounded), report
@@ -1249,9 +1731,14 @@ async function testJjTimeoutBounded(errors: string[]): Promise<void> {
 		const t0 = Date.now();
 		const timed = await execJj(["status"], testDir, { timeoutMs: 1 });
 		const elapsed = Date.now() - t0;
-		check(timed.timedOut === true,
-			`a 1ms bound must time out, got code ${timed.code} timedOut ${timed.timedOut}`);
-		check(elapsed < 5000, `timed-out call must return quickly (took ${elapsed}ms)`);
+		check(
+			timed.timedOut === true,
+			`a 1ms bound must time out, got code ${timed.code} timedOut ${timed.timedOut}`,
+		);
+		check(
+			elapsed < 5000,
+			`timed-out call must return quickly (took ${elapsed}ms)`,
+		);
 		check(timed.stderr.includes("timed out"), "timeout note in stderr");
 
 		// The failure path's tighter bound is honored through
@@ -1264,11 +1751,16 @@ async function testJjTimeoutBounded(errors: string[]): Promise<void> {
 		} catch (err) {
 			msg = (err as Error).message;
 		}
-		check(msg.includes("timed out"), `wedged-workspace resolution is bounded, got: ${JSON.stringify(msg)}`);
+		check(
+			msg.includes("timed out"),
+			`wedged-workspace resolution is bounded, got: ${JSON.stringify(msg)}`,
+		);
 	} finally {
 		rmSync(testDir, { recursive: true, force: true });
 	}
-	console.log("✓ execJj timeout: bounded by default, overridable per call, failure path can't hang (R5)");
+	console.log(
+		"✓ execJj timeout: bounded by default, overridable per call, failure path can't hang (R5)",
+	);
 }
 
 // ─── R3: rescue uncommitted workspace state ──────────────────────────
@@ -1286,7 +1778,6 @@ async function testRescueWorkspaceState(errors: string[]): Promise<void> {
 	const testDir = mkdtempSync(join(tmpdir(), "pi-task-ws-rescws-"));
 	try {
 		initRepo(testDir);
-		const baseChange = await taskBaseChangeId(testDir);
 
 		const w1 = await createWorkspace(testDir, "rescws-1");
 		// The worker committed real work, then left a dirty working copy
@@ -1301,40 +1792,79 @@ async function testRescueWorkspaceState(errors: string[]): Promise<void> {
 			w1,
 			"Parallel workers failed: wall-clock budget expired",
 		);
-		check(rescueId !== null && /^[0-9a-f]{40}$/.test(rescueId!), "rescue commit id returned");
-		const msg = jj(["log", "-r", "@-", "--no-graph", "-T", "description.first_line()"], w1).trim();
-		check(msg.startsWith("rescue: aborted task run"), `rescue commit message, got: ${msg}`);
-		check(msg.includes("wall-clock budget expired"), `cause embedded in the rescue message, got: ${msg}`);
-		check(jj(["file", "list"], w1).includes("wip.txt"), "untracked WIP captured by the rescue commit");
-		check(jj(["file", "list"], w1).includes("tmp/scratch.json"),
-			"scratch under the workspace's tmp captured by the rescue commit");
+		check(
+			rescueId !== null && /^[0-9a-f]{40}$/.test(rescueId),
+			"rescue commit id returned",
+		);
+		const msg = jj(
+			["log", "-r", "@-", "--no-graph", "-T", "description.first_line()"],
+			w1,
+		).trim();
+		check(
+			msg.startsWith("rescue: aborted task run"),
+			`rescue commit message, got: ${msg}`,
+		);
+		check(
+			msg.includes("wall-clock budget expired"),
+			`cause embedded in the rescue message, got: ${msg}`,
+		);
+		check(
+			jj(["file", "list"], w1).includes("wip.txt"),
+			"untracked WIP captured by the rescue commit",
+		);
+		check(
+			jj(["file", "list"], w1).includes("tmp/scratch.json"),
+			"scratch under the workspace's tmp captured by the rescue commit",
+		);
 		// The rescue commit stacks INSIDE the preserved workspace chain (the
 		// worker's committed work is its parent — squashing base..@- recovers
 		// everything).
-		const parentDesc = jj(["log", "-r", "@--", "--no-graph", "-T", "description.first_line()"], w1).trim();
-		check(parentDesc === "rescws committed work",
-			`rescue commit stacks on the worker's commits, got: ${parentDesc}`);
-		check((await workspaceCommitId(testDir, "rescws-1")) !== rescueId,
-			"the workspace @ is the fresh empty WC — the rescue commit is its parent (the artifact records the rescue id)");
+		const parentDesc = jj(
+			["log", "-r", "@--", "--no-graph", "-T", "description.first_line()"],
+			w1,
+		).trim();
+		check(
+			parentDesc === "rescws committed work",
+			`rescue commit stacks on the worker's commits, got: ${parentDesc}`,
+		);
+		check(
+			(await workspaceCommitId(testDir, "rescws-1")) !== rescueId,
+			"the workspace @ is the fresh empty WC — the rescue commit is its parent (the artifact records the rescue id)",
+		);
 
 		// A clean workspace → no rescue commit.
 		const w2 = await createWorkspace(testDir, "rescws-2");
-		const before = jj(["log", "-r", "all()", "--no-graph", "-T", "commit_id"], testDir).trim().length;
+		const before = jj(
+			["log", "-r", "all()", "--no-graph", "-T", "commit_id"],
+			testDir,
+		).trim().length;
 		const none = await rescueWorkspaceStateBestEffort(w2, "cause");
 		check(none === null, "clean workspace → no rescue commit");
-		const after = jj(["log", "-r", "all()", "--no-graph", "-T", "commit_id"], testDir).trim().length;
+		const after = jj(
+			["log", "-r", "all()", "--no-graph", "-T", "commit_id"],
+			testDir,
+		).trim().length;
 		check(before === after, "no new commits on a clean workspace");
 
 		// The rescue helper never throws on a wedged workspace (bounded).
-		const bounded = await rescueWorkspaceStateBestEffort("/nonexistent-dir", "cause", { timeoutMs: 1 });
-		check(bounded === null, "rescue on an unusable workspace → null (best effort)");
+		const bounded = await rescueWorkspaceStateBestEffort(
+			"/nonexistent-dir",
+			"cause",
+			{ timeoutMs: 1 },
+		);
+		check(
+			bounded === null,
+			"rescue on an unusable workspace → null (best effort)",
+		);
 
 		await cleanupWorkspace(testDir, "rescws-1", w1);
 		await cleanupWorkspace(testDir, "rescws-2", w2);
 	} finally {
 		rmSync(testDir, { recursive: true, force: true });
 	}
-	console.log("✓ rescue-commit: parallel workspace WIP preserved inside the workspace (R3)");
+	console.log(
+		"✓ rescue-commit: parallel workspace WIP preserved inside the workspace (R3)",
+	);
 }
 
 // ─── R1: no description-less stub on a no-merge failure ──────────────
@@ -1355,40 +1885,75 @@ async function testNoStubOnNoMergeFailure(errors: string[]): Promise<void> {
 		initRepo(testDir);
 		const identityDir = mkdtempSync(join(tmpdir(), "pi-task-identity-"));
 		const identityFile = join(identityDir, "jj-identity.toml");
-		writeFileSync(identityFile, aiIdentityToml("Pi (deepseek-v4-flash)", "noreply@danong.dev"), "utf-8");
+		writeFileSync(
+			identityFile,
+			aiIdentityToml("Pi (deepseek-v4-flash)", "noreply@danong.dev"),
+			"utf-8",
+		);
 		await createAiTaskBase(testDir, identityFile, "Handle UTF-8 BOM");
 
 		// No-merge failure: the finally's restore must NOT create the stub.
-		await restoreParallelWorkingCopy(testDir, { identityDir, mergeLanded: false });
+		await restoreParallelWorkingCopy(testDir, {
+			identityDir,
+			mergeLanded: false,
+		});
 
 		// Every visible commit carries a description (jj refuses to push
 		// description-less commits) and the identity dir was cleaned up.
-		const descs = jj(["log", "-r", "all()", "--no-graph", "-T", "description.first_line()"], testDir)
+		const descs = jj(
+			["log", "-r", "all()", "--no-graph", "-T", "description.first_line()"],
+			testDir,
+		)
 			.trim()
 			.split("\n")
 			.filter((l) => l.trim().length > 0);
-		check(descs.every((d) => d.trim().length > 0),
-			`no description-less commit may remain, got: ${JSON.stringify(descs)}`);
+		check(
+			descs.every((d) => d.trim().length > 0),
+			`no description-less commit may remain, got: ${JSON.stringify(descs)}`,
+		);
 		check(!existsSync(identityDir), "identity dir removed by the restore");
-		const at = jj(["log", "-r", "@", "--no-graph", "-T", "description.first_line()"], testDir).trim();
-		check(at === "task: Handle UTF-8 BOM", `the described AI base remains as @, got: ${at}`);
+		const at = jj(
+			["log", "-r", "@", "--no-graph", "-T", "description.first_line()"],
+			testDir,
+		).trim();
+		check(
+			at === "task: Handle UTF-8 BOM",
+			`the described AI base remains as @, got: ${at}`,
+		);
 
 		// When a merge DID land, the restore creates the stub — and only then.
 		const identityDir2 = mkdtempSync(join(tmpdir(), "pi-task-identity-"));
 		const identityFile2 = join(identityDir2, "jj-identity.toml");
-		writeFileSync(identityFile2, aiIdentityToml("Pi (deepseek-v4-flash)", "noreply@danong.dev"), "utf-8");
+		writeFileSync(
+			identityFile2,
+			aiIdentityToml("Pi (deepseek-v4-flash)", "noreply@danong.dev"),
+			"utf-8",
+		);
 		await createAiTaskBase(testDir, identityFile2, "Handle UTF-8 BOM");
-		await restoreParallelWorkingCopy(testDir, { identityDir: identityDir2, mergeLanded: true });
-		const stub = jj(["log", "-r", "@", "--no-graph", "-T", "if(empty, 'EMPTY', 'X')"], testDir).trim();
+		await restoreParallelWorkingCopy(testDir, {
+			identityDir: identityDir2,
+			mergeLanded: true,
+		});
+		const stub = jj(
+			["log", "-r", "@", "--no-graph", "-T", "if(empty, 'EMPTY', 'X')"],
+			testDir,
+		).trim();
 		check(stub === "EMPTY", "merge landed → fresh empty stub created");
-		const stubParent = jj(["log", "-r", "@-", "--no-graph", "-T", "description.first_line()"], testDir).trim();
-		check(stubParent === "task: Handle UTF-8 BOM",
-			`stub sits on the described AI/merged base, got: ${stubParent}`);
+		const stubParent = jj(
+			["log", "-r", "@-", "--no-graph", "-T", "description.first_line()"],
+			testDir,
+		).trim();
+		check(
+			stubParent === "task: Handle UTF-8 BOM",
+			`stub sits on the described AI/merged base, got: ${stubParent}`,
+		);
 		check(!existsSync(identityDir2), "second identity dir removed too");
 	} finally {
 		rmSync(testDir, { recursive: true, force: true });
 	}
-	console.log("✓ no-merge failure: no description-less stub; stub only when a merge landed (R1)");
+	console.log(
+		"✓ no-merge failure: no description-less stub; stub only when a merge landed (R1)",
+	);
 }
 
 // ─── Section 14: merge-failure artifact (R2) ─────────────────────────
@@ -1412,7 +1977,6 @@ async function testMergeFailureArtifact(errors: string[]): Promise<void> {
 	const metricsDir = mkdtempSync(join(tmpdir(), "pi-task-ws-failart-metrics-"));
 	try {
 		initRepo(testDir);
-		const baseChange = await taskBaseChangeId(testDir);
 
 		const w1 = await createWorkspace(testDir, "fail-1");
 		const w2 = await createWorkspace(testDir, "fail-2");
@@ -1436,41 +2000,56 @@ async function testMergeFailureArtifact(errors: string[]): Promise<void> {
 			conflictHunks: { "a.txt": "<<<<<<< one\n" },
 			metricsDir,
 			project: "proj",
-			specMarkdown: "## Goal\nX\n## Requirements\n- R1: x\n## Verification\n- true\n",
+			specMarkdown:
+				"## Goal\nX\n## Requirements\n- R1: x\n## Verification\n- true\n",
 			tier: "economy",
 		});
 
 		// The artifact exists and round-trips the full R2 record.
 		const dir = join(metricsDir, "proj");
 		const files = readdirSync(dir).filter((f) => f.endsWith(".failure.json"));
-		check(files.length === 1, `exactly one failure artifact expected, got ${JSON.stringify(files)}`);
-		const parsed = JSON.parse(readFileSync(join(dir, files[0]), "utf-8")) as {
+		check(
+			files.length === 1,
+			`exactly one failure artifact expected, got ${JSON.stringify(files)}`,
+		);
+		const parsed = JSON.parse(readFileSync(join(dir, files[0]!), "utf-8")) as {
 			kind: string;
 			cause: string;
 			recovery?: string;
 			merge?: {
-				workspaces: Array<{ name: string; commit_id: string; rescue_commit_id?: string }>;
+				workspaces: Array<{
+					name: string;
+					commit_id: string;
+					rescue_commit_id?: string;
+				}>;
 				dangling_commit_ids: string[];
 				conflicted_files: string[];
 				conflict_hunks?: Record<string, string>;
 			};
 		};
-		check(parsed.kind === "parallel", `artifact kind should be parallel, got ${parsed.kind}`);
-		check(parsed.cause.includes("simulated merge failure"), `cause recorded, got ${parsed.cause}`);
+		check(
+			parsed.kind === "parallel",
+			`artifact kind should be parallel, got ${parsed.kind}`,
+		);
+		check(
+			parsed.cause.includes("simulated merge failure"),
+			`cause recorded, got ${parsed.cause}`,
+		);
 		check(parsed.merge !== undefined, "merge record present (R2)");
 		check(
 			parsed.merge!.workspaces.length === 2 &&
-				parsed.merge!.workspaces[0].name === "fail-1" &&
-				parsed.merge!.workspaces[1].name === "fail-2",
+				parsed.merge!.workspaces[0]!.name === "fail-1" &&
+				parsed.merge!.workspaces[1]!.name === "fail-2",
 			`workspace names recorded, got ${JSON.stringify(parsed.merge!.workspaces)}`,
 		);
 		check(
-			parsed.merge!.workspaces[0].commit_id === at1 && parsed.merge!.workspaces[1].commit_id === at2,
+			parsed.merge!.workspaces[0]!.commit_id === at1 &&
+				parsed.merge!.workspaces[1]!.commit_id === at2,
 			"workspace commit ids recorded (the dangling ids)",
 		);
 		check(
-			parsed.merge!.workspaces[0].rescue_commit_id === at1 &&
-				parsed.merge!.workspaces[1].rescue_commit_id === undefined,
+			parsed.merge!.workspaces[0]!.rescue_commit_id === at1 &&
+				parsed.merge!.workspaces[1]!.rescue_commit_id === undefined,
 			"R3 rescue commit ids recorded where the uncommitted state lives",
 		);
 		check(
@@ -1480,22 +2059,43 @@ async function testMergeFailureArtifact(errors: string[]): Promise<void> {
 			`dangling commit ids recorded, got ${JSON.stringify(parsed.merge!.dangling_commit_ids)}`,
 		);
 		check(
-			parsed.merge!.conflicted_files.includes("a.txt") && parsed.merge!.conflicted_files.includes("b.txt"),
+			parsed.merge!.conflicted_files.includes("a.txt") &&
+				parsed.merge!.conflicted_files.includes("b.txt"),
 			`conflicted files recorded, got ${JSON.stringify(parsed.merge!.conflicted_files)}`,
 		);
-		check(parsed.merge!.conflict_hunks?.["a.txt"] === "<<<<<<< one\n", "conflict hunks recorded");
+		check(
+			parsed.merge!.conflict_hunks?.["a.txt"] === "<<<<<<< one\n",
+			"conflict hunks recorded",
+		);
 
 		// R4: the artifact carries the scripted recovery guide — stacking
 		// commands, the stub-abandon-before-push warning, and the
 		// add-vs-delete :ours/:theirs warning.
-		check(typeof parsed.recovery === "string" && parsed.recovery.length > 100,
-			"recovery guide present in the artifact");
-		check(parsed.recovery!.includes("jj rebase -s"), "guide stacks the workspaces");
-		check(parsed.recovery!.includes("description-less"), "guide warns about description-less commits refusing push");
-		check(parsed.recovery!.includes(":ours") && parsed.recovery!.includes(":theirs"),
-			"guide resolves add-vs-delete via :ours/:theirs");
-		check(parsed.recovery!.includes("mid-stack abandon"), "guide warns against mid-stack abandon");
-		check(parsed.recovery!.includes(at1), "guide names the rescue commit (where the uncommitted state lives)");
+		check(
+			typeof parsed.recovery === "string" && parsed.recovery.length > 100,
+			"recovery guide present in the artifact",
+		);
+		check(
+			parsed.recovery!.includes("jj rebase -s"),
+			"guide stacks the workspaces",
+		);
+		check(
+			parsed.recovery!.includes("description-less"),
+			"guide warns about description-less commits refusing push",
+		);
+		check(
+			parsed.recovery!.includes(":ours") &&
+				parsed.recovery!.includes(":theirs"),
+			"guide resolves add-vs-delete via :ours/:theirs",
+		);
+		check(
+			parsed.recovery!.includes("mid-stack abandon"),
+			"guide warns against mid-stack abandon",
+		);
+		check(
+			parsed.recovery!.includes(at1),
+			"guide names the rescue commit (where the uncommitted state lives)",
+		);
 
 		// No metricsDir → no artifact, no throw (the best-effort contract).
 		writeMergeFailureArtifact({
@@ -1510,8 +2110,14 @@ async function testMergeFailureArtifact(errors: string[]): Promise<void> {
 		// The failure did NOT forget the workspaces: they still exist and
 		// their @s still hold the unmerged commits (scripted recovery).
 		const list = jj(["workspace", "list"], testDir);
-		check(list.includes("fail-1:") && list.includes("fail-2:"), "workspaces survive the simulated failure");
-		check((await workspaceCommitId(testDir, "fail-1")) === at1, "fail-1 @ still holds its commit");
+		check(
+			list.includes("fail-1:") && list.includes("fail-2:"),
+			"workspaces survive the simulated failure",
+		);
+		check(
+			(await workspaceCommitId(testDir, "fail-1")) === at1,
+			"fail-1 @ still holds its commit",
+		);
 
 		await cleanupWorkspace(testDir, "fail-1", w1);
 		await cleanupWorkspace(testDir, "fail-2", w2);
@@ -1519,14 +2125,18 @@ async function testMergeFailureArtifact(errors: string[]): Promise<void> {
 		rmSync(testDir, { recursive: true, force: true });
 		rmSync(metricsDir, { recursive: true, force: true });
 	}
-	console.log("✓ merge-failure artifact: workspaces + dangling ids + conflicted files recorded (R2)");
+	console.log(
+		"✓ merge-failure artifact: workspaces + dangling ids + conflicted files recorded (R2)",
+	);
 }
 
 // ─── Runner ──────────────────────────────────────────────────────────
 
 export async function runTests(): Promise<void> {
 	const errors: string[] = [];
-	console.log("── test-workspace: jj mechanics + conflict + final-state conflicts + commit ids + guard + merge integrity + fork-proof + atomic combine + consistency gate + union ladder + failure artifact + recovery guide + jj timeout + rescue + no-stub (real jj) ──");
+	console.log(
+		"── test-workspace: jj mechanics + conflict + final-state conflicts + commit ids + guard + merge integrity + fork-proof + atomic combine + consistency gate + union ladder + failure artifact + recovery guide + jj timeout + rescue + no-stub (real jj) ──",
+	);
 	await testMechanics(errors);
 	await testConflict(errors);
 	await testFinalStateConflicts(errors);
@@ -1559,11 +2169,14 @@ export async function runTests(): Promise<void> {
 }
 
 // Direct execution support: `npx tsx extensions/task/test-workspace.ts`
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (
+	process.argv[1] &&
+	import.meta.url === pathToFileURL(process.argv[1]).href
+) {
 	runTests()
 		.then(() => process.exit(0))
 		.catch((err) => {
-			console.error(err.message ?? err);
+			console.error((err as Error).message ?? err);
 			process.exit(1);
 		});
 }

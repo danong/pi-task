@@ -8,7 +8,13 @@
  */
 
 import { execSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -57,7 +63,10 @@ async function main(): Promise<number> {
 		mkdirSync(repo, { recursive: true });
 		execSync("jj git init --colocate", { cwd: repo, stdio: "pipe" });
 		writeFileSync(join(repo, "README.md"), "# parallel fixture\n", "utf-8");
-		execSync('JJ_EDITOR=true jj commit -m "init"', { cwd: repo, stdio: "pipe" });
+		execSync('JJ_EDITOR=true jj commit -m "init"', {
+			cwd: repo,
+			stdio: "pipe",
+		});
 
 		const daemon = startDaemon(join(dir, "tasks.db"));
 		const driver = new JujutsuWorkspaceDriver({ projectDir: repo });
@@ -73,7 +82,9 @@ async function main(): Promise<number> {
 			sessionTimeoutMs: 420_000,
 			onEvent: (worker, event) => {
 				const t = Math.round((Date.now() - startedAt) / 1000);
-				console.log(`[w${worker} ${t}s] ${JSON.stringify(event).slice(0, 120)}`);
+				console.log(
+					`[w${worker} ${t}s] ${JSON.stringify(event).slice(0, 120)}`,
+				);
 			},
 		});
 
@@ -82,21 +93,37 @@ async function main(): Promise<number> {
 			if (!cond) failures.push(msg);
 		};
 
-		check(result.aggregate.verdict === "ship", `aggregate ship (got ${result.aggregate.verdict})`);
+		check(
+			result.aggregate.verdict === "ship",
+			`aggregate ship (got ${result.aggregate.verdict})`,
+		);
 		check(result.perWorker.length === 2, "two worker receipts");
-		check(result.perWorker.every((r) => r.verdict === "ship"), "both workers shipped");
-		check(existsSync(join(repo, "a.txt")) && existsSync(join(repo, "b.txt")),
-			"integrated tree holds both workers' files");
+		check(
+			result.perWorker.every((r) => r.verdict === "ship"),
+			"both workers shipped",
+		);
+		check(
+			existsSync(join(repo, "a.txt")) && existsSync(join(repo, "b.txt")),
+			"integrated tree holds both workers' files",
+		);
 
-		const log = execSync("jj log -r 'all()' --no-graph -T description", { cwd: repo, encoding: "utf-8" });
-		check(log.includes("alpha") && log.includes("beta"), "both worker commits reached the repo");
+		const log = execSync("jj log -r 'all()' --no-graph -T description", {
+			cwd: repo,
+			encoding: "utf-8",
+		});
+		check(
+			log.includes("alpha") && log.includes("beta"),
+			"both worker commits reached the repo",
+		);
 
 		const task = daemon.store.getTask(result.aggregate.taskId);
 		check(task?.status === "completed", "ledger aggregate row completed");
 		daemon.store.close();
 
 		console.log(`aggregate: ${JSON.stringify(result.aggregate)}`);
-		console.log(`per-worker: ${result.perWorker.map((r) => `${r.taskId}=${r.verdict}`).join(" ")}`);
+		console.log(
+			`per-worker: ${result.perWorker.map((r) => `${r.taskId}=${r.verdict}`).join(" ")}`,
+		);
 		if (failures.length > 0) {
 			console.error(`parallel parity FAILED:\n  ${failures.join("\n  ")}`);
 			return 1;
@@ -111,6 +138,8 @@ async function main(): Promise<number> {
 main()
 	.then((code) => process.exit(code))
 	.catch((err) => {
-		console.error(err instanceof Error ? err.stack ?? err.message : String(err));
+		console.error(
+			err instanceof Error ? (err.stack ?? err.message) : String(err),
+		);
 		process.exit(1);
 	});

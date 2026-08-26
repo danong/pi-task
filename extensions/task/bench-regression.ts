@@ -227,9 +227,20 @@ export function groundingLayerOf(i: number, files: number): number {
 	return Math.min(Math.floor(i / per), GROUNDING_LAYERS.length - 1);
 }
 
+/** GROUNDING_LAYERS entry for a layer index produced by
+ *  {@link groundingLayerOf} — that function clamps to the table's range,
+ *  so the guard below is unreachable in practice (noUncheckedIndexedAccess
+ *  just cannot see the clamp). Throws rather than asserting. */
+function groundingLayerAt(index: number) {
+	const layer = GROUNDING_LAYERS[index];
+	if (layer === undefined)
+		throw new Error(`grounding layer index ${index} out of range`);
+	return layer;
+}
+
 /** Base name (no extension) of the i-th fixture module. */
 export function groundingModuleName(i: number, files: number): string {
-	return `${GROUNDING_LAYERS[groundingLayerOf(i, files)].prefix}${String(i).padStart(4, "0")}`;
+	return `${groundingLayerAt(groundingLayerOf(i, files)).prefix}${String(i).padStart(4, "0")}`;
 }
 
 /**
@@ -248,12 +259,21 @@ export function mulberry32(seed: number): () => number {
 }
 
 /** Relative import specifier (no extension) from module `from` to `to`. */
-export function groundingImportPath(fromLayer: number, to: number, files: number): string {
-	const fromSegs = GROUNDING_LAYERS[fromLayer].dir.split("/");
+export function groundingImportPath(
+	fromLayer: number,
+	to: number,
+	files: number,
+): string {
+	const fromSegs = groundingLayerAt(fromLayer).dir.split("/");
 	const toLayer = groundingLayerOf(to, files);
-	const toSegs = GROUNDING_LAYERS[toLayer].dir.split("/");
+	const toSegs = groundingLayerAt(toLayer).dir.split("/");
 	let common = 0;
-	while (common < fromSegs.length && common < toSegs.length && fromSegs[common] === toSegs[common]) common++;
+	while (
+		common < fromSegs.length &&
+		common < toSegs.length &&
+		fromSegs[common] === toSegs[common]
+	)
+		common++;
 	const ups = fromSegs.slice(common).map(() => "..");
 	const downs = toSegs.slice(common);
 	const name = groundingModuleName(to, files);
@@ -270,11 +290,18 @@ export function groundingImportPath(fromLayer: number, to: number, files: number
  * "front door" at the repo root importing a fixed spread across all three
  * layers. Total ≈ files × locPerFile LOC (suite uses 210 × 480 ≈ 100k).
  */
-export function buildGroundingFixture(body: GroundingBody): Array<{ path: string; content: string }> {
+export function buildGroundingFixture(
+	body: GroundingBody,
+): Array<{ path: string; content: string }> {
 	if (body.files < GROUNDING_LAYERS.length) {
-		throw new Error(`grounding fixture needs >= ${GROUNDING_LAYERS.length} files, got ${body.files}`);
+		throw new Error(
+			`grounding fixture needs >= ${GROUNDING_LAYERS.length} files, got ${body.files}`,
+		);
 	}
-	if (body.locPerFile < 16) throw new Error(`grounding fixture locPerFile must be >= 16, got ${body.locPerFile}`);
+	if (body.locPerFile < 16)
+		throw new Error(
+			`grounding fixture locPerFile must be >= 16, got ${body.locPerFile}`,
+		);
 	const rand = mulberry32(body.seed);
 	const per = Math.max(1, Math.floor(body.files / GROUNDING_LAYERS.length));
 	const layerStart = (layer: number): number => layer * per;
@@ -294,14 +321,20 @@ export function buildGroundingFixture(body: GroundingBody): Array<{ path: string
 				deps.add(start + Math.floor(rand() * (layerEnd(layer - 1) - start)));
 			}
 			let guard = 0;
-			while (deps.size < nDeps && guard++ < 64) deps.add(Math.floor(rand() * i));
+			while (deps.size < nDeps && guard++ < 64)
+				deps.add(Math.floor(rand() * i));
 		}
 		const lines: string[] = [];
 		for (const d of [...deps].sort((a, b) => a - b)) {
-			lines.push(`import { ${groundingModuleName(d, body.files)}Estimate } from \"${groundingImportPath(layer, d, body.files)}\";`);
+			lines.push(
+				`import { ${groundingModuleName(d, body.files)}Estimate } from \"${groundingImportPath(layer, d, body.files)}\";`,
+			);
 		}
 		if (lines.length > 0) lines.push("");
-		const depSum = [...deps].sort((a, b) => a - b).map((d) => `${groundingModuleName(d, body.files)}Estimate`).join(" + ");
+		const depSum = [...deps]
+			.sort((a, b) => a - b)
+			.map((d) => `${groundingModuleName(d, body.files)}Estimate`)
+			.join(" + ");
 		lines.push(
 			`export const ${name}Estimate = ${depSum.length > 0 ? `${depSum} + ` : ""}${i};`,
 			`export interface ${name}Shape { id: number; label: string; depth: ${layer} }`,
@@ -309,20 +342,28 @@ export function buildGroundingFixture(body: GroundingBody): Array<{ path: string
 		);
 		const fixed = lines.length;
 		for (let k = 0; k < Math.max(0, body.locPerFile - fixed); k++) {
-			lines.push(`export const ${name}_p${k} = ${(i * 7919 + k * 104729) % 65536};`);
+			lines.push(
+				`export const ${name}_p${k} = ${(i * 7919 + k * 104729) % 65536};`,
+			);
 		}
-		out.push({ path: join(GROUNDING_LAYERS[layer].dir, `${name}.ts`), content: lines.join("\n") + "\n" });
+		out.push({
+			path: join(groundingLayerAt(layer).dir, `${name}.ts`),
+			content: lines.join("\n") + "\n",
+		});
 	}
 	// The front door: index.ts at the repo root imports a fixed spread
 	// across all three layers (the grounding-anchor spec starts here).
-	const spread = [0, 1, 25, 70, 99, 104, 140, 199, 200, 209].filter((d) => d < body.files);
+	const spread = [0, 1, 25, 70, 99, 104, 140, 199, 200, 209].filter(
+		(d) => d < body.files,
+	);
 	const index = [
 		"// suite-03 grounding fixture — front door (generated).",
 		"// Imports a fixed spread of modules across packages/types, services,",
 		"// and handlers.",
 		"",
 		...spread.map(
-			(d) => `import { ${groundingModuleName(d, body.files)}Estimate } from \"./${GROUNDING_LAYERS[groundingLayerOf(d, body.files)].dir}/${groundingModuleName(d, body.files)}\";`,
+			(d) =>
+				`import { ${groundingModuleName(d, body.files)}Estimate } from \"./${groundingLayerAt(groundingLayerOf(d, body.files)).dir}/${groundingModuleName(d, body.files)}\";`,
 		),
 		"",
 		"export const FIXTURE_ESTIMATE = 42;",
@@ -343,7 +384,10 @@ export interface GroundingFixtureStats {
  * Composes with runOne's temp-repo creation (called after the init
  * commit, before the worker spawns).
  */
-export function materializeGroundingFixture(dir: string, body: GroundingBody): GroundingFixtureStats {
+export function materializeGroundingFixture(
+	dir: string,
+	body: GroundingBody,
+): GroundingFixtureStats {
 	const files = buildGroundingFixture(body);
 	let loc = 0;
 	for (const f of files) {
@@ -352,10 +396,13 @@ export function materializeGroundingFixture(dir: string, body: GroundingBody): G
 		writeFileSync(p, f.content, "utf-8");
 		loc += f.content.split("\n").length - 1;
 	}
-	execSync(`jj commit -m \"suite-03 grounding fixture (${body.files} modules, seed ${body.seed})\"`, {
-		cwd: dir,
-		stdio: "pipe",
-	});
+	execSync(
+		`jj commit -m \"suite-03 grounding fixture (${body.files} modules, seed ${body.seed})\"`,
+		{
+			cwd: dir,
+			stdio: "pipe",
+		},
+	);
 	return { files: files.length, loc };
 }
 
@@ -369,7 +416,8 @@ export function materializeGroundingFixture(dir: string, body: GroundingBody): G
 export const GROUNDING_SPECS: GroundingSpec[] = [
 	{
 		id: "grounding-anchor",
-		description: "ground at the fixture front door, list the modules it imports",
+		description:
+			"ground at the fixture front door, list the modules it imports",
 		specMarkdown: `## Goal
 A synthetic TypeScript fixture (suite-03) fills this repo: modules under
 packages/types/, services/, and handlers/ cross-import each other. Orient
@@ -487,11 +535,19 @@ export interface BenchPlan {
 }
 
 /** The baseline for a spec on a tier; unknown tiers → the default entry. */
-export function baselineFor(spec: BenchSpec, tier: string, shape?: string): SpecBaseline {
+export function baselineFor(
+	spec: BenchSpec,
+	tier: string,
+	shape?: string,
+): SpecBaseline {
 	// Shape-specific baselines ("<tier>@<shape>") take precedence; the
 	// per-tier entry (and the required default) remain valid for the code
 	// shape. Record per-shape baselines after a few analysis-shape runs.
-	return spec.baseline[`${tier}@${shape ?? "code"}`] ?? spec.baseline[tier] ?? spec.baseline.default;
+	return (
+		spec.baseline[`${tier}@${shape ?? "code"}`] ??
+		spec.baseline[tier] ??
+		spec.baseline.default
+	);
 }
 
 /**
@@ -503,9 +559,9 @@ export function baselineFor(spec: BenchSpec, tier: string, shape?: string): Spec
 export function buildBenchPlan(opts: {
 	tiers: Record<BudgetTier, BudgetTierConfig>;
 	tierOrder: string[];
-	specs?: BenchSpec[];
-	tierFilter?: string[];
-	shape?: string;
+	specs?: BenchSpec[] | undefined;
+	tierFilter?: string[] | undefined;
+	shape?: string | undefined;
 }): BenchPlan {
 	const shape = opts.shape ?? "code";
 	const specs = opts.specs ?? BENCH_SPECS;
@@ -527,14 +583,23 @@ export function buildBenchPlan(opts: {
 				expectedCostUsd: b.costUsd,
 			};
 		});
-		const expectedDurationMs = runs.reduce((a, r) => a + r.expectedDurationMs, 0);
+		const expectedDurationMs = runs.reduce(
+			(a, r) => a + r.expectedDurationMs,
+			0,
+		);
 		const expectedCostUsd = runs.reduce((a, r) => a + r.expectedCostUsd, 0);
 		totalRuns += runs.length;
 		totalExpectedDurationMs += expectedDurationMs;
 		totalExpectedCostUsd += expectedCostUsd;
 		return { tier, runs, expectedDurationMs, expectedCostUsd };
 	});
-	return { tiers, totalRuns, totalExpectedDurationMs, totalExpectedCostUsd, shape };
+	return {
+		tiers,
+		totalRuns,
+		totalExpectedDurationMs,
+		totalExpectedCostUsd,
+		shape,
+	};
 }
 
 // ─── Baseline comparison (pure) ──────────────────────────────────────
@@ -546,7 +611,12 @@ export interface BenchComparisonRow {
 	/** Recorded runs in this spec's metrics project for this tier. */
 	runs: number;
 	/** Most recent recorded run (summarizeRuns rows are run-id-ascending). */
-	latest: { runId: string; durationMs: number; costUsd: number; verifyPassed: boolean } | null;
+	latest: {
+		runId: string;
+		durationMs: number;
+		costUsd: number;
+		verifyPassed: boolean;
+	} | null;
 	avgDurationMs: number;
 	avgCostUsd: number;
 	expectedDurationMs: number;
@@ -580,18 +650,26 @@ export function compareToBaselines(opts: {
 	const rows: BenchComparisonRow[] = [];
 	for (const tierPlan of opts.plan.tiers) {
 		for (const run of tierPlan.runs) {
-			const summary = opts.summaries[projectForSpec(opts.projectPrefix, run.specId)];
+			const summary =
+				opts.summaries[projectForSpec(opts.projectPrefix, run.specId)];
 			const tierRows = (summary?.rows ?? []).filter((r) => r.tier === run.tier);
 			const runs = tierRows.length;
 			const latest = runs > 0 ? tierRows[runs - 1] : null;
-			const avgDurationMs = runs > 0 ? tierRows.reduce((a, r) => a + r.durationMs, 0) / runs : 0;
-			const avgCostUsd = runs > 0 ? tierRows.reduce((a, r) => a + r.costUsd, 0) / runs : 0;
-			const verifyPassRate = runs > 0 ? tierRows.filter((r) => r.verifyPassed).length / runs : 0;
-			const durationRatio = runs > 0 ? avgDurationMs / run.expectedDurationMs : 0;
+			const avgDurationMs =
+				runs > 0 ? tierRows.reduce((a, r) => a + r.durationMs, 0) / runs : 0;
+			const avgCostUsd =
+				runs > 0 ? tierRows.reduce((a, r) => a + r.costUsd, 0) / runs : 0;
+			const verifyPassRate =
+				runs > 0 ? tierRows.filter((r) => r.verifyPassed).length / runs : 0;
+			const durationRatio =
+				runs > 0 ? avgDurationMs / run.expectedDurationMs : 0;
 			// A non-positive expected cost (free-model runs, un-measured specs)
 			// makes the ratio undefined/Infinite — cost is then NON-COMPARABLE,
 			// never a regression. Ratio 0 = "no data", matching duration above.
-			const costRatio = runs > 0 && run.expectedCostUsd > 0 ? avgCostUsd / run.expectedCostUsd : 0;
+			const costRatio =
+				runs > 0 && run.expectedCostUsd > 0
+					? avgCostUsd / run.expectedCostUsd
+					: 0;
 			const regressions: string[] = [];
 			if (runs > 0 && durationRatio > REGRESSION_DURATION_FACTOR) {
 				regressions.push(`duration ${durationRatio.toFixed(2)}x baseline`);
@@ -600,14 +678,21 @@ export function compareToBaselines(opts: {
 				regressions.push(`cost ${costRatio.toFixed(2)}x baseline`);
 			}
 			if (runs > 0 && verifyPassRate < 1) {
-				regressions.push(`verify failed (${Math.round((1 - verifyPassRate) * runs)}/${runs} runs)`);
+				regressions.push(
+					`verify failed (${Math.round((1 - verifyPassRate) * runs)}/${runs} runs)`,
+				);
 			}
 			rows.push({
 				specId: run.specId,
 				tier: run.tier,
 				runs,
 				latest: latest
-					? { runId: latest.runId, durationMs: latest.durationMs, costUsd: latest.costUsd, verifyPassed: latest.verifyPassed }
+					? {
+							runId: latest.runId,
+							durationMs: latest.durationMs,
+							costUsd: latest.costUsd,
+							verifyPassed: latest.verifyPassed,
+						}
 					: null,
 				avgDurationMs,
 				avgCostUsd,
@@ -633,7 +718,9 @@ export function renderBenchPlan(plan: BenchPlan): string[] {
 		"task bench-regression — dry run (no runs spawned, no LLM calls)",
 		`tiers (${plan.tiers.length}): ${plan.tiers.map((t) => t.tier).join(", ") || "(none — check --tier names)"}`,
 	];
-	const specs = [...new Set(plan.tiers.flatMap((t) => t.runs.map((r) => r.specId)))];
+	const specs = [
+		...new Set(plan.tiers.flatMap((t) => t.runs.map((r) => r.specId))),
+	];
 	if (specs.length > 0) {
 		lines.push(`specs (${specs.length}):`);
 		for (const specId of specs) {
@@ -673,7 +760,8 @@ export function renderBenchReport(rows: BenchComparisonRow[]): string[] {
 					`${fmtUsd(r.latest!.costUsd)} ${r.latest!.verifyPassed ? "✓" : "✗"} · avg ` +
 					`${formatDuration(r.avgDurationMs)} ${fmtUsd(r.avgCostUsd)} ` +
 					`(${r.durationRatio.toFixed(2)}x/${r.costRatio.toFixed(2)}x baseline)`;
-		const flag = r.regressions.length > 0 ? `  ⚠ ${r.regressions.join("; ")}` : "";
+		const flag =
+			r.regressions.length > 0 ? `  ⚠ ${r.regressions.join("; ")}` : "";
 		lines.push(`  ${r.tier.padEnd(9)} × ${r.specId.padEnd(16)} ${data}${flag}`);
 	}
 	if (regressions.length > 0) {
@@ -706,18 +794,19 @@ export interface BenchOptions {
 	shapes: Record<string, TaskShape>;
 	/** Run-pipeline shape to benchmark (default "code"; "analysis" for the
 	 *  strong-writer shape). Baselines key "<tier>@<shape>" with a tier
-	 *  fallback. */
-	shape?: string;
-	tierFilter?: string[];
+	 *  fallback. Optional AND nullable under exactOptionalPropertyTypes —
+	 *  callers forward their own `T | undefined` options verbatim. */
+	shape?: string | undefined;
+	tierFilter?: string[] | undefined;
 	/** Narrow to these spec ids (--spec, repeatable). Empty = the full
 	 *  default set. Unknown ids are an error. */
-	specFilter?: string[];
+	specFilter?: string[] | undefined;
 	/** Explicit spec set; defaults to ALL_SPECS (canned + suite-03). */
 	specs?: BenchSpec[];
 	metricsDir: string;
-	projectPrefix?: string;
-	dryRun?: boolean;
-	sandbox?: SandboxConfig;
+	projectPrefix?: string | undefined;
+	dryRun?: boolean | undefined;
+	sandbox?: SandboxConfig | undefined;
 }
 
 /**
@@ -738,7 +827,10 @@ export async function runBench(opts: BenchOptions): Promise<BenchRunOutcome> {
 			`--spec matched no known spec id(s): ${unknown.join(", ")} (known: ${specSet.map((s) => s.id).join(", ")})`,
 		);
 	}
-	const specs = specFilter.length > 0 ? specSet.filter((s) => specFilter.includes(s.id)) : [...specSet];
+	const specs =
+		specFilter.length > 0
+			? specSet.filter((s) => specFilter.includes(s.id))
+			: [...specSet];
 	const plan = buildBenchPlan({
 		tiers: opts.tiers,
 		tierOrder: opts.tierOrder,
@@ -755,15 +847,24 @@ export async function runBench(opts: BenchOptions): Promise<BenchRunOutcome> {
 	for (const tierPlan of plan.tiers) {
 		const tierConfig = opts.tiers[tierPlan.tier];
 		if (!tierConfig) {
-			failures.push({ tier: tierPlan.tier, specId: "(plan)", cause: `no tier config for "${tierPlan.tier}"` });
+			failures.push({
+				tier: tierPlan.tier,
+				specId: "(plan)",
+				cause: `no tier config for "${tierPlan.tier}"`,
+			});
 			continue;
 		}
 		for (const run of tierPlan.runs) {
 			const spec = specs.find((s) => s.id === run.specId);
 			if (!spec) continue;
-			console.log(`\n── bench: ${run.tier} × ${run.specId} (${spec.description}) ──`);
+			console.log(
+				`\n── bench: ${run.tier} × ${run.specId} (${spec.description}) ──`,
+			);
 			try {
-				const shape = resolveTaskShape(opts.shape ?? tierConfig.shape, opts.shapes);
+				const shape = resolveTaskShape(
+					opts.shape ?? tierConfig.shape,
+					opts.shapes,
+				);
 				await runOne({
 					tier: run.tier,
 					tierConfig,
@@ -785,7 +886,11 @@ export async function runBench(opts: BenchOptions): Promise<BenchRunOutcome> {
 
 	// Read the runs back through the existing metrics consumption path.
 	const summaries: Record<string, RunSummary> = {};
-	const projects = new Set(plan.tiers.flatMap((t) => t.runs.map((r) => projectForSpec(projectPrefix, r.specId))));
+	const projects = new Set(
+		plan.tiers.flatMap((t) =>
+			t.runs.map((r) => projectForSpec(projectPrefix, r.specId)),
+		),
+	);
 	for (const project of projects) {
 		summaries[project] = summarizeRuns(opts.metricsDir, project);
 	}
@@ -793,10 +898,17 @@ export async function runBench(opts: BenchOptions): Promise<BenchRunOutcome> {
 	const report = [
 		...renderBenchReport(rows),
 		...(failures.length > 0
-			? [`${failures.length} run(s) failed: ${failures.map((f) => `${f.tier}/${f.specId}: ${f.cause}`).join("; ")}`]
+			? [
+					`${failures.length} run(s) failed: ${failures.map((f) => `${f.tier}/${f.specId}: ${f.cause}`).join("; ")}`,
+				]
 			: []),
 	];
-	const exitCode = failures.length > 0 ? 1 : rows.some((r) => r.regressions.length > 0) ? 2 : 0;
+	const exitCode =
+		failures.length > 0
+			? 1
+			: rows.some((r) => r.regressions.length > 0)
+				? 2
+				: 0;
 	return { exitCode, plan, failures, report };
 }
 
@@ -808,7 +920,7 @@ async function runOne(opts: {
 	shape: TaskShape;
 	metricsDir: string;
 	project: string;
-	sandbox?: SandboxConfig;
+	sandbox?: SandboxConfig | undefined;
 }): Promise<void> {
 	const dir = mkdtempSync(join(tmpdir(), "pi-task-bench-"));
 	try {
@@ -822,7 +934,9 @@ async function runOne(opts: {
 		const fixture = (opts.spec as GroundingSpec).fixture;
 		if (fixture) {
 			const stats = materializeGroundingFixture(dir, fixture);
-			console.log(`  fixture: ${stats.files} files · ${stats.loc} LOC (seed ${fixture.seed})`);
+			console.log(
+				`  fixture: ${stats.files} files · ${stats.loc} LOC (seed ${fixture.seed})`,
+			);
 		}
 
 		// Lazy import: the orchestrator (and its worker machinery) loads
@@ -833,7 +947,11 @@ async function runOne(opts: {
 			cwd: dir,
 			spec: opts.spec.specMarkdown,
 			model: opts.tierConfig.executeModel,
-			prewalkModel: opts.tierConfig.prewalkModel ?? undefined,
+			// prewalkModel omitted when null (exactOptionalPropertyTypes:
+			// an explicit undefined is not assignable to `prewalkModel?: string`).
+			...(opts.tierConfig.prewalkModel !== null
+				? { prewalkModel: opts.tierConfig.prewalkModel }
+				: {}),
 			executeModel: opts.tierConfig.executeModel,
 			review: opts.tierConfig.review,
 			reviewModel: opts.tierConfig.reviewModel,
@@ -842,7 +960,9 @@ async function runOne(opts: {
 			shape: opts.shape,
 			metricsDir: opts.metricsDir,
 			project: opts.project,
-			sandbox: opts.sandbox,
+			// sandbox omitted when unset (exactOptionalPropertyTypes: an
+			// explicit undefined is not assignable to `sandbox?: SandboxConfig`).
+			...(opts.sandbox !== undefined ? { sandbox: opts.sandbox } : {}),
 		});
 		if (!result.verification.passed) {
 			const detail = result.verification.failures
@@ -872,7 +992,12 @@ export interface BenchCliArgs {
 
 /** Parse the CLI flags. Pure — tested. */
 export function parseBenchArgs(argv: string[]): BenchCliArgs {
-	const out: BenchCliArgs = { tierFilter: [], specFilter: [], dryRun: false, help: false };
+	const out: BenchCliArgs = {
+		tierFilter: [],
+		specFilter: [],
+		dryRun: false,
+		help: false,
+	};
 	for (let i = 0; i < argv.length; i++) {
 		const arg = argv[i];
 		if (arg === "--shape") {
@@ -891,7 +1016,8 @@ export function parseBenchArgs(argv: string[]): BenchCliArgs {
 			out.dryRun = true;
 		} else if (arg === "--metrics-dir") {
 			const value = argv[++i];
-			if (value === undefined) throw new Error("--metrics-dir requires a value");
+			if (value === undefined)
+				throw new Error("--metrics-dir requires a value");
 			out.metricsDir = value;
 		} else if (arg === "--help" || arg === "-h") {
 			out.help = true;
@@ -951,11 +1077,17 @@ async function main(): Promise<number> {
 
 // Guard: only run when executed directly (never on import — the hermetic
 // tests import the pure parts, and runBench is invoked explicitly).
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (
+	process.argv[1] &&
+	import.meta.url === pathToFileURL(process.argv[1]).href
+) {
 	main()
 		.then((code) => process.exit(code))
 		.catch((err) => {
-			console.error("bench-regression FAILED:", err instanceof Error ? err.message : err);
+			console.error(
+				"bench-regression FAILED:",
+				err instanceof Error ? err.message : err,
+			);
 			process.exit(1);
 		});
 }

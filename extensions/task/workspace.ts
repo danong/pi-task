@@ -87,8 +87,9 @@ export interface WorkspaceFileChange {
 	/** Repo-relative path. For renames, the NEW path. */
 	file: string;
 	/** "A" added, "M" modified, "D" deleted, "R" renamed (jj diff
-	 *  --summary first token). */
-	kind: "A" | "M" | "D" | "R" | string;
+	 *  --summary first token) — open vocabulary: jj may add kinds, and
+	 *  consumers treat unknown kinds conservatively. */
+	kind: string;
 }
 
 interface JjResult {
@@ -135,10 +136,17 @@ export function execJj(
 			},
 			(error, stdout, stderr) => {
 				if (!error) {
-					resolve({ code: 0, stdout: stdout.toString(), stderr: stderr.toString() });
+					resolve({
+						code: 0,
+						stdout: stdout.toString(),
+						stderr: stderr.toString(),
+					});
 					return;
 				}
-				const err = error as NodeJS.ErrnoException & { killed?: boolean; signal?: string };
+				const err = error as NodeJS.ErrnoException & {
+					killed?: boolean;
+					signal?: string;
+				};
 				// Timeout: execFile kills the child with SIGTERM (killed=true);
 				// ETIMEDOUT is the older/other-platform shape.
 				if (err.killed === true || err.code === "ETIMEDOUT") {
@@ -162,11 +170,18 @@ export function execJj(
 }
 
 /** Parse `jj workspace list` into name → { changeId, commitId }. */
-function parseWorkspaceList(stdout: string): Map<string, { changeId: string; commitId: string }> {
+function parseWorkspaceList(
+	stdout: string,
+): Map<string, { changeId: string; commitId: string }> {
 	const result = new Map<string, { changeId: string; commitId: string }>();
 	for (const line of stdout.split("\n")) {
 		const match = /^(\S+):\s+(\S+)\s+(\S+)/.exec(line);
-		if (match) result.set(match[1], { changeId: match[2], commitId: match[3] });
+		if (match)
+			result.set(match[1] ?? "", {
+				// Groups 2/3 are \S+ atoms — present whenever the regex matched.
+				changeId: match[2] ?? "",
+				commitId: match[3] ?? "",
+			});
 	}
 	return result;
 }
@@ -183,10 +198,13 @@ export async function workspaceCommitId(
 ): Promise<string> {
 	const result = await execJj(["workspace", "list"], projectDir, opts);
 	if (result.code !== 0) {
-		throw new Error(`jj workspace list failed (${result.code}): ${result.stderr.trim()}`);
+		throw new Error(
+			`jj workspace list failed (${result.code}): ${result.stderr.trim()}`,
+		);
 	}
 	const ws = parseWorkspaceList(result.stdout).get(name);
-	if (!ws) throw new Error(`Workspace "${name}" not found in jj workspace list`);
+	if (!ws)
+		throw new Error(`Workspace "${name}" not found in jj workspace list`);
 	return ws.commitId;
 }
 
@@ -200,9 +218,20 @@ export async function workspaceCommitId(
  *  signature) makes jj fail, and multi-match output is rejected. Either
  *  way the caller gets a loud error instead of squashing into the wrong
  *  commit (todo #71's corruption mode). */
-export async function resolveCommitId(projectDir: string, changeId: string): Promise<string> {
+export async function resolveCommitId(
+	projectDir: string,
+	changeId: string,
+): Promise<string> {
 	const result = await execJj(
-		["log", "-r", changeId, "-T", "commit_id", "--no-graph", "--ignore-working-copy"],
+		[
+			"log",
+			"-r",
+			changeId,
+			"-T",
+			"commit_id",
+			"--no-graph",
+			"--ignore-working-copy",
+		],
 		projectDir,
 	);
 	if (result.code !== 0) {
@@ -240,15 +269,27 @@ export async function resolveCommitId(projectDir: string, changeId: string): Pro
  *  snapshot op to race later writers with (todo #70). */
 export async function taskBaseChangeId(projectDir: string): Promise<string> {
 	const result = await execJj(
-		["log", "-r", "@-", "-T", "change_id", "--no-graph", "--ignore-working-copy"],
+		[
+			"log",
+			"-r",
+			"@-",
+			"-T",
+			"change_id",
+			"--no-graph",
+			"--ignore-working-copy",
+		],
 		projectDir,
 	);
 	if (result.code !== 0) {
-		throw new Error(`jj log -r @- failed (${result.code}): ${result.stderr.trim()}`);
+		throw new Error(
+			`jj log -r @- failed (${result.code}): ${result.stderr.trim()}`,
+		);
 	}
 	const id = result.stdout.trim();
 	if (!id) {
-		throw new Error("jj log -r @-: no task base commit found (repo needs a starter commit)");
+		throw new Error(
+			"jj log -r @-: no task base commit found (repo needs a starter commit)",
+		);
 	}
 	return id;
 }
@@ -275,20 +316,40 @@ export async function createAiTaskBase(
 	identityFile: string,
 	goal: string,
 ): Promise<string> {
-	const newResult = await execJj(["--config-file", identityFile, "new", "@-"], projectDir);
+	const newResult = await execJj(
+		["--config-file", identityFile, "new", "@-"],
+		projectDir,
+	);
 	if (newResult.code !== 0) {
-		throw new Error(`jj new @- failed (${newResult.code}): ${newResult.stderr.trim()}`);
+		throw new Error(
+			`jj new @- failed (${newResult.code}): ${newResult.stderr.trim()}`,
+		);
 	}
-	const describeResult = await execJj(["describe", "-m", `task: ${goal}`], projectDir);
+	const describeResult = await execJj(
+		["describe", "-m", `task: ${goal}`],
+		projectDir,
+	);
 	if (describeResult.code !== 0) {
-		throw new Error(`jj describe failed (${describeResult.code}): ${describeResult.stderr.trim()}`);
+		throw new Error(
+			`jj describe failed (${describeResult.code}): ${describeResult.stderr.trim()}`,
+		);
 	}
 	const idResult = await execJj(
-		["log", "-r", "@", "-T", "change_id", "--no-graph", "--ignore-working-copy"],
+		[
+			"log",
+			"-r",
+			"@",
+			"-T",
+			"change_id",
+			"--no-graph",
+			"--ignore-working-copy",
+		],
 		projectDir,
 	);
 	if (idResult.code !== 0 || !idResult.stdout.trim()) {
-		throw new Error(`jj log -r @ failed (${idResult.code}): ${idResult.stderr.trim()}`);
+		throw new Error(
+			`jj log -r @ failed (${idResult.code}): ${idResult.stderr.trim()}`,
+		);
 	}
 	return idResult.stdout.trim();
 }
@@ -302,21 +363,36 @@ export async function createAiTaskBase(
  *
  * @returns the workspace directory — the worker's cwd.
  */
-export async function createWorkspace(projectDir: string, name: string): Promise<string> {
+export async function createWorkspace(
+	projectDir: string,
+	name: string,
+): Promise<string> {
 	const parent = mkdtempSync(join(tmpdir(), "pi-task-parallel-"));
 	const dir = join(parent, name);
-	const result = await execJj(["workspace", "add", dir, "--name", name], projectDir);
+	const result = await execJj(
+		["workspace", "add", dir, "--name", name],
+		projectDir,
+	);
 	if (result.code !== 0) {
 		rmSync(parent, { recursive: true, force: true });
-		throw new Error(`jj workspace add "${name}" failed (${result.code}): ${result.stderr.trim()}`);
+		throw new Error(
+			`jj workspace add "${name}" failed (${result.code}): ${result.stderr.trim()}`,
+		);
 	}
 	return dir;
 }
 
 /** Summary lines of `jj diff --from <from> --to <to>` ("M path", "A path", ...).
  *  Explicit commit ids only — no @ evaluation, no working-copy snapshot. */
-async function diffSummary(projectDir: string, from: string, to: string): Promise<string[]> {
-	const result = await execJj(["diff", "--from", from, "--to", to, "--summary"], projectDir);
+async function diffSummary(
+	projectDir: string,
+	from: string,
+	to: string,
+): Promise<string[]> {
+	const result = await execJj(
+		["diff", "--from", from, "--to", to, "--summary"],
+		projectDir,
+	);
 	if (result.code !== 0) {
 		throw new Error(
 			`jj diff --from ${from} --to ${to} failed (${result.code}): ${result.stderr.trim()}`,
@@ -338,9 +414,12 @@ export function parseSummaryChanges(lines: string[]): WorkspaceFileChange[] {
 	for (const line of lines) {
 		const match = /^(\S+)\s+(.*)$/.exec(line.trim());
 		if (!match) continue;
-		const [, kind, pathToken] = match;
+		// Both groups participate in every match: group 1 is a \S+ atom,
+		// group 2 always has at least that atom's content.
+		const kind = match[1] ?? "";
+		const pathToken = match[2] ?? "";
 		const rename = /^\{([^}]+) => ([^}]+)\}$/.exec(pathToken);
-		changes.push({ kind, file: rename ? rename[2] : pathToken });
+		changes.push({ kind, file: rename?.[2] ?? pathToken });
 	}
 	return changes;
 }
@@ -358,13 +437,18 @@ export async function workspaceFileChanges(
 ): Promise<WorkspaceFileChange[]> {
 	const baseCommit = await resolveCommitId(projectDir, baseChangeId);
 	const wsAt = await workspaceCommitId(projectDir, name);
-	const result = await execJj(["diff", "--from", baseCommit, "--to", wsAt, "--summary"], projectDir);
+	const result = await execJj(
+		["diff", "--from", baseCommit, "--to", wsAt, "--summary"],
+		projectDir,
+	);
 	if (result.code !== 0) {
 		throw new Error(
 			`jj diff (workspace "${name}" vs base) failed (${result.code}): ${result.stderr.trim()}`,
 		);
 	}
-	return parseSummaryChanges(result.stdout.split("\n").filter((line) => line.trim().length > 0));
+	return parseSummaryChanges(
+		result.stdout.split("\n").filter((line) => line.trim().length > 0),
+	);
 }
 
 /**
@@ -381,15 +465,18 @@ export async function filesChangedBetween(
 	// --ignore-working-copy: read-only diff — no snapshot op (todo #70's
 	// op-log-fork discipline); @- resolves from the recorded working-copy
 	// commit, which is exact for this purpose.
-	const result = await execJj(["diff", "--from", from, "--to", to, "--summary", "--ignore-working-copy"], projectDir);
+	const result = await execJj(
+		["diff", "--from", from, "--to", to, "--summary", "--ignore-working-copy"],
+		projectDir,
+	);
 	if (result.code !== 0) {
 		throw new Error(
 			`jj diff --from ${from} --to ${to} failed (${result.code}): ${result.stderr.trim()}`,
 		);
 	}
-	return parseSummaryChanges(result.stdout.split("\n").filter((line) => line.trim().length > 0)).map(
-		(c) => c.file,
-	);
+	return parseSummaryChanges(
+		result.stdout.split("\n").filter((line) => line.trim().length > 0),
+	).map((c) => c.file);
 }
 
 /**
@@ -405,7 +492,10 @@ export async function diffForWorkspacePath(
 ): Promise<string> {
 	const baseCommit = await resolveCommitId(projectDir, baseChangeId);
 	const wsAt = await workspaceCommitId(projectDir, name);
-	const result = await execJj(["diff", "--from", baseCommit, "--to", wsAt, "--git", path], projectDir);
+	const result = await execJj(
+		["diff", "--from", baseCommit, "--to", wsAt, "--git", path],
+		projectDir,
+	);
 	if (result.code !== 0) {
 		throw new Error(
 			`jj diff --git (workspace "${name}" vs base, ${path}) failed (${result.code}): ${result.stderr.trim()}`,
@@ -433,7 +523,8 @@ export async function diffForWorkspacePath(
  * no exit-code mapping is needed.
  */
 const UNION_TOOL = "union";
-const UNION_SCRIPT = 'git merge-file --union -p "$1" "$2" "$3" > "$4" && test -s "$4"';
+const UNION_SCRIPT =
+	'git merge-file --union -p "$1" "$2" "$3" > "$4" && test -s "$4"';
 
 /** jj global `--config` args defining the union merge tool. */
 function unionToolConfigArgs(): string[] {
@@ -448,7 +539,11 @@ function unionToolConfigArgs(): string[] {
  * Run jj with extra global `--config <NAME=VALUE>` args (the union
  * merge-tool definition). Global options precede the subcommand.
  */
-function execJjConfigured(args: string[], cwd: string, configArgs: string[]): Promise<JjResult> {
+function execJjConfigured(
+	args: string[],
+	cwd: string,
+	configArgs: string[],
+): Promise<JjResult> {
 	const flat: string[] = [];
 	for (const config of configArgs) flat.push("--config", config);
 	return execJj([...flat, ...args], cwd);
@@ -465,7 +560,10 @@ function execJjConfigured(args: string[], cwd: string, configArgs: string[]): Pr
  * workspace holds changes the squash did not consume: leftover commits
  * or uncommitted work. Throws with the precise leftover list.
  */
-export async function assertWorkspacesConsumed(projectDir: string, workspaceNames: string[]): Promise<void> {
+export async function assertWorkspacesConsumed(
+	projectDir: string,
+	workspaceNames: string[],
+): Promise<void> {
 	for (const name of workspaceNames) {
 		const wsAt = await workspaceCommitId(projectDir, name);
 		const leftover = await diffSummary(projectDir, `${wsAt}-`, wsAt);
@@ -503,10 +601,15 @@ export async function mergeWorkspacesAtomic(
 		return { conflicts: [], commit_id: base, files_changed: 0 };
 	}
 	const baseCommit = await resolveCommitId(projectDir, into);
-	const wsAtIds = await Promise.all(workspaceNames.map((n) => workspaceCommitId(projectDir, n)));
+	const wsAtIds = await Promise.all(
+		workspaceNames.map((n) => workspaceCommitId(projectDir, n)),
+	);
 	const from = wsAtIds.map((id) => `(${baseCommit}..${id})`).join("|");
 
-	const squash = await execJj(["squash", "--from", from, "--into", baseCommit], projectDir);
+	const squash = await execJj(
+		["squash", "--from", from, "--into", baseCommit],
+		projectDir,
+	);
 	if (squash.code !== 0) {
 		throw new Error(
 			`jj squash (atomic combine of ${workspaceNames.length} workspace(s)) failed (${squash.code}): ` +
@@ -517,8 +620,13 @@ export async function mergeWorkspacesAtomic(
 	// Provable integration: the single squash consumed EVERY worker commit.
 	const newBase = await resolveCommitId(projectDir, into);
 	await assertWorkspacesConsumed(projectDir, workspaceNames);
-	const filesChanged = (await diffSummary(projectDir, baseCommit, newBase)).length;
-	return { conflicts: await detectConflicts(projectDir, newBase), commit_id: newBase, files_changed: filesChanged };
+	const filesChanged = (await diffSummary(projectDir, baseCommit, newBase))
+		.length;
+	return {
+		conflicts: await detectConflicts(projectDir, newBase),
+		commit_id: newBase,
+		files_changed: filesChanged,
+	};
 }
 
 /**
@@ -573,8 +681,12 @@ export async function conflictHunks(
 	for (const path of paths) {
 		try {
 			const commitId = await resolveCommitId(projectDir, changeId);
-			const result = await execJj(["file", "show", "-r", commitId, "--", path], projectDir);
-			if (result.code === 0) hunks[path] = result.stdout.slice(0, maxBytesPerFile);
+			const result = await execJj(
+				["file", "show", "-r", commitId, "--", path],
+				projectDir,
+			);
+			if (result.code === 0)
+				hunks[path] = result.stdout.slice(0, maxBytesPerFile);
 		} catch {
 			// Best effort — escalation proceeds with the paths alone.
 		}
@@ -585,8 +697,14 @@ export async function conflictHunks(
 /** List unresolved conflict paths in a commit. `jj resolve --list -r`:
  *  exit 0 + "<path> N-sided conflict" lines when conflicted;
  *  exit 2 + "No conflicts found" (printed to stderr) when clean. */
-async function detectConflicts(projectDir: string, commitId: string): Promise<string[]> {
-	const result = await execJj(["resolve", "--list", "-r", commitId], projectDir);
+async function detectConflicts(
+	projectDir: string,
+	commitId: string,
+): Promise<string[]> {
+	const result = await execJj(
+		["resolve", "--list", "-r", commitId],
+		projectDir,
+	);
 	const all = `${result.stdout}\n${result.stderr}`;
 	if (result.code === 2 && all.includes("No conflicts found")) return [];
 	if (result.code !== 0) {
@@ -597,7 +715,7 @@ async function detectConflicts(projectDir: string, commitId: string): Promise<st
 	const paths: string[] = [];
 	for (const line of result.stdout.split("\n")) {
 		const match = /^(\S+)\s+\d+-sided conflict/.exec(line.trim());
-		if (match) paths.push(match[1]);
+		if (match) paths.push(match[1] ?? "");
 	}
 	return paths;
 }
@@ -610,7 +728,10 @@ async function detectConflicts(projectDir: string, commitId: string): Promise<st
  * instead of unioning per-squash conflict lists (a later squash's changes
  * can change the conflict state, so per-squash lists are stale).
  */
-export async function detectChangeConflicts(projectDir: string, changeId: string): Promise<string[]> {
+export async function detectChangeConflicts(
+	projectDir: string,
+	changeId: string,
+): Promise<string[]> {
 	const commitId = await resolveCommitId(projectDir, changeId);
 	return detectConflicts(projectDir, commitId);
 }
@@ -657,17 +778,24 @@ export async function assertMerged(
 	// rewritten base, and both checks false-alarm on that shape — the
 	// workspace stubs are throwaway; the union checks below are what
 	// matter.
-	const fileList = await execJj(["file", "list", "-r", base, "--ignore-working-copy"], projectDir);
+	const fileList = await execJj(
+		["file", "list", "-r", base, "--ignore-working-copy"],
+		projectDir,
+	);
 	if (fileList.code !== 0) {
 		problems.push(
 			`jj file list -r <merged base> failed (${fileList.code}): ${fileList.stderr.trim().split("\n")[0]}`,
 		);
 	} else {
-		const files = new Set(fileList.stdout.split("\n").filter((l) => l.trim().length > 0));
+		const files = new Set(
+			fileList.stdout.split("\n").filter((l) => l.trim().length > 0),
+		);
 		if (files.size === 0) problems.push("the merged tree is EMPTY");
 		for (const f of opts.expectedFiles) {
 			if (!files.has(f)) {
-				problems.push(`merged tree is missing "${f}" — the union of worker file changes is not present`);
+				problems.push(
+					`merged tree is missing "${f}" — the union of worker file changes is not present`,
+				);
 			}
 		}
 	}
@@ -703,7 +831,10 @@ export async function assertMerged(
  * the zero-id check below is a defensive guard for jj versions that
  * resolve a hidden change to the all-zero commit id instead.
  */
-export async function assertVisibleCommit(projectDir: string, changeId: string): Promise<void> {
+export async function assertVisibleCommit(
+	projectDir: string,
+	changeId: string,
+): Promise<void> {
 	const id = await resolveCommitId(projectDir, changeId);
 	if (!/^[0-9a-f]{40}$/.test(id) || /^0+$/.test(id)) {
 		throw new Error(
@@ -727,13 +858,21 @@ export async function assertVisibleCommit(projectDir: string, changeId: string):
  * yet, so its snapshot cannot race another process (todo #70).
  */
 export async function assertCleanWorkingCopy(cwd: string): Promise<void> {
-	const diff = await execJj(["diff", "--from", "@-", "--to", "@", "--summary"], cwd);
+	const diff = await execJj(
+		["diff", "--from", "@-", "--to", "@", "--summary"],
+		cwd,
+	);
 	if (diff.code !== 0) {
-		throw new Error(`jj diff --from @- --to @ failed (${diff.code}): ${diff.stderr.trim()}`);
+		throw new Error(
+			`jj diff --from @- --to @ failed (${diff.code}): ${diff.stderr.trim()}`,
+		);
 	}
 	if (diff.stdout.trim().length > 0) {
 		const status = await execJj(["status"], cwd);
-		const excerpt = (status.stdout.trim() || status.stderr.trim()).split("\n").slice(0, 8).join("\n");
+		const excerpt = (status.stdout.trim() || status.stderr.trim())
+			.split("\n")
+			.slice(0, 8)
+			.join("\n");
 		throw new Error(
 			"task requires a clean working copy — commit or stash your changes before dispatching" +
 				(excerpt ? `\njj status excerpt:\n${excerpt}` : ""),
@@ -745,7 +884,11 @@ export async function assertCleanWorkingCopy(cwd: string): Promise<void> {
  * Remove a workspace: `jj workspace forget` (abandons the now-empty @
  * commit) and delete its directory when `dir` is provided.
  */
-export async function removeWorkspace(projectDir: string, name: string, dir?: string): Promise<void> {
+export async function removeWorkspace(
+	projectDir: string,
+	name: string,
+	dir?: string,
+): Promise<void> {
 	const result = await execJj(["workspace", "forget", name], projectDir);
 	if (result.code !== 0) {
 		throw new Error(

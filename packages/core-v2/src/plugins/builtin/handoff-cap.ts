@@ -48,17 +48,23 @@ function capOne(b: HandoffBundle, cap: number): HandoffBundle {
 	});
 	if (
 		summary === b.uncommittedDiffSummary &&
-		cappedFailures.every((f, i) => f.stderrTail === b.verificationFailures[i]!.stderrTail)
+		cappedFailures.every(
+			(f, i) => f.stderrTail === b.verificationFailures[i]!.stderrTail,
+		)
 	) {
 		return b;
 	}
-	return { ...b, uncommittedDiffSummary: summary, verificationFailures: cappedFailures };
+	return {
+		...b,
+		uncommittedDiffSummary: summary,
+		verificationFailures: cappedFailures,
+	};
 }
 
 const plugin: TaskPlugin = {
 	name: "handoff-cap",
-	async transformHandoff(bundle: HandoffBundle): Promise<HandoffBundle> {
-		return capOne(bundle, HANDOFF_CAP_MAX);
+	transformHandoff(bundle: HandoffBundle): Promise<HandoffBundle> {
+		return Promise.resolve(capOne(bundle, HANDOFF_CAP_MAX));
 	},
 };
 

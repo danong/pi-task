@@ -7,12 +7,18 @@
  */
 
 import { execSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { JujutsuWorkspaceDriver } from "../src/workspaces/jj-driver.ts";
-import { taskBaseChangeId } from "../src/workspaces/jj.ts";
 
 function newRepo(dir: string): void {
 	mkdirSync(dir, { recursive: true });
@@ -23,7 +29,10 @@ function newRepo(dir: string): void {
 
 /** Drive one worker workspace: write files + commit via jj in that dir. */
 function workerCommit(wsDir: string, message: string): void {
-	execSync(`JJ_EDITOR=true jj commit -m ${JSON.stringify(message)}`, { cwd: wsDir, stdio: "pipe" });
+	execSync(`JJ_EDITOR=true jj commit -m ${JSON.stringify(message)}`, {
+		cwd: wsDir,
+		stdio: "pipe",
+	});
 }
 
 export async function runTests(): Promise<void> {
@@ -58,7 +67,10 @@ export async function runTests(): Promise<void> {
 
 			const ws1 = await driver.createWorkspace("t1");
 			const ws2 = await driver.createWorkspace("t2");
-			check(existsSync(join(ws1.hostPath, "README.md")), "workspace materializes the repo");
+			check(
+				existsSync(join(ws1.hostPath, "README.md")),
+				"workspace materializes the repo",
+			);
 			check(ws1.branchName !== ws2.branchName, "distinct workspace names");
 
 			writeFileSync(join(ws1.hostPath, "one.txt"), "one\n", "utf-8");
@@ -70,8 +82,10 @@ export async function runTests(): Promise<void> {
 			check(outcome.conflicts.length === 0, "clean combine has no conflicts");
 
 			await driver.materialize(base);
-			check(existsSync(join(repo, "one.txt")) && existsSync(join(repo, "two.txt")),
-				"merged tree holds both workers' files (consistency gate passed)");
+			check(
+				existsSync(join(repo, "one.txt")) && existsSync(join(repo, "two.txt")),
+				"merged tree holds both workers' files (consistency gate passed)",
+			);
 
 			await driver.cleanupWorkspace(ws1);
 			await driver.cleanupWorkspace(ws2);
@@ -83,7 +97,10 @@ export async function runTests(): Promise<void> {
 			const repo = join(dir, "union");
 			newRepo(repo);
 			writeFileSync(join(repo, "shared.txt"), "line-a\nline-b\n", "utf-8");
-			execSync('JJ_EDITOR=true jj commit -m "shared"', { cwd: repo, stdio: "pipe" });
+			execSync('JJ_EDITOR=true jj commit -m "shared"', {
+				cwd: repo,
+				stdio: "pipe",
+			});
 
 			const driver = new JujutsuWorkspaceDriver({ projectDir: repo });
 			const base = await driver.prepareIntegrationBase("union ladder");
@@ -91,26 +108,42 @@ export async function runTests(): Promise<void> {
 			const ws2 = await driver.createWorkspace("u2");
 
 			// Both workers edit the SAME line — a real conflict for 3-way merge.
-			writeFileSync(join(ws1.hostPath, "shared.txt"), "line-A1\nline-b\n", "utf-8");
+			writeFileSync(
+				join(ws1.hostPath, "shared.txt"),
+				"line-A1\nline-b\n",
+				"utf-8",
+			);
 			workerCommit(ws1.hostPath, "u1 edit");
-			writeFileSync(join(ws2.hostPath, "shared.txt"), "line-A2\nline-b\n", "utf-8");
+			writeFileSync(
+				join(ws2.hostPath, "shared.txt"),
+				"line-A2\nline-b\n",
+				"utf-8",
+			);
 			workerCommit(ws2.hostPath, "u2 edit");
 
 			const outcome = await driver.combine(base, [ws1, ws2]);
 			if (outcome.conflicts.length === 0) {
 				// Union keeps BOTH sides' lines (deterministic, no markers).
 				const content = readFileSync(join(repo, "shared.txt"), "utf-8");
-				check(content.includes("line-A1") && content.includes("line-A2"),
-					"union resolution kept both sides' hunks");
+				check(
+					content.includes("line-A1") && content.includes("line-A2"),
+					"union resolution kept both sides' hunks",
+				);
 				check(!content.includes("<<<<<<<"), "no conflict markers remain");
 			} else {
 				// Escalation is also acceptable — but must be reported, not silent.
-				check(outcome.conflicts.includes("shared.txt"), "residual conflict reported as escalation");
+				check(
+					outcome.conflicts.includes("shared.txt"),
+					"residual conflict reported as escalation",
+				);
 			}
 
 			// The gate already ran inside combine(); the tree must hold the file.
 			await driver.materialize(base);
-			check(existsSync(join(repo, "shared.txt")), "conflicted combine still integrates the file");
+			check(
+				existsSync(join(repo, "shared.txt")),
+				"conflicted combine still integrates the file",
+			);
 		}
 
 		// ─── Consistency gate: a lost file fails loudly ──────────────────
@@ -126,7 +159,10 @@ export async function runTests(): Promise<void> {
 			const outcome = await driver.combine(base, [ws1]);
 			void outcome;
 			rmSync(join(repo, "gone.txt"), { force: true });
-			execSync('JJ_EDITOR=true jj commit -m "remove gone"', { cwd: repo, stdio: "pipe" });
+			execSync('JJ_EDITOR=true jj commit -m "remove gone"', {
+				cwd: repo,
+				stdio: "pipe",
+			});
 
 			let threw = false;
 			try {
@@ -146,35 +182,61 @@ export async function runTests(): Promise<void> {
 		{
 			const repo = join(dir, "binary");
 			newRepo(repo);
-			writeFileSync(join(repo, "blob.bin"), Buffer.from([0x00, 0x01, 0x02, 0xff]), "utf-8");
-			execSync('JJ_EDITOR=true jj commit -m "binary base"', { cwd: repo, stdio: "pipe" });
+			writeFileSync(
+				join(repo, "blob.bin"),
+				Buffer.from([0x00, 0x01, 0x02, 0xff]),
+				"utf-8",
+			);
+			execSync('JJ_EDITOR=true jj commit -m "binary base"', {
+				cwd: repo,
+				stdio: "pipe",
+			});
 
 			const driver = new JujutsuWorkspaceDriver({ projectDir: repo });
 			const base = await driver.prepareIntegrationBase("binary ladder");
 			const ws1 = await driver.createWorkspace("bin1");
 			const ws2 = await driver.createWorkspace("bin2");
-			writeFileSync(join(ws1.hostPath, "blob.bin"), Buffer.from([0xaa, 0xbb]), "utf-8");
+			writeFileSync(
+				join(ws1.hostPath, "blob.bin"),
+				Buffer.from([0xaa, 0xbb]),
+				"utf-8",
+			);
 			workerCommit(ws1.hostPath, "bin1 edit");
-			writeFileSync(join(ws2.hostPath, "blob.bin"), Buffer.from([0xcc, 0xdd]), "utf-8");
+			writeFileSync(
+				join(ws2.hostPath, "blob.bin"),
+				Buffer.from([0xcc, 0xdd]),
+				"utf-8",
+			);
 			workerCommit(ws2.hostPath, "bin2 edit");
 
 			const outcome = await driver.combine(base, [ws1, ws2]);
-			check(outcome.conflicts.includes("blob.bin"),
-				"binary conflict escalates through the real union ladder (git merge-file exits 255)");
+			check(
+				outcome.conflicts.includes("blob.bin"),
+				"binary conflict escalates through the real union ladder (git merge-file exits 255)",
+			);
 		}
 
 		// ─── Feature-branch mode: bookmarks, no squash ───────────────────
 		{
 			const repo = join(dir, "branches");
 			newRepo(repo);
-			const driver = new JujutsuWorkspaceDriver({ projectDir: repo, integrationMode: "feature-branch" });
+			const driver = new JujutsuWorkspaceDriver({
+				projectDir: repo,
+				integrationMode: "feature-branch",
+			});
 			const ws1 = await driver.createWorkspace("b1");
 			writeFileSync(join(ws1.hostPath, "feat.txt"), "feat\n", "utf-8");
 			workerCommit(ws1.hostPath, "b1 work");
 
 			const result = await driver.mergeWorkspace(ws1); // bookmarks the tip
-			check(result.success && (result.conflicts?.length ?? 0) === 0, "feature-branch merge is bookkeeping only");
-			const bookmarks = execSync("jj bookmark list", { cwd: repo, encoding: "utf-8" });
+			check(
+				result.success && (result.conflicts?.length ?? 0) === 0,
+				"feature-branch merge is bookkeeping only",
+			);
+			const bookmarks = execSync("jj bookmark list", {
+				cwd: repo,
+				encoding: "utf-8",
+			});
 			check(bookmarks.includes("v2-task-b1"), "worker bookmark created");
 			check(driver.combine !== undefined, "combine present but mode-guarded");
 
@@ -183,8 +245,14 @@ export async function runTests(): Promise<void> {
 			writeFileSync(join(ws1.hostPath, "feat.txt"), "feat-2\n", "utf-8");
 			workerCommit(ws1.hostPath, "b1 work 2");
 			await driver.mergeWorkspace(ws1);
-			const moved = execSync("jj log -r v2-task-b1 --no-graph -T description", { cwd: repo, encoding: "utf-8" });
-			check(moved.includes("b1 work 2"), "re-publish moves the bookmark to the current tip");
+			const moved = execSync("jj log -r v2-task-b1 --no-graph -T description", {
+				cwd: repo,
+				encoding: "utf-8",
+			});
+			check(
+				moved.includes("b1 work 2"),
+				"re-publish moves the bookmark to the current tip",
+			);
 
 			let threw = false;
 			try {
@@ -216,14 +284,16 @@ export async function runTests(): Promise<void> {
 	if (errors.length > 0) {
 		throw new Error(`jj-driver tests failed:\n  ${errors.join("\n  ")}`);
 	}
-	console.log("✓ jj-driver: combine, union ladder, consistency gate, bookmarks, guards");
+	console.log(
+		"✓ jj-driver: combine, union ladder, consistency gate, bookmarks, guards",
+	);
 }
 
 if (process.argv[1] !== undefined) {
 	const invokedAs = process.argv[1];
 	if (import.meta.url.endsWith(invokedAs.split("/").pop() ?? "")) {
 		runTests().catch((err) => {
-			console.error(err.message ?? err);
+			console.error(err instanceof Error ? err.message : String(err));
 			process.exit(1);
 		});
 	}

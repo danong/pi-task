@@ -30,19 +30,32 @@ export const PARITY_EXIT_OK = 0;
 export const PARITY_EXIT_MISMATCH = 1;
 
 /** Field-by-field per-node comparison (R3). Pure. */
-export function compareNodes(v1: NormalizedV1Node, v2: NormalizedV2Node): NodeParity {
+export function compareNodes(
+	v1: NormalizedV1Node,
+	v2: NormalizedV2Node,
+): NodeParity {
 	if (v1.skipped && v2.skipped) {
-		return { nodeId: v1.nodeId, passed: true, mismatches: [], costDeltaUsd: null, turnsDelta: null };
+		return {
+			nodeId: v1.nodeId,
+			passed: true,
+			mismatches: [],
+			costDeltaUsd: null,
+			turnsDelta: null,
+		};
 	}
 	const mismatches: string[] = [];
 	if (v1.verdict !== v2.verdict) {
 		mismatches.push(`verdict: v1=${v1.verdict} v2=${v2.verdict}`);
 	}
-	const reqsKey = (reqs: readonly string[]): string => [...reqs].sort().join("\u0000");
+	const reqsKey = (reqs: readonly string[]): string =>
+		[...reqs].sort().join("\u0000");
 	if (reqsKey(v1.requirements) !== reqsKey(v2.requirements)) {
-		mismatches.push(`requirements: v1=${v1.requirements.length} v2=${v2.requirements.length}`);
+		mismatches.push(
+			`requirements: v1=${v1.requirements.length} v2=${v2.requirements.length}`,
+		);
 	}
-	const cmdsKey = (cmds: readonly string[]): string => [...cmds].sort().join("\u0000");
+	const cmdsKey = (cmds: readonly string[]): string =>
+		[...cmds].sort().join("\u0000");
 	if (cmdsKey(v1.verificationCommands) !== cmdsKey(v2.verificationCommands)) {
 		mismatches.push(
 			`verification-commands: v1=${v1.verificationCommands.length} v2=${v2.verificationCommands.length}`,
@@ -99,7 +112,9 @@ export function buildParityReport(options: {
 				nodeId: id,
 				passed: false,
 				mismatches: [
-					v1 === undefined ? "side missing: v1 absent (v2 present)" : "side missing: v2 absent (v1 present)",
+					v1 === undefined
+						? "side missing: v1 absent (v2 present)"
+						: "side missing: v2 absent (v1 present)",
 				],
 				costDeltaUsd: null,
 				turnsDelta: null,
@@ -110,7 +125,9 @@ export function buildParityReport(options: {
 	}
 
 	const parity = nodes.every((n) => n.passed);
-	const deltasComparable = nodes.every((n) => n.costDeltaUsd !== null && n.turnsDelta !== null);
+	const deltasComparable = nodes.every(
+		(n) => n.costDeltaUsd !== null && n.turnsDelta !== null,
+	);
 
 	let v1TotalCostUsd = 0;
 	for (const n of options.v1) v1TotalCostUsd += n.costUsd;
@@ -127,7 +144,10 @@ export function buildParityReport(options: {
 	let totalGrounding = 0;
 	for (const n of options.v2) {
 		if (n.summary === undefined) continue;
-		const ti = n.summary.inputTokens + n.summary.cacheReadTokens + n.summary.cacheWriteTokens;
+		const ti =
+			n.summary.inputTokens +
+			n.summary.cacheReadTokens +
+			n.summary.cacheWriteTokens;
 		totalInputTokens += ti;
 		totalGrounding += n.summary.cor * ti;
 	}
@@ -142,13 +162,19 @@ export function buildParityReport(options: {
 	const aggregate: AggregateParity = {
 		v1TotalCostUsd: deltasComparable ? round6(v1TotalCostUsd) : null,
 		v2TotalCostUsd: deltasComparable ? round6(v2TotalCostUsd) : null,
-		costDeltaUsd: deltasComparable ? round6(v2TotalCostUsd - v1TotalCostUsd) : null,
+		costDeltaUsd: deltasComparable
+			? round6(v2TotalCostUsd - v1TotalCostUsd)
+			: null,
 		v1TotalTurns: deltasComparable ? v1TotalTurns : null,
 		v2TotalTurns: deltasComparable ? v2TotalTurns : null,
 		turnsDelta: deltasComparable ? v2TotalTurns - v1TotalTurns : null,
-		v2AggregateCor: totalInputTokens === 0 ? 0 : totalGrounding / totalInputTokens,
+		v2AggregateCor:
+			totalInputTokens === 0 ? 0 : totalGrounding / totalInputTokens,
 		v2TotalInputTokens: totalInputTokens,
-		v2TotalOutputTokens: options.v2.reduce((sum, n) => sum + (n.summary?.outputTokens ?? 0), 0),
+		v2TotalOutputTokens: options.v2.reduce(
+			(sum, n) => sum + (n.summary?.outputTokens ?? 0),
+			0,
+		),
 		v2VerdictCounts: verdictCounts,
 	};
 
@@ -172,7 +198,9 @@ export function renderParityDiff(report: ParityReport): string {
 	const lines: string[] = [];
 	lines.push(`parity MISMATCH: dag "${report.dagId}" (${report.mode})`);
 	lines.push("");
-	for (const node of [...report.nodes].sort((a, b) => a.nodeId.localeCompare(b.nodeId))) {
+	for (const node of [...report.nodes].sort((a, b) =>
+		a.nodeId.localeCompare(b.nodeId),
+	)) {
 		if (node.passed) continue;
 		lines.push(`node ${node.nodeId}:`);
 		for (const m of node.mismatches) lines.push(`  ✗ ${m}`);
@@ -202,7 +230,9 @@ export function serializeParityReport(report: ParityReport): string {
 }
 
 /** The single exit code (R3): 0 iff parity held. */
-export function parityExitCode(report: ParityReport): typeof PARITY_EXIT_OK | typeof PARITY_EXIT_MISMATCH {
+export function parityExitCode(
+	report: ParityReport,
+): typeof PARITY_EXIT_OK | typeof PARITY_EXIT_MISMATCH {
 	return report.parity ? PARITY_EXIT_OK : PARITY_EXIT_MISMATCH;
 }
 
@@ -211,7 +241,10 @@ export function parityExitCode(report: ParityReport): typeof PARITY_EXIT_OK | ty
  * file next to it (`<basePath>.diff`). Returns the diff file path (null
  * when parity held — no diff file exists). Creates parent directories.
  */
-export function writeParityReport(basePath: string, report: ParityReport): string | null {
+export function writeParityReport(
+	basePath: string,
+	report: ParityReport,
+): string | null {
 	mkdirSync(dirname(basePath), { recursive: true });
 	writeFileSync(basePath, serializeParityReport(report) + "\n", "utf-8");
 	if (report.parity || report.diff === null) return null;

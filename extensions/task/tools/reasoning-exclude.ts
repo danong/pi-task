@@ -29,20 +29,23 @@ export const EXCLUDE_REASONING_ENV_VAR = "PI_TASK_EXCLUDE_REASONING";
  * reasoning fields); anything else → the payload unchanged. Never mutates
  * its input.
  */
-export function injectReasoningExclude(payload: unknown, enabled: boolean): unknown {
+export function injectReasoningExclude(
+	payload: unknown,
+	enabled: boolean,
+): unknown {
 	if (!enabled) return payload;
 	if (typeof payload !== "object" || payload === null) return payload;
 	const record = payload as Record<string, unknown>;
 	const reasoning =
 		typeof record.reasoning === "object" && record.reasoning !== null
-			? { ...(record.reasoning as object) }
+			? { ...record.reasoning }
 			: {};
 	return { ...record, reasoning: { ...reasoning, exclude: true } };
 }
 
 export default function (pi: ExtensionAPI) {
 	if (process.env[EXCLUDE_REASONING_ENV_VAR] !== "1") return; // not a worker/reviewer spawn
-	pi.on("before_provider_request", (event: { payload: unknown }) => {
-		return injectReasoningExclude(event.payload, true) as never;
+	pi.on("before_provider_request", (event) => {
+		return injectReasoningExclude(event.payload, true);
 	});
 }

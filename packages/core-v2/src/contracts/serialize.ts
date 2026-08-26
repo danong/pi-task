@@ -41,6 +41,9 @@ export function stableStringify(value: unknown): string {
  * (which strips any ledger-only envelope fields) then serialize stably.
  * Pass a WithLedgerFields record to prove stripping.
  */
-export function serializeForPrompt(schema: z.ZodType, payload: unknown): string {
+export function serializeForPrompt(
+	schema: z.ZodType,
+	payload: unknown,
+): string {
 	return stableStringify(schema.parse(payload));
 }

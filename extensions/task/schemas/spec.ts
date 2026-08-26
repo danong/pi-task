@@ -33,8 +33,11 @@ function extractSections(markdown: string): Map<string, string[]> {
 	for (const rawLine of markdown.split("\n")) {
 		const match = /^##\s+(.+)$/.exec(rawLine.trim());
 		if (match) {
-			current = match[1].trim().toLowerCase();
-			sections.set(current, []);
+			const heading = match[1];
+			if (heading !== undefined) {
+				current = heading.trim().toLowerCase();
+				sections.set(current, []);
+			}
 		} else if (current !== null) {
 			sections.get(current)!.push(rawLine);
 		}

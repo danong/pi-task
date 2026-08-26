@@ -17,7 +17,13 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	readFileSync,
+	renameSync,
+	writeFileSync,
+} from "node:fs";
 import { dirname, extname, join, resolve } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { getPiInvocation } from "./worker.ts";
@@ -65,24 +71,68 @@ export interface MapAnnotation {
 // ─── Language / symbol tables (deterministic, no model) ──────────────
 
 const LANG_BY_EXT: Record<string, string> = {
-	".ts": "typescript", ".tsx": "typescript",
-	".js": "javascript", ".jsx": "javascript", ".mjs": "javascript", ".cjs": "javascript",
+	".ts": "typescript",
+	".tsx": "typescript",
+	".js": "javascript",
+	".jsx": "javascript",
+	".mjs": "javascript",
+	".cjs": "javascript",
 	".py": "python",
 	".gd": "gdscript",
 	".rs": "rust",
 	".go": "go",
 	".java": "java",
-	".c": "c", ".h": "c", ".cpp": "cpp", ".hpp": "cpp", ".cc": "cpp",
-	".rb": "ruby", ".php": "php", ".swift": "swift", ".kt": "kotlin",
-	".sh": "shell", ".bash": "shell",
-	".md": "markdown", ".json": "json", ".toml": "toml", ".yaml": "yaml", ".yml": "yaml",
-	".css": "css", ".html": "html",
+	".c": "c",
+	".h": "c",
+	".cpp": "cpp",
+	".hpp": "cpp",
+	".cc": "cpp",
+	".rb": "ruby",
+	".php": "php",
+	".swift": "swift",
+	".kt": "kotlin",
+	".sh": "shell",
+	".bash": "shell",
+	".md": "markdown",
+	".json": "json",
+	".toml": "toml",
+	".yaml": "yaml",
+	".yml": "yaml",
+	".css": "css",
+	".html": "html",
 };
 
 const BINARY_EXTS = new Set([
-	".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".bmp", ".svg", ".pdf",
-	".zip", ".gz", ".tar", ".tgz", ".bz2", ".xz", ".wasm", ".woff", ".woff2",
-	".ttf", ".eot", ".mp3", ".mp4", ".mov", ".avi", ".exe", ".dll", ".so", ".a", ".o", ".bin",
+	".png",
+	".jpg",
+	".jpeg",
+	".gif",
+	".webp",
+	".ico",
+	".bmp",
+	".svg",
+	".pdf",
+	".zip",
+	".gz",
+	".tar",
+	".tgz",
+	".bz2",
+	".xz",
+	".wasm",
+	".woff",
+	".woff2",
+	".ttf",
+	".eot",
+	".mp3",
+	".mp4",
+	".mov",
+	".avi",
+	".exe",
+	".dll",
+	".so",
+	".a",
+	".o",
+	".bin",
 ]);
 
 const SYMBOL_RE: Record<string, RegExp> = {
@@ -90,8 +140,10 @@ const SYMBOL_RE: Record<string, RegExp> = {
 	gdscript: /^\s*(?:func|class_name|signal|const)\s+([A-Za-z_]\w*)/,
 	rust: /^\s*(?:fn|struct|enum|impl|trait|type)\s+([A-Za-z_]\w*)/,
 	go: /^\s*(?:func|type)\s+([A-Za-z_]\w*)/,
-	typescript: /^\s*(?:export\s+)?(?:default\s+)?(?:function|class|interface|type|enum|const|let|var)\s+([A-Za-z_$]\w*)/,
-	javascript: /^\s*(?:export\s+)?(?:default\s+)?(?:function|class|const|let|var)\s+([A-Za-z_$]\w*)/,
+	typescript:
+		/^\s*(?:export\s+)?(?:default\s+)?(?:function|class|interface|type|enum|const|let|var)\s+([A-Za-z_$]\w*)/,
+	javascript:
+		/^\s*(?:export\s+)?(?:default\s+)?(?:function|class|const|let|var)\s+([A-Za-z_$]\w*)/,
 	java: /^\s*(?:public|private|protected)?\s*(?:static\s+)?(?:final\s+)?(?:class|interface|enum)\s+([A-Za-z_]\w*)/,
 	c: /^\s*(?:int|void|char|long|float|double|size_t|static|struct|typedef)\s+([A-Za-z_]\w*)\s*\(/,
 	cpp: /^\s*(?:int|void|char|long|float|double|size_t|static|auto|const|struct|class)\s+([A-Za-z_]\w*)\s*\(/,
@@ -164,7 +216,9 @@ const TOML_TO_JSON_SCRIPT =
  * Parse a TOML file via Python's built-in tomllib (zero JS dependencies;
  * python3 is a system tool, available at runtime as well as in tests).
  */
-function parseTomlFile(path: string): Record<string, Record<string, string | boolean | number>> {
+function parseTomlFile(
+	path: string,
+): Record<string, Record<string, string | boolean | number>> {
 	const out = execFileSync("python3", ["-c", TOML_TO_JSON_SCRIPT, path], {
 		encoding: "utf8",
 		maxBuffer: 1 << 20,
@@ -173,18 +227,35 @@ function parseTomlFile(path: string): Record<string, Record<string, string | boo
 		// parseTomlFile in config.ts).
 		stdio: ["ignore", "pipe", "pipe"],
 	});
-	return JSON.parse(out);
+	// The script emits a TOML table-of-tables (top-level section → scalar
+	// table); the assertion restates the declared contract for JSON.parse.
+	return JSON.parse(out) as Record<
+		string,
+		Record<string, string | boolean | number>
+	>;
 }
 
-function str(sections: Record<string, Record<string, string | boolean | number>>, section: string, key: string): string | undefined {
+function str(
+	sections: Record<string, Record<string, string | boolean | number>>,
+	section: string,
+	key: string,
+): string | undefined {
 	const v = sections[section]?.[key];
 	return typeof v === "string" ? v : undefined;
 }
-function bool(sections: Record<string, Record<string, string | boolean | number>>, section: string, key: string): boolean | undefined {
+function bool(
+	sections: Record<string, Record<string, string | boolean | number>>,
+	section: string,
+	key: string,
+): boolean | undefined {
 	const v = sections[section]?.[key];
 	return typeof v === "boolean" ? v : undefined;
 }
-function int(sections: Record<string, Record<string, string | boolean | number>>, section: string, key: string): number | undefined {
+function int(
+	sections: Record<string, Record<string, string | boolean | number>>,
+	section: string,
+	key: string,
+): number | undefined {
 	const v = sections[section]?.[key];
 	return typeof v === "number" ? v : undefined;
 }
@@ -212,15 +283,25 @@ export function loadRepoMapConfig(configPath?: string): RepoMapConfig {
 	const mode = str(sections, "mode", "default");
 	return {
 		mode: mode === "skeleton" ? "skeleton" : "full",
-		annotationModel: str(sections, "mode", "annotation_model") ?? DEFAULT_MAP_CONFIG.annotationModel,
-		injectWorkers: bool(sections, "injection", "workers") ?? DEFAULT_MAP_CONFIG.injectWorkers,
-		sliceLimit: int(sections, "injection", "slice_limit") ?? DEFAULT_MAP_CONFIG.sliceLimit,
-		mainAgent: bool(sections, "injection", "main_agent") ?? DEFAULT_MAP_CONFIG.mainAgent,
+		annotationModel:
+			str(sections, "mode", "annotation_model") ??
+			DEFAULT_MAP_CONFIG.annotationModel,
+		injectWorkers:
+			bool(sections, "injection", "workers") ??
+			DEFAULT_MAP_CONFIG.injectWorkers,
+		sliceLimit:
+			int(sections, "injection", "slice_limit") ??
+			DEFAULT_MAP_CONFIG.sliceLimit,
+		mainAgent:
+			bool(sections, "injection", "main_agent") ?? DEFAULT_MAP_CONFIG.mainAgent,
 		overviewInSystemPrompt:
-			bool(sections, "injection", "overview_in_system_prompt") ?? DEFAULT_MAP_CONFIG.overviewInSystemPrompt,
+			bool(sections, "injection", "overview_in_system_prompt") ??
+			DEFAULT_MAP_CONFIG.overviewInSystemPrompt,
 		// A missing/invalid (non-boolean) key degrades silently to the default
 		// ON — the contract is always-on unless explicitly disabled.
-		workflowContract: bool(sections, "injection", "workflow_contract") ?? DEFAULT_MAP_CONFIG.workflowContract,
+		workflowContract:
+			bool(sections, "injection", "workflow_contract") ??
+			DEFAULT_MAP_CONFIG.workflowContract,
 	};
 }
 
@@ -291,7 +372,10 @@ export function buildSkeleton(projectDir: string): SkeletonFile[] {
 
 		const text = content.toString("utf8");
 		const lang = langFor(rel);
-		const symbols = content.byteLength <= MAX_SYMBOL_EXTRACT_BYTES ? extractSymbols(text, lang) : [];
+		const symbols =
+			content.byteLength <= MAX_SYMBOL_EXTRACT_BYTES
+				? extractSymbols(text, lang)
+				: [];
 		files.push({
 			path: rel,
 			lang,
@@ -331,15 +415,24 @@ export function mapCachePath(projectDir: string): string {
  * cache is "full" (a skeleton cache lacks summaries and a full request must
  * rebuild + re-annotate it). Exported for hermetic tests.
  */
-export function isCacheUsableFor(cached: CodebaseMap | null, mode: "full" | "skeleton", treeHash: string): boolean {
-	return !!cached && cached.treeHash === treeHash && (mode === "skeleton" || (cached.mode ?? "full") === "full");
+export function isCacheUsableFor(
+	cached: CodebaseMap | null,
+	mode: "full" | "skeleton",
+	treeHash: string,
+): boolean {
+	return (
+		!!cached &&
+		cached.treeHash === treeHash &&
+		(mode === "skeleton" || (cached.mode ?? "full") === "full")
+	);
 }
 
 export function loadCachedMap(projectDir: string): CodebaseMap | null {
 	try {
 		const raw = readFileSync(mapCachePath(projectDir), "utf8");
 		const map = JSON.parse(raw) as CodebaseMap;
-		if (!map || typeof map.treeHash !== "string" || !Array.isArray(map.files)) return null;
+		if (!map || typeof map.treeHash !== "string" || !Array.isArray(map.files))
+			return null;
 		return map;
 	} catch {
 		return null;
@@ -367,8 +460,19 @@ const MAX_SYMBOLS_IN_PROMPT = 20;
 export const ANNOTATE_TIMEOUT_MS = 120_000;
 
 /** Spawn `pi --mode json -p` and return the final assistant text. */
-export async function callModel(prompt: string, model: string): Promise<string> {
-	const invocation = getPiInvocation(["--mode", "json", "-p", "--no-session", "--model", model, prompt]);
+export async function callModel(
+	prompt: string,
+	model: string,
+): Promise<string> {
+	const invocation = getPiInvocation([
+		"--mode",
+		"json",
+		"-p",
+		"--no-session",
+		"--model",
+		model,
+		prompt,
+	]);
 	return new Promise<string>((resolve, reject) => {
 		const proc = spawn(invocation.command, invocation.args, {
 			shell: false,
@@ -387,18 +491,29 @@ export async function callModel(prompt: string, model: string): Promise<string> 
 			reject(new Error(`Model call timed out after ${ANNOTATE_TIMEOUT_MS} ms`));
 		}, ANNOTATE_TIMEOUT_MS);
 
+		/** One NDJSON event from `pi --mode json`: only the fields the annotation
+		 *  path reads are shaped here; the rest of the stream stays unvalidated —
+		 *  it is model output, untrusted by construction. */
+		interface PiJsonEvent {
+			type?: unknown;
+			message?: {
+				role?: unknown;
+				content?: Array<{ type?: unknown; text?: unknown }>;
+			};
+		}
+
 		const processLine = (line: string): void => {
 			if (!line.trim()) return;
-			let event: any;
+			let event: PiJsonEvent;
 			try {
-				event = JSON.parse(line);
+				event = JSON.parse(line) as PiJsonEvent;
 			} catch {
 				return;
 			}
 			if (event.type === "message_end" && event.message?.role === "assistant") {
 				const textParts = (event.message.content ?? [])
-					.filter((p: any) => p.type === "text")
-					.map((p: any) => p.text);
+					.filter((p) => p.type === "text" && typeof p.text === "string")
+					.map((p) => p.text as string);
 				if (textParts.length > 0) lastAssistantText = textParts.join("");
 			}
 		};
@@ -420,7 +535,12 @@ export async function callModel(prompt: string, model: string): Promise<string> 
 			settled = true;
 			if (buffer.trim()) processLine(buffer);
 			if (lastAssistantText) resolve(lastAssistantText);
-			else reject(new Error(`Model call produced no assistant text (exit ${code}): ${stderr.slice(0, 300)}`));
+			else
+				reject(
+					new Error(
+						`Model call produced no assistant text (exit ${code}): ${stderr.slice(0, 300)}`,
+					),
+				);
 		});
 
 		proc.on("error", (err) => {
@@ -448,7 +568,8 @@ function buildAnnotationPrompt(
 			} catch {
 				// File vanished — leave snippet empty.
 			}
-			const sym = f.symbols.slice(0, MAX_SYMBOLS_IN_PROMPT).join(", ") || "(none)";
+			const sym =
+				f.symbols.slice(0, MAX_SYMBOLS_IN_PROMPT).join(", ") || "(none)";
 			return `- ${f.path} [lang: ${f.lang}, loc: ${f.loc}, symbols: ${sym}]
   snippet: ${snippet || "(empty)"}`;
 		})
@@ -478,24 +599,46 @@ ${targets.length > 0 ? targets.map((p) => `- ${p}`).join("\n") : "(none — retu
 export function parseAnnotation(text: string): MapAnnotation {
 	let json = text.trim();
 	const fence = json.match(/```(?:json)?\s*([\s\S]*?)```/);
-	if (fence) json = fence[1].trim();
+	if (fence) json = (fence[1] ?? "").trim();
 	const start = json.indexOf("{");
 	const end = json.lastIndexOf("}");
 	if (start !== -1 && end > start) json = json.slice(start, end + 1);
 
-	const data = JSON.parse(json);
+	// The raw annotation payload as the model returns it (untrusted input):
+	// every field stays unknown until individually validated below.
+	interface RawAnnotation {
+		entryPoints?: unknown;
+		patterns?: unknown;
+		testLayout?: unknown;
+		files?: unknown;
+	}
+	interface RawFileEntry {
+		path?: unknown;
+		role?: unknown;
+		summary?: unknown;
+	}
+	const data = JSON.parse(json) as RawAnnotation;
 	return {
-		entryPoints: Array.isArray(data.entryPoints) ? data.entryPoints.map(String) : [],
-		patterns: Array.isArray(data.patterns) ? data.patterns.map(String) : [],
+		entryPoints: Array.isArray(data.entryPoints)
+			? data.entryPoints.map((p) => String(p))
+			: [],
+		patterns: Array.isArray(data.patterns)
+			? data.patterns.map((p) => String(p))
+			: [],
 		testLayout: typeof data.testLayout === "string" ? data.testLayout : "",
 		files: Array.isArray(data.files)
-			? data.files
-					.filter((f: any) => f && typeof f.path === "string")
-					.map((f: any) => ({
-						path: f.path,
-						role: typeof f.role === "string" ? f.role : "",
-						summary: typeof f.summary === "string" ? f.summary : "",
-					}))
+			? data.files.flatMap((f): MapAnnotation["files"] => {
+					if (typeof f !== "object" || f === null) return [];
+					const rec = f as RawFileEntry;
+					if (typeof rec.path !== "string") return [];
+					return [
+						{
+							path: rec.path,
+							role: typeof rec.role === "string" ? rec.role : "",
+							summary: typeof rec.summary === "string" ? rec.summary : "",
+						},
+					];
+				})
 			: [],
 	};
 }
@@ -506,7 +649,10 @@ async function annotate(
 	toAnnotate: SkeletonFile[],
 	model: string,
 ): Promise<MapAnnotation> {
-	const output = await callModel(buildAnnotationPrompt(projectDir, skeleton, toAnnotate), model);
+	const output = await callModel(
+		buildAnnotationPrompt(projectDir, skeleton, toAnnotate),
+		model,
+	);
 	return parseAnnotation(output);
 }
 
@@ -563,7 +709,10 @@ export async function buildMap(
 	// Seed annotations from cache, then overlay fresh ones for changed files.
 	const annotationByPath = new Map<string, { role: string; summary: string }>();
 	for (const [path, f] of prevFiles) {
-		annotationByPath.set(path, { role: f.role ?? "", summary: f.summary ?? "" });
+		annotationByPath.set(path, {
+			role: f.role ?? "",
+			summary: f.summary ?? "",
+		});
 	}
 
 	let entryPoints = cached?.entryPoints ?? [];
@@ -589,7 +738,12 @@ export async function buildMap(
 
 		if (toAnnotate.length > 0) {
 			try {
-				const ann = await (deps.annotate ?? annotate)(projectDir, skeleton, toAnnotate, opts.model);
+				const ann = await (deps.annotate ?? annotate)(
+					projectDir,
+					skeleton,
+					toAnnotate,
+					opts.model,
+				);
 				entryPoints = ann.entryPoints;
 				patterns = ann.patterns;
 				testLayout = ann.testLayout;
@@ -601,7 +755,7 @@ export async function buildMap(
 						annotationByPath.set(f.path, { role: f.role, summary: f.summary });
 					}
 				}
-			} catch (err) {
+			} catch {
 				// Annotation-failure retry contract: persist the map as "skeleton"
 				// (not "full") so the next full build's cachedUsable check rejects
 				// it and re-annotates exactly the summary-less (changed) files.
@@ -616,7 +770,6 @@ export async function buildMap(
 	}
 	// skeleton mode: no annotation — cached annotations (seeded above) hold.
 
-
 	const map: CodebaseMap = {
 		treeHash,
 		generated: new Date().toISOString(),
@@ -627,7 +780,16 @@ export async function buildMap(
 		testLayout,
 		files: skeleton.map((f) => {
 			const a = annotationByPath.get(f.path);
-			return { ...f, role: a?.role, summary: a?.summary };
+			// Conditional spread (exactOptionalPropertyTypes): an absent
+			// annotation must OMIT role/summary, not set them to undefined.
+			return {
+				path: f.path,
+				lang: f.lang,
+				symbols: [...f.symbols],
+				loc: f.loc,
+				contentHash: f.contentHash,
+				...(a ? { role: a.role, summary: a.summary } : {}),
+			};
 		}),
 	};
 
@@ -642,9 +804,34 @@ export async function buildMap(
 // ─── Relevance slicing + prompt injection (deterministic) ────────────
 
 const STOPWORDS = new Set([
-	"the", "and", "for", "with", "this", "that", "from", "into", "file", "files",
-	"create", "using", "your", "should", "make", "then", "call", "when", "after",
-	"add", "new", "its", "are", "was", "have", "has", "not", "but",
+	"the",
+	"and",
+	"for",
+	"with",
+	"this",
+	"that",
+	"from",
+	"into",
+	"file",
+	"files",
+	"create",
+	"using",
+	"your",
+	"should",
+	"make",
+	"then",
+	"call",
+	"when",
+	"after",
+	"add",
+	"new",
+	"its",
+	"are",
+	"was",
+	"have",
+	"has",
+	"not",
+	"but",
 ]);
 
 function tokenize(text: string): Set<string> {
@@ -653,8 +840,12 @@ function tokenize(text: string): Set<string> {
 }
 
 /** Score a file by keyword overlap with the spec (path + symbols + summary). */
-export function scoreFileRelevance(f: MapFileEntry, tokens: Set<string>): number {
-	const haystack = `${f.path} ${f.symbols.join(" ")} ${f.summary ?? ""}`.toLowerCase();
+export function scoreFileRelevance(
+	f: MapFileEntry,
+	tokens: Set<string>,
+): number {
+	const haystack =
+		`${f.path} ${f.symbols.join(" ")} ${f.summary ?? ""}`.toLowerCase();
 	let score = 0;
 	for (const t of tokens) {
 		if (haystack.includes(t)) score++;
@@ -662,7 +853,11 @@ export function scoreFileRelevance(f: MapFileEntry, tokens: Set<string>): number
 	return score;
 }
 
-export function sliceRelevant(map: CodebaseMap, spec: string, limit = 15): MapFileEntry[] {
+export function sliceRelevant(
+	map: CodebaseMap,
+	spec: string,
+	limit = 15,
+): MapFileEntry[] {
 	const tokens = tokenize(spec);
 	const scored = map.files
 		.map((f) => ({ f, score: scoreFileRelevance(f, tokens) }))
@@ -679,29 +874,41 @@ export function sliceRelevant(map: CodebaseMap, spec: string, limit = 15): MapFi
  */
 export function formatMapOverview(map: CodebaseMap): string {
 	const lines: string[] = ["## Codebase overview"];
-	if (map.entryPoints.length > 0) lines.push(`Entry points: ${map.entryPoints.join(", ")}`);
-	if (map.patterns.length > 0) lines.push(`Patterns: ${map.patterns.join("; ")}`);
+	if (map.entryPoints.length > 0)
+		lines.push(`Entry points: ${map.entryPoints.join(", ")}`);
+	if (map.patterns.length > 0)
+		lines.push(`Patterns: ${map.patterns.join("; ")}`);
 	if (map.testLayout) lines.push(`Test layout: ${map.testLayout}`);
 	return lines.length > 1 ? lines.join("\n") : "";
 }
 
 /** The "Codebase map" section prepended to the worker's task prompt. */
-export function formatMapPrompt(map: CodebaseMap, relevant: MapFileEntry[]): string {
+export function formatMapPrompt(
+	map: CodebaseMap,
+	relevant: MapFileEntry[],
+): string {
 	const lines: string[] = [];
 	lines.push("## Codebase map");
-	if (map.entryPoints.length > 0) lines.push(`Entry points: ${map.entryPoints.join(", ")}`);
-	if (map.patterns.length > 0) lines.push(`Patterns: ${map.patterns.join("; ")}`);
+	if (map.entryPoints.length > 0)
+		lines.push(`Entry points: ${map.entryPoints.join(", ")}`);
+	if (map.patterns.length > 0)
+		lines.push(`Patterns: ${map.patterns.join("; ")}`);
 	if (map.testLayout) lines.push(`Test layout: ${map.testLayout}`);
 	if (relevant.length > 0) {
 		lines.push("");
 		lines.push("Files most relevant to this task (read these first):");
 		for (const f of relevant) {
-			const sym = f.symbols.length > 0 ? ` [symbols: ${f.symbols.slice(0, 15).join(", ")}]` : "";
+			const sym =
+				f.symbols.length > 0
+					? ` [symbols: ${f.symbols.slice(0, 15).join(", ")}]`
+					: "";
 			const summary = f.summary ? ` — ${f.summary}` : "";
 			lines.push(`- ${f.path}${summary}${sym}`);
 		}
 		lines.push("");
-		lines.push("Read the files above first; explore beyond them only if they do not cover the task.");
+		lines.push(
+			"Read the files above first; explore beyond them only if they do not cover the task.",
+		);
 	}
 	return lines.join("\n");
 }

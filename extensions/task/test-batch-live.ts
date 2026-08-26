@@ -60,7 +60,9 @@ function fail(message: string): never {
 
 async function main(): Promise<void> {
 	if (!process.env.OPENROUTER_API_KEY) {
-		console.log("SKIPPED: OPENROUTER_API_KEY not set — the real batch call is guarded (network + cost).");
+		console.log(
+			"SKIPPED: OPENROUTER_API_KEY not set — the real batch call is guarded (network + cost).",
+		);
 		return;
 	}
 
@@ -78,25 +80,35 @@ async function main(): Promise<void> {
 			metricsDir,
 			project: "batch-live",
 		});
-		console.log(`job ${lane.jobId} completed: ${lane.items.length} item(s), ${lane.usage.cost_usd} USD`);
+		console.log(
+			`job ${lane.jobId} completed: ${lane.items.length} item(s), ${lane.usage.cost_usd} USD`,
+		);
 
-		if (lane.items.length !== 1 || lane.items[0].status !== "completed") {
+		if (lane.items.length !== 1 || lane.items[0]!.status !== "completed") {
 			fail(`expected 1 completed item, got ${JSON.stringify(lane.items)}`);
 		}
 		const output = lane.outputs.R1;
 		if (typeof output !== "string" || !/pong/i.test(output)) {
-			fail(`expected the output to contain "pong", got ${JSON.stringify(output)}`);
+			fail(
+				`expected the output to contain "pong", got ${JSON.stringify(output)}`,
+			);
 		}
 
 		// R4: the job-state file round-trips (written by the lane, read back).
 		const state = readBatchJobState(metricsDir, "batch-live", lane.runId);
-		if (state === null || state.job_id !== lane.jobId || state.status !== "completed") {
+		if (
+			state === null ||
+			state.job_id !== lane.jobId ||
+			state.status !== "completed"
+		) {
 			fail("job-state file did not round-trip (job id / status)");
 		}
 		// writeBatchJobState must accept the read-back state unchanged
 		// (the manifest-adjacent record is the recovery handle).
 		writeBatchJobState(state, { metricsDir, project: "batch-live" });
-		console.log("✓ live batch lane: submit → poll → collect → validate → job-state round-trip");
+		console.log(
+			"✓ live batch lane: submit → poll → collect → validate → job-state round-trip",
+		);
 	} catch (err) {
 		if (err instanceof BatchError && err.code === "poll_timeout") {
 			console.error(
@@ -111,7 +123,10 @@ async function main(): Promise<void> {
 	}
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (
+	process.argv[1] &&
+	import.meta.url === pathToFileURL(process.argv[1]).href
+) {
 	main().catch((err) => {
 		console.error(err instanceof Error ? err.message : err);
 		process.exit(1);

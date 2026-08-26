@@ -25,13 +25,29 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { HandoffBundleSchema, type HandoffBundle } from "../src/contracts/payloads.ts";
+import {
+	HandoffBundleSchema,
+	type HandoffBundle,
+} from "../src/contracts/payloads.ts";
 import { transformHandoffThrough } from "../src/plugins/index.ts";
 import { loadPluginsFromToml } from "../src/plugins/loader.ts";
 import type { TaskPlugin } from "../src/contracts/task-plugin.ts";
 
-const PLUGIN_PATH = join(dirname(fileURLToPath(import.meta.url)), "..", "src", "plugins", "builtin", "handoff-cap.ts");
-const TASK_RUNNER_PATH = join(dirname(fileURLToPath(import.meta.url)), "..", "src", "daemon", "task-runner.ts");
+const PLUGIN_PATH = join(
+	dirname(fileURLToPath(import.meta.url)),
+	"..",
+	"src",
+	"plugins",
+	"builtin",
+	"handoff-cap.ts",
+);
+const TASK_RUNNER_PATH = join(
+	dirname(fileURLToPath(import.meta.url)),
+	"..",
+	"src",
+	"daemon",
+	"task-runner.ts",
+);
 
 /** Oversized fixture: 70 kB tail — above the plugin's cap AND the schema max. */
 function bigHandoff(): HandoffBundle {
@@ -56,7 +72,11 @@ export async function runTests(): Promise<void> {
 	try {
 		// ── Loaded by path through the M4b loader ─────────────────────────
 		const tomlPath = join(dir, "task.toml");
-		writeFileSync(tomlPath, `[plugins]\npaths = ["${JSON.stringify(PLUGIN_PATH).slice(1, -1)}"]\n`, "utf-8");
+		writeFileSync(
+			tomlPath,
+			`[plugins]\npaths = ["${JSON.stringify(PLUGIN_PATH).slice(1, -1)}"]\n`,
+			"utf-8",
+		);
 		let plugins;
 		try {
 			plugins = await loadPluginsFromToml(tomlPath, dir);
@@ -64,45 +84,76 @@ export async function runTests(): Promise<void> {
 			check(false, `loader failed on the shipped plugin path: ${String(err)}`);
 			throw err;
 		}
-		check(plugins.length === 1 && plugins[0]!.name === "handoff-cap",
-			"the shipped handoff-cap module loads by path with its declared name");
+		check(
+			plugins.length === 1 && plugins[0]!.name === "handoff-cap",
+			"the shipped handoff-cap module loads by path with its declared name",
+		);
 
 		const plugin = plugins[0]!;
-		check(typeof plugin.transformHandoff === "function", "handoff-cap exposes the transformHandoff hook");
+		check(
+			typeof plugin.transformHandoff === "function",
+			"handoff-cap exposes the transformHandoff hook",
+		);
 
 		// ── Invoked through the hooks layer: observable effect ───────────
 		const { HANDOFF_CAP_MAX } = await import(PLUGIN_PATH);
 		const capped = await transformHandoffThrough(bigHandoff(), [plugin]);
-		check(capped.uncommittedDiffSummary.length === HANDOFF_CAP_MAX,
-			`oversized diff summary capped to ${HANDOFF_CAP_MAX} (got ${capped.uncommittedDiffSummary.length})`);
-		check(capped.verificationFailures[0]!.stderrTail.length === HANDOFF_CAP_MAX,
-			"oversized failure stderr tail capped");
-		check(capped.verificationFailures[1]!.stderrTail === "short tail",
-			"sub-cap tails pass through untouched");
-		check(capped.filesTouched.length === 1 && capped.taskId === "t-cap",
-			"capping preserves every other handoff field");
+		check(
+			capped.uncommittedDiffSummary.length === HANDOFF_CAP_MAX,
+			`oversized diff summary capped to ${HANDOFF_CAP_MAX} (got ${capped.uncommittedDiffSummary.length})`,
+		);
+		check(
+			capped.verificationFailures[0]!.stderrTail.length === HANDOFF_CAP_MAX,
+			"oversized failure stderr tail capped",
+		);
+		check(
+			capped.verificationFailures[1]!.stderrTail === "short tail",
+			"sub-cap tails pass through untouched",
+		);
+		check(
+			capped.filesTouched.length === 1 && capped.taskId === "t-cap",
+			"capping preserves every other handoff field",
+		);
 
 		// Tail preservation: the LAST characters survive (tails matter).
-		check(capped.uncommittedDiffSummary.endsWith("x"), "tail-capped summary keeps its last bytes");
+		check(
+			capped.uncommittedDiffSummary.endsWith("x"),
+			"tail-capped summary keeps its last bytes",
+		);
 
 		// ── Schema validity of the transformed output ─────────────────────
 		const reparsed = HandoffBundleSchema.safeParse(capped);
-		check(reparsed.success, "transformed handoff re-validates against HandoffBundleSchema");
+		check(
+			reparsed.success,
+			"transformed handoff re-validates against HandoffBundleSchema",
+		);
 
 		// An UNCAPPED injection cannot sneak past the schema when a hook ran.
 		const invalidInjector: TaskPlugin = {
 			name: "invalid-injector",
 			transformHandoff: () =>
-				Promise.resolve({ ...bigHandoff(), taskId: 42 } as unknown as HandoffBundle),
+				Promise.resolve({
+					...bigHandoff(),
+					taskId: 42,
+				} as unknown as HandoffBundle),
 		};
 		const sinkErrors: unknown[] = [];
-		const guarded = await transformHandoffThrough(bigHandoff(), [invalidInjector, plugin], {
-			onHookError: (e) => sinkErrors.push(e),
-		});
-		check(sinkErrors.length === 1 && String(sinkErrors[0]).includes("invalid-injector"),
-			"a schema-invalid transform is rejected and attributed through the sink");
-		check(guarded.uncommittedDiffSummary.length === HANDOFF_CAP_MAX,
-			"after rejection the chain continues with the valid value and handoff-cap still caps it");
+		const guarded = await transformHandoffThrough(
+			bigHandoff(),
+			[invalidInjector, plugin],
+			{
+				onHookError: (e) => sinkErrors.push(e),
+			},
+		);
+		check(
+			sinkErrors.length === 1 &&
+				String(sinkErrors[0]).includes("invalid-injector"),
+			"a schema-invalid transform is rejected and attributed through the sink",
+		);
+		check(
+			guarded.uncommittedDiffSummary.length === HANDOFF_CAP_MAX,
+			"after rejection the chain continues with the valid value and handoff-cap still caps it",
+		);
 
 		// ── Throw isolation ahead of the real plugin ─────────────────────
 		const sinkErrors2: unknown[] = [];
@@ -110,20 +161,33 @@ export async function runTests(): Promise<void> {
 			name: "rejector",
 			transformHandoff: () => Promise.reject(new Error("boom")),
 		};
-		const survived = await transformHandoffThrough(bigHandoff(), [rejecter, plugin], {
-			onHookError: (e) => sinkErrors2.push(e),
-		});
-		check(survived.uncommittedDiffSummary.length === HANDOFF_CAP_MAX,
-			"a rejecting predecessor leaves the input intact for handoff-cap, which still caps it");
-		check(sinkErrors2.some((e) => String(e).includes("rejector")),
-			"the rejection is reported through the sink, never fatal");
+		const survived = await transformHandoffThrough(
+			bigHandoff(),
+			[rejecter, plugin],
+			{
+				onHookError: (e) => sinkErrors2.push(e),
+			},
+		);
+		check(
+			survived.uncommittedDiffSummary.length === HANDOFF_CAP_MAX,
+			"a rejecting predecessor leaves the input intact for handoff-cap, which still caps it",
+		);
+		check(
+			sinkErrors2.some((e) => String(e).includes("rejector")),
+			"the rejection is reported through the sink, never fatal",
+		);
 
 		// ── Duplication-gone proof (R2) ───────────────────────────────────
 		const runnerSource = readFileSync(TASK_RUNNER_PATH, "utf-8");
-		check(!runnerSource.includes("slice(0, 60_000)") && !runnerSource.includes("slice(0,60000)"),
-			"task-runner no longer carries the inline 60 kB slice (R2)");
-		check(runnerSource.includes("transformHandoffThrough"),
-			"the former inline site now routes through the plugin hooks (R2)");
+		check(
+			!runnerSource.includes("slice(0, 60_000)") &&
+				!runnerSource.includes("slice(0,60000)"),
+			"task-runner no longer carries the inline 60 kB slice (R2)",
+		);
+		check(
+			runnerSource.includes("transformHandoffThrough"),
+			"the former inline site now routes through the plugin hooks (R2)",
+		);
 
 		// Upstream guarantee note: verify/run.ts caps tails at 2048 chars, so
 		// core never NEEDS the plugin for correctness — the plugin owns the
@@ -133,22 +197,31 @@ export async function runTests(): Promise<void> {
 			join(dirname(TASK_RUNNER_PATH), "..", "verify", "run.ts"),
 			"utf-8",
 		);
-		check(verifyRunSource.includes("VERIFY_OUTPUT_TAIL_CHARS"),
-			"verify layer keeps its own bounded tails (documents the safety argument)");
+		check(
+			verifyRunSource.includes("VERIFY_OUTPUT_TAIL_CHARS"),
+			"verify layer keeps its own bounded tails (documents the safety argument)",
+		);
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}
 
 	if (errors.length > 0) {
-		throw new Error(`handoff-cap plugin tests failed:\n  ${errors.join("\n  ")}`);
+		throw new Error(
+			`handoff-cap plugin tests failed:\n  ${errors.join("\n  ")}`,
+		);
 	}
-	console.log("✓ plugin handoff-cap: path-loaded, hooks-invoked, capped, schema-valid, throw-isolated, core deduplicated");
+	console.log(
+		"✓ plugin handoff-cap: path-loaded, hooks-invoked, capped, schema-valid, throw-isolated, core deduplicated",
+	);
 }
 
 const invokedAs = process.argv[1];
-if (invokedAs !== undefined && import.meta.url.endsWith(invokedAs.split("/").pop() ?? "")) {
+if (
+	invokedAs !== undefined &&
+	import.meta.url.endsWith(invokedAs.split("/").pop() ?? "")
+) {
 	runTests().catch((err) => {
-		console.error(err.message ?? err);
+		console.error(err instanceof Error ? err.message : String(err));
 		process.exit(1);
 	});
 }

@@ -31,18 +31,19 @@ export function validateCanonicalDag(dag: CanonicalDag): void {
 	}
 	try {
 		synthesizeDag(
-		dag.nodes.map((n) => ({
-			id: n.id,
-			spec: {
-				goal: "",
-				requirements: [],
-				verificationCommands: [],
-				dependsOn: [...n.dependsOn],
-			},
-		})),
+			dag.nodes.map((n) => ({
+				id: n.id,
+				spec: {
+					goal: "",
+					requirements: [],
+					verificationCommands: [],
+					dependsOn: [...n.dependsOn],
+				},
+			})),
 		);
 	} catch (err) {
-		if (err instanceof DagSynthesisError) throw new CanonicalDagError(err.message);
+		if (err instanceof DagSynthesisError)
+			throw new CanonicalDagError(err.message);
 		throw err;
 	}
 }

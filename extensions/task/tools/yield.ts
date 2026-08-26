@@ -19,7 +19,9 @@ export function mergeDisputes(
 	recordedDisputes: RecordedDispute[],
 	inline: Array<{ command: string; reason: string }> | undefined,
 ): Array<{ command: string; reason: string }> {
-	const merged: Array<{ command: string; reason: string }> = [...recordedDisputes];
+	const merged: Array<{ command: string; reason: string }> = [
+		...recordedDisputes,
+	];
 	for (const d of inline ?? []) {
 		if (!merged.some((m) => m.command === d.command)) merged.push(d);
 	}
@@ -50,19 +52,21 @@ export default function (pi: ExtensionAPI) {
 			"This is your final action — the session ends after yield.",
 		parameters: YieldSchema,
 
-		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+		execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			ctx.shutdown();
-			return {
+			return Promise.resolve({
 				content: [{ type: "text", text: "Yield accepted." }],
 				details: {
 					...params,
-					files_changed: params.files_changed.map((p) => toRepoRelative(ctx.cwd, p)),
+					files_changed: params.files_changed.map((p) =>
+						toRepoRelative(ctx.cwd, p),
+					),
 					// Disputes recorded via dispute_verification travel with the
 					// yield automatically (deduped with any inline params.disputes).
 					disputes: mergeDisputes(takeRecordedDisputes(), params.disputes),
 				},
 				terminate: true,
-			};
+			});
 		},
 	});
 }

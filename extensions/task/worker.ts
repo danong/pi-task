@@ -12,7 +12,13 @@
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync, mkdtempSync, writeFileSync, unlinkSync, rmSync } from "node:fs";
+import {
+	existsSync,
+	mkdtempSync,
+	writeFileSync,
+	unlinkSync,
+	rmSync,
+} from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -153,13 +159,19 @@ export interface WorkerOptions {
 }
 
 export interface WorkerUpdate {
-	type: "turn" | "tool_start" | "tool_end" | "yield";
+	type: "turn" | "tool_start" | "tool_end" | "yield" | "capacity_backoff";
 	turns?: number;
 	toolName?: string;
+	/** tool_start only: truncated argument summary (diagnostics). */
+	args?: string;
 	/** tool_end only: whether the tool call errored. Consumers key off the
 	 *  first SUCCESSFUL edit/write (the same signal as the prewalk swap). */
 	isError?: boolean;
 	yieldPayload?: YieldPayload;
+	/** capacity_backoff only: resilient-spawn retry bookkeeping. */
+	attempt?: number;
+	delayMs?: number;
+	error?: string;
 }
 
 export interface WorkerUsage {
@@ -208,15 +220,16 @@ export interface WorkerSession {
 	onEvent(listener: (event: unknown) => void): () => void;
 	/** Write an RPC command to the worker's stdin (fire-and-forget). */
 	sendCommand(command: Record<string, unknown>): void;
-	/** Send an RPC command and await its correlated response (matched by id). */
-	request(command: Record<string, unknown>): Promise<any>;
+	/** Send an RPC command and await its correlated response (matched by id).
+	 *  Untyped: callers narrow the response payload themselves. */
+	request(command: Record<string, unknown>): Promise<unknown>;
 	/**
 	 * Switch the worker model: "provider/model-id" → set_model command.
 	 * Resolves with the set_model response; REJECTS on failure (e.g. unknown
 	 * model) — callers must surface the failure rather than let the run
 	 * silently continue on the old model.
 	 */
-	setModel(model: string): Promise<any>;
+	setModel(model: string): Promise<unknown>;
 	/** Resolves with the typed result when the worker finishes. */
 	result: Promise<WorkerResult>;
 	/** Terminate the worker (abort command → SIGTERM → SIGKILL). */
@@ -231,7 +244,11 @@ const YIELD_EXTENSION_PATH = join(THIS_DIR, "tools", "yield.ts");
 export const CHECKLIST_EXTENSION_PATH = join(THIS_DIR, "tools", "checklist.ts");
 /** Tool guard (Phase 2): bash timeout cap + root-scoped search block.
  *  Enforcement for EVERY worker/reviewer, whatever its prompt says. */
-export const TOOL_GUARD_EXTENSION_PATH = join(THIS_DIR, "tools", "tool-guard.ts");
+export const TOOL_GUARD_EXTENSION_PATH = join(
+	THIS_DIR,
+	"tools",
+	"tool-guard.ts",
+);
 /** dispute_verification: the worker's structured challenge against a
  *  defective verification command (engine-adjudicated, never unilateral). */
 export const DISPUTE_EXTENSION_PATH = join(THIS_DIR, "tools", "dispute.ts");
@@ -240,15 +257,27 @@ export const DISPUTE_EXTENSION_PATH = join(THIS_DIR, "tools", "dispute.ts");
  *  reasons at its budget but the transcript stops accreting the
  *  reasoning_details blobs. Loaded on every worker/reviewer (no-op without
  *  the env var). */
-export const REASONING_EXCLUDE_EXTENSION_PATH = join(THIS_DIR, "tools", "reasoning-exclude.ts");
+export const REASONING_EXCLUDE_EXTENSION_PATH = join(
+	THIS_DIR,
+	"tools",
+	"reasoning-exclude.ts",
+);
 /** Service-tier injection extension — loaded only when the run's tier
  *  declares one (the extension is a no-op without the env var anyway, but
  *  skipping the load keeps ordinary runs extension-count-stable). */
-export const SERVICE_TIER_EXTENSION_PATH = join(THIS_DIR, "tools", "service-tier.ts");
+export const SERVICE_TIER_EXTENSION_PATH = join(
+	THIS_DIR,
+	"tools",
+	"service-tier.ts",
+);
 /** Session-id injection extension (wave-4 cost) — always loaded; it is a no-op
  *  unless an identifier is present (the run's session id via env, or pi's own
  *  ambient session id), so ordinary runs pay nothing. */
-export const SESSION_ID_EXTENSION_PATH = join(THIS_DIR, "tools", "session-id.ts");
+export const SESSION_ID_EXTENSION_PATH = join(
+	THIS_DIR,
+	"tools",
+	"session-id.ts",
+);
 const SIGKILL_DELAY_MS = 5000;
 
 /** Default wall-clock budget for a worker run (45 min) — mirrors the config
@@ -281,7 +310,10 @@ export const WORKER_VERIFICATION_GRACE_MS = 10 * 60 * 1000;
  * common wrappers ("cd … && <cmd>", "timeout 300 <cmd>", …); the exact
  * string also matches. Pure — tested hermetically.
  */
-export function isVerificationCommand(args: string, commands: string[]): boolean {
+export function isVerificationCommand(
+	args: string,
+	commands: string[],
+): boolean {
 	const a = args.trim();
 	return commands.some((cmd) => {
 		const c = cmd.trim();
@@ -395,7 +427,10 @@ export const DEFAULT_WORKER_SYSTEM_PROMPT = buildWorkerSystemPrompt(true);
 // ─── Helpers ─────────────────────────────────────────────────────────
 
 /** Split "provider/model-id" into { provider, modelId }. */
-export function splitModel(model: string): { provider: string; modelId: string } {
+export function splitModel(model: string): {
+	provider: string;
+	modelId: string;
+} {
 	const slash = model.indexOf("/");
 	if (slash === -1) {
 		throw new Error(`Invalid model "${model}": expected "provider/model-id"`);
@@ -408,13 +443,23 @@ export function splitModel(model: string): { provider: string; modelId: string }
  * Handles: direct pi binary, node/bun running a script, custom runtimes.
  * Exported so other modules (repo-map annotation) can spawn pi too.
  */
-export function getPiInvocation(args: string[]): { command: string; args: string[] } {
+export function getPiInvocation(args: string[]): {
+	command: string;
+	args: string[];
+} {
 	const currentScript = process.argv[1];
 	const isBunVirtualScript = currentScript?.startsWith("/$bunfs/root/");
 	// Only reuse the current script if it IS pi (running inside a pi process).
 	// Standalone scripts (tests, CLI tools) fall through to "pi".
-	const isPiScript = currentScript?.includes("pi-coding-agent") || basename(currentScript ?? "") === "pi";
-	if (currentScript && !isBunVirtualScript && isPiScript && existsSync(currentScript)) {
+	const isPiScript =
+		currentScript?.includes("pi-coding-agent") ||
+		basename(currentScript ?? "") === "pi";
+	if (
+		currentScript &&
+		!isBunVirtualScript &&
+		isPiScript &&
+		existsSync(currentScript)
+	) {
 		return { command: process.execPath, args: [currentScript, ...args] };
 	}
 
@@ -489,7 +534,11 @@ export function decideToolTimeoutAction(opts: {
  * why the no-progress watchdog could not catch it. Pure — hermetically
  * tested so stuck runs surface precisely, not generically.
  */
-export function toolTimeoutErrorMessage(timeoutMs: number, toolName: string, toolArgs: string): string {
+export function toolTimeoutErrorMessage(
+	timeoutMs: number,
+	toolName: string,
+	toolArgs: string,
+): string {
 	return (
 		`Worker aborted: tool "${toolName}" exceeded the per-tool-call budget of ` +
 		`${formatDuration(timeoutMs)} (${timeoutMs} ms) — a hung tool the no-progress ` +
@@ -504,7 +553,9 @@ export function toolTimeoutErrorMessage(timeoutMs: number, toolName: string, too
  * (45 min). Pure — hermetically tested. The orchestrator passes the
  * resolved tier's wall via WorkerOptions.timeoutMs.
  */
-export function selectWorkerWallTimeout(tierWallTimeoutMs: number | undefined): number {
+export function selectWorkerWallTimeout(
+	tierWallTimeoutMs: number | undefined,
+): number {
 	return tierWallTimeoutMs ?? WORKER_WALL_TIMEOUT_MS;
 }
 
@@ -514,7 +565,10 @@ export function selectWorkerWallTimeout(tierWallTimeoutMs: number | undefined): 
  * human-readable form, plus the wall limit for context. Pure — the content
  * is hermetically tested so stuck runs surface precisely, not generically.
  */
-export function noProgressErrorMessage(windowMs: number, wallTimeoutMs: number): string {
+export function noProgressErrorMessage(
+	windowMs: number,
+	wallTimeoutMs: number,
+): string {
 	return (
 		`Worker aborted: no progress — no RPC activity (turns, tool calls, or events) ` +
 		`observed for ${formatDuration(windowMs)} (${windowMs} ms); wall limit is ` +
@@ -550,7 +604,9 @@ export function summarizeToolArgs(args: unknown): string {
 		try {
 			s = JSON.stringify(args);
 		} catch {
-			s = String(args);
+			// Non-stringifyable value (e.g. a cyclic structure): fall back to the
+			// default Object stringification (no-base-to-string).
+			s = Object.prototype.toString.call(args);
 		}
 	}
 	return s.length > 150 ? `${s.slice(0, 147)}...` : s;
@@ -577,7 +633,8 @@ export interface WorkerFailureDiagnostics {
  * (orchestrator salvage/artifacts) switch on this union instead of
  * matching cause text — adding a class is a compile-guided change.
  */
-export type WorkerFailureCode = "no_yield" | "wall_timeout" | "no_progress" | "tool_timeout";
+export type WorkerFailureCode =
+	"no_yield" | "wall_timeout" | "no_progress" | "tool_timeout";
 
 /**
  * The failure message a worker abort produces (todo #86): the cause line
@@ -585,9 +642,14 @@ export type WorkerFailureCode = "no_yield" | "wall_timeout" | "no_progress" | "t
  * and the stderr tail. Pure — hermetically tested.
  */
 export function workerFailureMessage(d: WorkerFailureDiagnostics): string {
-	const parts = [d.cause, `turns: ${d.turns} | idle: ${formatDuration(d.idleMs)}`];
-	if (d.lastTool) parts.push(`last tool: ${d.lastTool.name}(${d.lastTool.args})`);
-	if (d.stderrTail.trim()) parts.push(`stderr (last ${STDERR_TAIL_CHARS} chars):\n${d.stderrTail}`);
+	const parts = [
+		d.cause,
+		`turns: ${d.turns} | idle: ${formatDuration(d.idleMs)}`,
+	];
+	if (d.lastTool)
+		parts.push(`last tool: ${d.lastTool.name}(${d.lastTool.args})`);
+	if (d.stderrTail.trim())
+		parts.push(`stderr (last ${STDERR_TAIL_CHARS} chars):\n${d.stderrTail}`);
 	return parts.join("\n");
 }
 
@@ -598,18 +660,22 @@ export function workerFailureMessage(d: WorkerFailureDiagnostics): string {
  * cause is display text only.
  */
 export function buildAbortError(
-	opts: Omit<WorkerFailureDiagnostics, "cause" | "code"> & { code: WorkerFailureCode | null; cause: string | null },
+	opts: Omit<WorkerFailureDiagnostics, "cause" | "code"> & {
+		code: WorkerFailureCode | null;
+		cause: string | null;
+	},
 ): Error {
 	const diagnostics: WorkerFailureDiagnostics = {
 		cause: opts.cause ?? "Worker was aborted",
 		code: opts.code,
 		turns: opts.turns,
- 		idleMs: opts.idleMs,
+		idleMs: opts.idleMs,
 		lastTool: opts.lastTool,
 		stderrTail: opts.stderrTail,
 	};
 	const err = new Error(workerFailureMessage(diagnostics));
-	(err as unknown as { diagnostics: WorkerFailureDiagnostics }).diagnostics = diagnostics;
+	(err as unknown as { diagnostics: WorkerFailureDiagnostics }).diagnostics =
+		diagnostics;
 	return err;
 }
 
@@ -667,7 +733,8 @@ export function estimateReadTokens(result: unknown): number {
 	let chars = 0;
 	for (const block of content) {
 		const b = block as { type?: string; text?: unknown };
-		if (b?.type === "text" && typeof b.text === "string") chars += b.text.length;
+		if (b?.type === "text" && typeof b.text === "string")
+			chars += b.text.length;
 	}
 	return Math.ceil(chars / 4);
 }
@@ -683,7 +750,26 @@ export function reduceWorkerEvent(
 ): { state: WorkerEventState; updates: WorkerUpdate[] } {
 	const updates: WorkerUpdate[] = [];
 	const { usage } = state;
-	const ev = event as Record<string, any>;
+	// The RPC stream is untyped at this seam; narrow to the fields the
+	// reducer branches on (runtime shape comes from pi's event emitter).
+	const ev = event as {
+		type: string;
+		message?: {
+			role?: string;
+			usage?: {
+				input?: number;
+				output?: number;
+				cacheRead?: number;
+				cacheWrite?: number;
+				cost?: { total?: number };
+			};
+		};
+		toolName?: unknown;
+		toolCallId?: unknown;
+		args?: { path?: unknown };
+		result?: { details?: unknown };
+		isError?: boolean;
+	};
 
 	switch (ev.type) {
 		case "message_end": {
@@ -706,12 +792,18 @@ export function reduceWorkerEvent(
 
 		case "tool_execution_start": {
 			// Track read paths (correlated by toolCallId) for read-duplication.
-			if (ev.toolName === "read" && typeof ev.toolCallId === "string" && typeof ev.args?.path === "string") {
+			if (
+				ev.toolName === "read" &&
+				typeof ev.toolCallId === "string" &&
+				typeof ev.args?.path === "string"
+			) {
 				state.pendingReadPaths.set(ev.toolCallId, ev.args.path);
 			}
 			updates.push({
 				type: "tool_start",
-				toolName: ev.toolName,
+				...(typeof ev.toolName === "string" && {
+					toolName: ev.toolName,
+				}),
 				args: summarizeToolArgs(ev.args),
 			});
 			break;
@@ -723,10 +815,15 @@ export function reduceWorkerEvent(
 			// Count reads and edits; record per-file reads for the duplication metric.
 			if (toolName === "read") {
 				usage.reads++;
-				const callId = typeof ev.toolCallId === "string" ? ev.toolCallId : undefined;
+				const callId =
+					typeof ev.toolCallId === "string" ? ev.toolCallId : undefined;
 				const path = callId ? state.pendingReadPaths.get(callId) : undefined;
 				if (callId) state.pendingReadPaths.delete(callId);
-				state.reads.push({ path, approxTokens: estimateReadTokens(ev.result), turn: usage.turns });
+				state.reads.push({
+					path,
+					approxTokens: estimateReadTokens(ev.result),
+					turn: usage.turns,
+				});
 			}
 			if (toolName === "edit" || toolName === "write") usage.edits++;
 
@@ -736,9 +833,16 @@ export function reduceWorkerEvent(
 				updates.push({ type: "yield", yieldPayload: state.yieldPayload });
 			}
 
-			updates.push({ type: "tool_end", toolName, isError: ev.isError === true });
+			updates.push({
+				type: "tool_end",
+				toolName,
+				isError: ev.isError === true,
+			});
 			break;
 		}
+
+		default:
+			break;
 	}
 
 	return { state, updates };
@@ -758,7 +862,10 @@ export function settleWorker(
 	stderr: string,
 ): { ok: true; result: WorkerOutcome } | { ok: false; error: Error } {
 	if (state.yieldPayload) {
-		return { ok: true, result: { yield: state.yieldPayload, usage: state.usage, exitCode } };
+		return {
+			ok: true,
+			result: { yield: state.yieldPayload, usage: state.usage, exitCode },
+		};
 	}
 	if (wasAborted) {
 		return { ok: false, error: new Error("Worker was aborted") };
@@ -766,7 +873,9 @@ export function settleWorker(
 	const detail = stderr.trim() ? `\nstderr: ${stderr.slice(0, 500)}` : "";
 	return {
 		ok: false,
-		error: new Error(`Worker exited (code ${exitCode}) without yielding a result.${detail}`),
+		error: new Error(
+			`Worker exited (code ${exitCode}) without yielding a result.${detail}`,
+		),
 	};
 }
 
@@ -845,7 +954,24 @@ export function buildWorkerArgs(opts: {
 	// skills-discovery list (~1.5-2k tokens) into the system prompt; a worker
 	// explores on its own and never uses it. Prune it here. Explicit --skill
 	// paths would still load, but we pass none.
-	const args: string[] = ["--mode", "rpc", "--model", opts.model, "--no-extensions", "--no-skills", "--extension", YIELD_EXTENSION_PATH, "--extension", TOOL_GUARD_EXTENSION_PATH, "--extension", DISPUTE_EXTENSION_PATH, "--extension", REASONING_EXCLUDE_EXTENSION_PATH, "--extension", SESSION_ID_EXTENSION_PATH];
+	const args: string[] = [
+		"--mode",
+		"rpc",
+		"--model",
+		opts.model,
+		"--no-extensions",
+		"--no-skills",
+		"--extension",
+		YIELD_EXTENSION_PATH,
+		"--extension",
+		TOOL_GUARD_EXTENSION_PATH,
+		"--extension",
+		DISPUTE_EXTENSION_PATH,
+		"--extension",
+		REASONING_EXCLUDE_EXTENSION_PATH,
+		"--extension",
+		SESSION_ID_EXTENSION_PATH,
+	];
 	if (opts.slimWorkerPrompt === false) {
 		const i = args.indexOf("--no-skills");
 		if (i !== -1) args.splice(i, 1);
@@ -869,7 +995,16 @@ export function buildWorkerArgs(opts: {
 // ─── Session ─────────────────────────────────────────────────────────
 
 export function spawnWorkerSession(opts: WorkerOptions): WorkerSession {
-	const { cwd, model, task, systemPrompt, extensions, sessionDir, signal, onUpdate } = opts;
+	const {
+		cwd,
+		model,
+		task,
+		systemPrompt,
+		extensions,
+		sessionDir,
+		signal,
+		onUpdate,
+	} = opts;
 
 	// Write system prompt to temp file (pi reads file contents when the
 	// --append-system-prompt arg is a path to an existing file).
@@ -891,18 +1026,26 @@ export function spawnWorkerSession(opts: WorkerOptions): WorkerSession {
 	if (opts.aiAuthorName && opts.aiAuthorEmail) {
 		if (!tmpDir) tmpDir = mkdtempSync(join(tmpdir(), "pi-task-worker-"));
 		identityConfigPath = join(tmpDir, "jj-identity.toml");
-		writeFileSync(identityConfigPath, aiIdentityToml(opts.aiAuthorName, opts.aiAuthorEmail), "utf-8");
+		writeFileSync(
+			identityConfigPath,
+			aiIdentityToml(opts.aiAuthorName, opts.aiAuthorEmail),
+			"utf-8",
+		);
 	}
 
 	// Build CLI args (pure helper). sessionDir persists the session for
 	// review forking; otherwise the session is ephemeral (--no-session).
+	// Optional props are spread conditionally: exactOptionalPropertyTypes
+	// forbids assigning `undefined` explicitly.
 	const args = buildWorkerArgs({
 		model,
-		sessionDir,
-		extensions,
-		systemPromptPath: tmpPromptPath ?? undefined,
-		serviceTier: opts.serviceTier,
-		slimWorkerPrompt: opts.slimWorkerPrompt,
+		...(sessionDir !== undefined && { sessionDir }),
+		...(extensions !== undefined && { extensions }),
+		...(tmpPromptPath !== null && { systemPromptPath: tmpPromptPath }),
+		...(opts.serviceTier !== undefined && { serviceTier: opts.serviceTier }),
+		...(opts.slimWorkerPrompt !== undefined && {
+			slimWorkerPrompt: opts.slimWorkerPrompt,
+		}),
 	});
 
 	const invocation = getPiInvocation(args);
@@ -915,7 +1058,10 @@ export function spawnWorkerSession(opts: WorkerOptions): WorkerSession {
 	// temp dirs must be bound back into the namespace (--tmpfs /tmp shadows
 	// the OS tmpdir they live under): the system-prompt dir and, when
 	// present, the session dir.
-	const tempDirs = [...(tmpDir ? [tmpDir] : []), ...(sessionDir ? [sessionDir] : [])];
+	const tempDirs = [
+		...(tmpDir ? [tmpDir] : []),
+		...(sessionDir ? [sessionDir] : []),
+	];
 	const wrapped = wrapWorkerInvocation({
 		sandbox: opts.sandbox,
 		cwd: resolve(cwd),
@@ -925,7 +1071,9 @@ export function spawnWorkerSession(opts: WorkerOptions): WorkerSession {
 		// (which live in this package) resolve for the worker's pi.
 		agentDir: getAgentDir(),
 		tempDirs,
-		projectDir: opts.projectDir ? resolve(opts.projectDir) : undefined,
+		...(opts.projectDir !== undefined && {
+			projectDir: resolve(opts.projectDir),
+		}),
 		invocation,
 	});
 	const proc: ChildProcess = spawn(wrapped.command, wrapped.args, {
@@ -995,18 +1143,26 @@ export function spawnWorkerSession(opts: WorkerOptions): WorkerSession {
 	// them AND clear their timers (R7 — no orphaned 30s timers after close).
 	const pending = new Map<
 		string,
-		{ resolve: (v: any) => void; reject: (e: Error) => void; timer: NodeJS.Timeout }
+		{
+			resolve: (v: unknown) => void;
+			reject: (e: Error) => void;
+			timer: NodeJS.Timeout;
+		}
 	>();
 	let rpcId = 0;
 	let capturedSessionFile: string | undefined;
 
-	const request = (command: Record<string, unknown>): Promise<any> => {
+	const request = (command: Record<string, unknown>): Promise<unknown> => {
 		const id = `pi-task-${++rpcId}`;
 		return new Promise((resolve, reject) => {
 			const timer = setTimeout(() => {
 				if (pending.has(id)) {
 					pending.delete(id);
-					reject(new Error(`Timeout waiting for response to "${String(command.type)}"`));
+					reject(
+						new Error(
+							`Timeout waiting for response to "${String(command.type)}"`,
+						),
+					);
 				}
 			}, 30000);
 			pending.set(id, { resolve, reject, timer });
@@ -1015,7 +1171,11 @@ export function spawnWorkerSession(opts: WorkerOptions): WorkerSession {
 			} catch (err) {
 				clearTimeout(timer);
 				pending.delete(id);
-				reject(new Error(`Failed to send command to worker: ${(err as Error).message}`));
+				reject(
+					new Error(
+						`Failed to send command to worker: ${(err as Error).message}`,
+					),
+				);
 			}
 		});
 	};
@@ -1023,27 +1183,52 @@ export function spawnWorkerSession(opts: WorkerOptions): WorkerSession {
 	// ─── Temp cleanup ────────────────────────────────────────────
 	const cleanupTemp = (): void => {
 		if (tmpPromptPath) {
-			try { unlinkSync(tmpPromptPath); } catch { /* best effort */ }
+			try {
+				unlinkSync(tmpPromptPath);
+			} catch {
+				/* best effort */
+			}
 		}
 		if (tmpDir) {
 			// rmSync recursive: the dir may hold the identity config too.
-			try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* best effort */ }
+			try {
+				rmSync(tmpDir, { recursive: true, force: true });
+			} catch {
+				/* best effort */
+			}
 		}
 		tmpPromptPath = null;
 		tmpDir = null;
 	};
 
 	// ─── Event processing ────────────────────────────────────────
-	const processEvent = (event: any): void => {
+	const processEvent = (raw: unknown): void => {
+		// The JSONL RPC stream is untyped at this seam; narrow to the fields
+		// the watchdogs, response router and reducer inspect.
+		const event = raw as {
+			type?: string;
+			toolName?: unknown;
+			args?: unknown;
+			id?: unknown;
+			success?: boolean;
+			error?: string;
+		};
 		// Any RPC line on stdout counts as activity (responses included) —
 		// resets the no-progress watchdog's clock.
 		lastActivityMs = Date.now();
 		// An in-flight tool execution counts as progress even when it streams
 		// nothing (long silent bash/test tools); track start→end depth + the
 		// in-flight stack (the tool-call timeout bounds its oldest entry).
-		if (event?.type === "tool_execution_start") {
-			lastTool = { name: String(event.toolName ?? "tool"), args: summarizeToolArgs(event.args) };
-			toolStack.push({ name: lastTool.name, args: lastTool.args, startMs: Date.now() });
+		if (event.type === "tool_execution_start") {
+			lastTool = {
+				name: typeof event.toolName === "string" ? event.toolName : "tool",
+				args: summarizeToolArgs(event.args),
+			};
+			toolStack.push({
+				name: lastTool.name,
+				args: lastTool.args,
+				startMs: Date.now(),
+			});
 			toolCallDepth = toolStack.length;
 			// Wall expired during verification (grace active): the worker may
 			// only keep running verification commands — a new NON-verification
@@ -1053,7 +1238,10 @@ export function spawnWorkerSession(opts: WorkerOptions): WorkerSession {
 					wallExpired: true,
 					graceExhausted: false,
 					verificationInFlight: true,
-					newToolIsVerification: isVerificationCommand(lastTool.args, verificationCommands),
+					newToolIsVerification: isVerificationCommand(
+						lastTool.args,
+						verificationCommands,
+					),
 				});
 				if (action === "abort") {
 					clearTimeout(wallGraceTimer);
@@ -1069,17 +1257,27 @@ export function spawnWorkerSession(opts: WorkerOptions): WorkerSession {
 
 		// Route RPC command responses to their pending requests (by id). They
 		// are not agent events and must not reach the reducer or listeners.
-		if (event?.type === "response" && event.id != null && pending.has(String(event.id))) {
-			const p = pending.get(String(event.id))!;
-			pending.delete(String(event.id));
+		const rawId: unknown = event.id;
+		const responseId =
+			typeof rawId === "string" || typeof rawId === "number"
+				? String(rawId)
+				: undefined;
+		if (
+			event.type === "response" &&
+			responseId !== undefined &&
+			pending.has(responseId)
+		) {
+			const p = pending.get(responseId)!;
+			pending.delete(responseId);
 			clearTimeout(p.timer);
-			if (event.success === false) p.reject(new Error(event.error ?? "RPC command failed"));
+			if (event.success === false)
+				p.reject(new Error(event.error ?? "RPC command failed"));
 			else p.resolve(event);
 			return;
 		}
 
 		// Pure reducer: state accumulates, updates dispatch to onUpdate.
-		const { state: _next, updates } = reduceWorkerEvent(state, event);
+		const { updates } = reduceWorkerEvent(state, event);
 		for (const update of updates) onUpdate?.(update);
 
 		// Idle watchdog (R1): the agent settled but no yield payload arrived —
@@ -1087,11 +1285,20 @@ export function spawnWorkerSession(opts: WorkerOptions): WorkerSession {
 		// settle. Never fires during abort, after payload capture, or on any
 		// other event type (decideIdleAction is pure + hermetically tested).
 		if (!wasAborted && !failed) {
-			const action = decideIdleAction(event?.type, state.yieldPayload !== null, nudged);
+			const action = decideIdleAction(
+				event.type ?? "",
+				state.yieldPayload !== null,
+				nudged,
+			);
 			if (action === "nudge") {
 				nudged = true;
 				try {
-					proc.stdin!.write(JSON.stringify({ type: "prompt", message: WORKER_IDLE_NUDGE_PROMPT }) + "\n");
+					proc.stdin!.write(
+						JSON.stringify({
+							type: "prompt",
+							message: WORKER_IDLE_NUDGE_PROMPT,
+						}) + "\n",
+					);
 				} catch {
 					// stdin may already be closed — the close handler reports the exit.
 				}
@@ -1145,7 +1352,9 @@ export function spawnWorkerSession(opts: WorkerOptions): WorkerSession {
 		// clear their timers (R7: no orphaned timers, no never-settling request).
 		for (const [, p] of pending) {
 			clearTimeout(p.timer);
-			p.reject(new Error("Worker closed before responding to a pending RPC request"));
+			p.reject(
+				new Error("Worker closed before responding to a pending RPC request"),
+			);
 		}
 		pending.clear();
 		cleanupTemp();
@@ -1171,7 +1380,11 @@ export function spawnWorkerSession(opts: WorkerOptions): WorkerSession {
 		if (settled.ok) {
 			resolveResult({
 				...settled.result,
-				sessionFile: capturedSessionFile,
+				// exactOptionalPropertyTypes: only carry the session file when one
+				// was actually captured (spread adds nothing otherwise).
+				...(capturedSessionFile !== undefined && {
+					sessionFile: capturedSessionFile,
+				}),
 				reads: state.reads,
 				turnUsage: state.turnUsage,
 			});
@@ -1206,7 +1419,11 @@ export function spawnWorkerSession(opts: WorkerOptions): WorkerSession {
 		proc.stdin!.write(JSON.stringify({ type: "prompt", message: task }) + "\n");
 	} catch (err) {
 		proc.kill("SIGKILL");
-		rejectResult(new Error(`Failed to write task prompt to worker: ${(err as Error).message}`));
+		rejectResult(
+			new Error(
+				`Failed to write task prompt to worker: ${(err as Error).message}`,
+			),
+		);
 	}
 
 	// When persisting a session (review forking), capture its file path once.
@@ -1215,7 +1432,10 @@ export function spawnWorkerSession(opts: WorkerOptions): WorkerSession {
 	if (sessionDir) {
 		request({ type: "get_state" })
 			.then((res) => {
-				capturedSessionFile = res?.data?.sessionFile;
+				const data = (res as { data?: { sessionFile?: unknown } } | null)?.data;
+				if (typeof data?.sessionFile === "string") {
+					capturedSessionFile = data.sessionFile;
+				}
 			})
 			.catch(() => {
 				/* non-fatal: review degrades to no fork if this fails */
@@ -1241,7 +1461,9 @@ export function spawnWorkerSession(opts: WorkerOptions): WorkerSession {
 		// Send abort command first (graceful)
 		try {
 			proc.stdin!.write(JSON.stringify({ type: "abort" }) + "\n");
-		} catch { /* stdin may already be closed */ }
+		} catch {
+			/* stdin may already be closed */
+		}
 		// Then escalate to signals. Gate the SIGKILL escalation on the exit
 		// code, not proc.killed: `killed` flips true as soon as SIGTERM was
 		// sent, so the old `!proc.killed` guard made SIGKILL dead code (R4).
@@ -1273,7 +1495,8 @@ export function spawnWorkerSession(opts: WorkerOptions): WorkerSession {
 	// the close handler).
 	const wallTimeoutMs = selectWorkerWallTimeout(opts.timeoutMs);
 	const verificationCommands = opts.verificationCommands ?? [];
-	const wallGraceMs = opts.verificationTimeoutMs ?? WORKER_VERIFICATION_GRACE_MS;
+	const wallGraceMs =
+		opts.verificationTimeoutMs ?? WORKER_VERIFICATION_GRACE_MS;
 	let wallExpiredAt: number | null = null;
 	let wallGraceTimer: NodeJS.Timeout | null = null;
 	const verificationInFlight = (): boolean =>
@@ -1286,7 +1509,11 @@ export function spawnWorkerSession(opts: WorkerOptions): WorkerSession {
 		// timeout). The grace ends early if the worker starts a
 		// non-verification tool (tool_execution_start handler) or when it
 		// exhausts the cap (this timer).
-		if (verificationCommands.length > 0 && wallExpiredAt === null && verificationInFlight()) {
+		if (
+			verificationCommands.length > 0 &&
+			wallExpiredAt === null &&
+			verificationInFlight()
+		) {
 			wallExpiredAt = Date.now();
 			wallGraceTimer = setTimeout(() => {
 				wallGraceTimer = null;
@@ -1311,7 +1538,8 @@ export function spawnWorkerSession(opts: WorkerOptions): WorkerSession {
 	// execution counts as progress — see decideNoProgressAction) and rejects
 	// `result` with a message naming the window and the wall limit.
 	// Unchanged: the wall timeout and the settle-based idle watchdog.
-	const noProgressTimeoutMs = opts.noProgressTimeoutMs ?? WORKER_NO_PROGRESS_TIMEOUT_MS;
+	const noProgressTimeoutMs =
+		opts.noProgressTimeoutMs ?? WORKER_NO_PROGRESS_TIMEOUT_MS;
 	noProgressTimer = setInterval(() => {
 		if (
 			!noProgressFired &&
@@ -1327,7 +1555,10 @@ export function spawnWorkerSession(opts: WorkerOptions): WorkerSession {
 			noProgressFired = true;
 			if (noProgressTimer) clearInterval(noProgressTimer);
 			noProgressTimer = null;
-			failWorker("no_progress", noProgressErrorMessage(noProgressTimeoutMs, wallTimeoutMs));
+			failWorker(
+				"no_progress",
+				noProgressErrorMessage(noProgressTimeoutMs, wallTimeoutMs),
+			);
 		}
 	}, NO_PROGRESS_CHECK_INTERVAL_MS);
 
@@ -1356,7 +1587,10 @@ export function spawnWorkerSession(opts: WorkerOptions): WorkerSession {
 			toolTimeoutFired = true;
 			if (toolTimeoutTimer) clearInterval(toolTimeoutTimer);
 			toolTimeoutTimer = null;
-			failWorker("tool_timeout", toolTimeoutErrorMessage(toolTimeoutMs, oldest.name, oldest.args));
+			failWorker(
+				"tool_timeout",
+				toolTimeoutErrorMessage(toolTimeoutMs, oldest.name, oldest.args),
+			);
 		}
 	}, TOOL_TIMEOUT_CHECK_INTERVAL_MS);
 
@@ -1372,7 +1606,9 @@ export function spawnWorkerSession(opts: WorkerOptions): WorkerSession {
 			try {
 				proc.stdin!.write(JSON.stringify(command) + "\n");
 			} catch (err) {
-				throw new Error(`Failed to send command to worker: ${(err as Error).message}`);
+				throw new Error(
+					`Failed to send command to worker: ${(err as Error).message}`,
+				);
 			}
 		},
 
@@ -1381,7 +1617,7 @@ export function spawnWorkerSession(opts: WorkerOptions): WorkerSession {
 		// request() (not sendCommand): a rejected set_model (e.g. unknown
 		// model) must surface to the caller — fire-and-forget made the run
 		// silently continue on the prewalk model (R6).
-		setModel(targetModel: string): Promise<any> {
+		setModel(targetModel: string): Promise<unknown> {
 			const { provider, modelId } = splitModel(targetModel);
 			return this.request({ type: "set_model", provider, modelId });
 		},
@@ -1416,11 +1652,16 @@ export const CAPACITY_BACKOFF_DELAYS_MS = [30_000, 60_000, 120_000];
  * message must name a capacity condition).
  */
 export function isRetryableCapacityError(message: string): boolean {
-	return /capacity|overloaded|too many requests|rate.?limit|service unavailable|no (flex )?endpoint|flex.*unavailable|\b503\b|\b429\b/i.test(message);
+	return /capacity|overloaded|too many requests|rate.?limit|service unavailable|no (flex )?endpoint|flex.*unavailable|\b503\b|\b429\b/i.test(
+		message,
+	);
 }
 
 /** Abort-aware sleep (shared shape with batch.ts sleepDefault). */
-export async function sleepForBackoff(ms: number, signal?: AbortSignal): Promise<void> {
+export async function sleepForBackoff(
+	ms: number,
+	signal?: AbortSignal,
+): Promise<void> {
 	if (signal?.aborted) return;
 	await new Promise<void>((resolve) => {
 		const t = setTimeout(() => {
@@ -1462,11 +1703,23 @@ export function spawnWorkerSessionResilient(
 				return await current.result;
 			} catch (err) {
 				const msg = err instanceof Error ? err.message : String(err);
-				if (facadeAborted || opts.signal?.aborted || attempt >= delaysMs.length || !isRetryableCapacityError(msg)) {
+				if (
+					facadeAborted ||
+					opts.signal?.aborted ||
+					attempt >= delaysMs.length ||
+					!isRetryableCapacityError(msg)
+				) {
 					throw err;
 				}
-				opts.onUpdate?.({ type: "capacity_backoff", attempt: attempt + 1, delayMs: delaysMs[attempt], error: msg });
-				await sleep(delaysMs[attempt], opts.signal);
+				const delayMs = delaysMs[attempt];
+				if (delayMs === undefined) throw err;
+				opts.onUpdate?.({
+					type: "capacity_backoff",
+					attempt: attempt + 1,
+					delayMs,
+					error: msg,
+				});
+				await sleep(delayMs, opts.signal);
 				if (opts.signal?.aborted) throw err;
 				attempt++;
 				current = spawnWorkerSession(opts);

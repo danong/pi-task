@@ -78,7 +78,10 @@
  * ≥6 full, over the loaded tier set). See the resolution helpers below.
  */
 
-import { getAgentDir, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import {
+	getAgentDir,
+	type ExtensionAPI,
+} from "@earendil-works/pi-coding-agent";
 import { Type, type TSchema } from "typebox";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Text } from "@earendil-works/pi-tui";
@@ -95,9 +98,25 @@ import {
 	formatDuration,
 	truncateGoals,
 } from "./progress.ts";
-import { buildMap, formatMapOverview, formatMapPrompt, loadCachedMap, loadRepoMapConfig, sliceRelevant } from "./repo-map.ts";
+import {
+	buildMap,
+	formatMapOverview,
+	formatMapPrompt,
+	loadCachedMap,
+	loadRepoMapConfig,
+	sliceRelevant,
+} from "./repo-map.ts";
 import type { ReviewResult } from "./schemas/findings.ts";
-import { recentCompletions, renderTaskStats, runLatencyMs, summarizeRuns, generateRunId, deriveProjectName, buildFailureArtifact, writeFailureArtifact } from "./metrics.ts";
+import {
+	recentCompletions,
+	renderTaskStats,
+	runLatencyMs,
+	summarizeRuns,
+	generateRunId,
+	deriveProjectName,
+	buildFailureArtifact,
+	writeFailureArtifact,
+} from "./metrics.ts";
 import type { RunManifest } from "./metrics.ts";
 import {
 	buildRunRequest,
@@ -157,7 +176,9 @@ export function normalizeBudgetMode(
 	value: unknown,
 	tiers: Record<BudgetTier, BudgetTierConfig> = DEFAULT_BUDGET_TIERS,
 ): BudgetMode {
-	return typeof value === "string" && budgetModes(tiers).includes(value) ? value : "auto";
+	return typeof value === "string" && budgetModes(tiers).includes(value)
+		? value
+		: "auto";
 }
 
 /**
@@ -207,7 +228,9 @@ export function autoTierForRequirements(
 /** The heuristic's "default tier": DEFAULT_BUDGET_TIER when loaded, else the
  *  first tier that is not "max" (never auto-select the strongest tier), else
  *  the first tier. Always a member of `tiers` when it is non-empty. */
-function heuristicDefaultTier(tiers: Record<BudgetTier, BudgetTierConfig>): BudgetTier {
+function heuristicDefaultTier(
+	tiers: Record<BudgetTier, BudgetTierConfig>,
+): BudgetTier {
 	if (DEFAULT_BUDGET_TIER in tiers) return DEFAULT_BUDGET_TIER;
 	const names = Object.keys(tiers);
 	const notMax = names.find((name) => name !== "max");
@@ -244,19 +267,26 @@ export function countSubSpecsRequirements(subSpecs: string[]): number | null {
 /** Render a structured sub-spec entry to the worker markdown contract. */
 export function renderSubSpecObject(o: SubSpecObject): string {
 	if (o.requirements.length === 0 || o.verification.length === 0) {
-		throw new Error("Invalid sub_specs entry: requirements and verification must each have at least one item.");
+		throw new Error(
+			"Invalid sub_specs entry: requirements and verification must each have at least one item.",
+		);
 	}
 	const lines = ["## Goal", o.goal.trim(), "", "## Requirements"];
 	o.requirements.forEach((r, i) => lines.push(`- R${i + 1}: ${r.trim()}`));
 	lines.push("", "## Verification");
 	o.verification.forEach((v) => lines.push(v.trim()));
-	if (o.context && o.context.trim()) lines.push("", "## Context", o.context.trim());
+	if (o.context && o.context.trim())
+		lines.push("", "## Context", o.context.trim());
 	return lines.join("\n");
 }
 
 /** Normalize sub_specs entries: markdown strings pass through; objects render to markdown. */
-export function normalizeSubSpecs(subSpecs: (string | SubSpecObject)[]): string[] {
-	return subSpecs.map((s) => (typeof s === "string" ? s : renderSubSpecObject(s)));
+export function normalizeSubSpecs(
+	subSpecs: (string | SubSpecObject)[],
+): string[] {
+	return subSpecs.map((s) =>
+		typeof s === "string" ? s : renderSubSpecObject(s),
+	);
 }
 
 /**
@@ -303,7 +333,9 @@ export function resolveBudgetTier(
 	tiers: Record<BudgetTier, BudgetTierConfig>,
 ): BudgetTier {
 	const mode = resolveBudgetMode(flag, param, configDefault, tiers);
-	return isLockedBudget(mode, tiers) ? mode : autoTierForRequirements(requirementCount, tiers);
+	return isLockedBudget(mode, tiers)
+		? mode
+		: autoTierForRequirements(requirementCount, tiers);
 }
 
 // ─── Task tool schema (budget param gated by the lock) ───────────────
@@ -368,16 +400,22 @@ export function taskToolSchema(
 				Type.Union([
 					Type.String(),
 					Type.Object({
-						goal: Type.String({ description: "One sentence describing the outcome (## Goal)." }),
+						goal: Type.String({
+							description: "One sentence describing the outcome (## Goal).",
+						}),
 						requirements: Type.Array(Type.String(), {
-							description: "WHATs that must be true when done (## Requirements; rendered as '- R1: ...').",
+							description:
+								"WHATs that must be true when done (## Requirements; rendered as '- R1: ...').",
 						}),
 						verification: Type.Array(Type.String(), {
 							description:
 								"Plain bash commands, one per line, no backticks/quotes/prose — each exits 0 when done (## Verification).",
 						}),
 						context: Type.Optional(
-							Type.String({ description: "Extra pointers for the worker (## Context; optional)." }),
+							Type.String({
+								description:
+									"Extra pointers for the worker (## Context; optional).",
+							}),
 						),
 					}),
 				]),
@@ -403,9 +441,9 @@ export function taskToolSchema(
 		review: Type.Optional(
 			Type.String({
 				description:
-					"Reviewer persona/axis override — unset → the DEFAULT review: ONE adversarial fork. \"parallel\" → " +
+					'Reviewer persona/axis override — unset → the DEFAULT review: ONE adversarial fork. "parallel" → ' +
 					"the shape's full declared axis set (standards + spec-fidelity + architecture) as parallel forks. " +
-					"A single name (e.g. \"adversarial\" or \"architecture\") selects exactly that one axis. Applies " +
+					'A single name (e.g. "adversarial" or "architecture") selects exactly that one axis. Applies ' +
 					"only on shapes that declare review axes — an analysis run is a single task and never forks a reviewer.",
 			}),
 		),
@@ -469,8 +507,14 @@ export interface TaskToolReturn {
 	suspected_spec_defects?: string[];
 	/** Adjudicated worker disputes: upheld commands excluded from the gate;
 	 *  rejected ones recorded for the spec author. */
-	disputes?: { upheld: string[]; rejected: Array<{ command: string; reason: string }> };
-	verification: { passed: boolean; failures: Array<{ command: string; exitCode: number; output: string }> };
+	disputes?: {
+		upheld: string[];
+		rejected: Array<{ command: string; reason: string }>;
+	};
+	verification: {
+		passed: boolean;
+		failures: Array<{ command: string; exitCode: number; output: string }>;
+	};
 }
 
 /** Streamed progress details (TUI-only; not part of the final return). */
@@ -478,7 +522,8 @@ export interface TaskToolProgress {
 	progress: string;
 }
 
-export type TaskToolDetails = TaskToolReturn | TaskToolProgress | TaskToolDetachedReturn;
+export type TaskToolDetails =
+	TaskToolReturn | TaskToolProgress | TaskToolDetachedReturn;
 
 /** Detached dispatch return (R1): the run executes in a child process
  *  (runner.ts) and the tool returns the run_id immediately. The manifest
@@ -494,7 +539,11 @@ export interface TaskToolDetachedReturn {
 
 /** The content text for a detached dispatch: the run_id + how to track
  *  the run. Pure — tested hermetically. */
-export function detachedDispatchText(runId: string, project: string, logPath: string): string {
+export function detachedDispatchText(
+	runId: string,
+	project: string,
+	logPath: string,
+): string {
 	return [
 		`Task detached: run ${runId} (project ${project}) — the run continues in a child process.`,
 		`Track it with /task-status ${runId}; the final manifest lands at results/${project}/${runId}.json.`,
@@ -518,8 +567,11 @@ export function taskResultToToolReturn(result: TaskResult): TaskToolReturn {
 		...(result.conflicts !== undefined ? { conflicts: result.conflicts } : {}),
 		...(result.reviewSkipped ? { review_skipped: true } : {}),
 		...(result.caveat !== undefined ? { caveat: result.caveat } : {}),
-		...(result.suspectedSpecDefects?.length ? { suspected_spec_defects: result.suspectedSpecDefects } : {}),
-		...(result.disputes && (result.disputes.upheld.length > 0 || result.disputes.rejected.length > 0)
+		...(result.suspectedSpecDefects?.length
+			? { suspected_spec_defects: result.suspectedSpecDefects }
+			: {}),
+		...(result.disputes &&
+		(result.disputes.upheld.length > 0 || result.disputes.rejected.length > 0)
 			? { disputes: result.disputes }
 			: {}),
 		verification: {
@@ -542,11 +594,20 @@ const MAX_REVIEW_FINDINGS_IN_SUMMARY = 10;
  * per-finding lines, no elision line. Pure — tested hermetically.
  */
 export function renderReviewReport(review: ReviewResult): string {
-	const lines = [`Review: ${review.verdict} — ${review.findings.length} finding(s).`];
-	const requirementStatus = review.requirements.map((r) => `${r.id}: ${r.status}`).join("; ");
+	const lines = [
+		`Review: ${review.verdict} — ${review.findings.length} finding(s).`,
+	];
+	const requirementStatus = review.requirements
+		.map((r) => `${r.id}: ${r.status}`)
+		.join("; ");
 	if (requirementStatus) lines.push(`  Requirements: ${requirementStatus}`);
-	for (const finding of review.findings.slice(0, MAX_REVIEW_FINDINGS_IN_SUMMARY)) {
-		lines.push(`  [${finding.priority}, ${finding.category}] ${finding.file}: ${finding.description}`);
+	for (const finding of review.findings.slice(
+		0,
+		MAX_REVIEW_FINDINGS_IN_SUMMARY,
+	)) {
+		lines.push(
+			`  [${finding.priority}, ${finding.category}] ${finding.file}: ${finding.description}`,
+		);
 	}
 	const more = review.findings.length - MAX_REVIEW_FINDINGS_IN_SUMMARY;
 	if (more > 0) lines.push(`  ... and ${more} more finding(s)`);
@@ -599,8 +660,13 @@ export function completionSummaryLine(input: CompletionSummaryInput): string {
 	// the manifest's phases — this is what the session burned to reach the
 	// dispatch). >0 gate: a genuine zero spend stays absent, same as an
 	// unrecorded one (direct executeTask callers omit it entirely).
-	if (typeof manifest.main_session_tokens === "number" && manifest.main_session_tokens > 0) {
-		parts.push(`pre-dispatch: ${formatTokenCount(manifest.main_session_tokens)}`);
+	if (
+		typeof manifest.main_session_tokens === "number" &&
+		manifest.main_session_tokens > 0
+	) {
+		parts.push(
+			`pre-dispatch: ${formatTokenCount(manifest.main_session_tokens)}`,
+		);
 	}
 	return parts.join(" · ");
 }
@@ -637,8 +703,12 @@ export function summarizeResult(result: TaskResult): string {
 	const { tokensIn, tokensOut, costUsd } = deriveRunMetrics(result);
 	const metricsLine = [
 		tokensIn !== null ? `Tokens: ${tokensIn} in / ${tokensOut} out.` : null,
-		!result.manifest && costUsd !== null ? `Cost: $${formatCost(costUsd)}.` : null,
-	].filter((s): s is string => s !== null).join(" ");
+		!result.manifest && costUsd !== null
+			? `Cost: $${formatCost(costUsd)}.`
+			: null,
+	]
+		.filter((s): s is string => s !== null)
+		.join(" ");
 	if (metricsLine) parts.push(metricsLine);
 	if (result.conflicts && result.conflicts.length > 0) {
 		parts.push(`Merge conflicts: ${result.conflicts.join(", ")}.`);
@@ -647,7 +717,9 @@ export function summarizeResult(result: TaskResult): string {
 		parts.push(renderReviewReport(result.review));
 	}
 	if (result.reviewSkipped) {
-		parts.push("Review requested but not run (only single-worker runs on shapes with review axes fork one).");
+		parts.push(
+			"Review requested but not run (only single-worker runs on shapes with review axes fork one).",
+		);
 	}
 	if (result.suspectedSpecDefects?.length) {
 		parts.push(
@@ -655,12 +727,17 @@ export function summarizeResult(result: TaskResult): string {
 				result.suspectedSpecDefects.join(" | "),
 		);
 	}
-	if (result.disputes && (result.disputes.upheld.length > 0 || result.disputes.rejected.length > 0)) {
+	if (
+		result.disputes &&
+		(result.disputes.upheld.length > 0 || result.disputes.rejected.length > 0)
+	) {
 		const up = result.disputes.upheld.length;
 		const down = result.disputes.rejected.length;
 		parts.push(
 			`Worker disputes adjudicated by baseline evidence: ${up} upheld (excluded from the gate)` +
-				(down > 0 ? `, ${down} rejected (recorded in the manifest for the spec author)` : "") +
+				(down > 0
+					? `, ${down} rejected (recorded in the manifest for the spec author)`
+					: "") +
 				".",
 		);
 	}
@@ -701,7 +778,10 @@ export function deriveRunMetrics(result: TaskResult): {
 			costUsd: manifest.totals.cost_usd,
 		};
 	}
-	const sources = result.workers && result.workers.length > 0 ? result.workers : [result.worker];
+	const sources =
+		result.workers && result.workers.length > 0
+			? result.workers
+			: [result.worker];
 	let tokensIn = 0;
 	let tokensOut = 0;
 	let cost = 0;
@@ -748,8 +828,13 @@ export function formatTokenCount(n: number): string {
  * next to the cause, instead of a bare timeout/abort message. Pure —
  * hermetically tested.
  */
-export function failureMessageWithProgress(message: string, progressText: string): string {
-	return progressText ? `${message}\n\nLast progress:\n${progressText}` : message;
+export function failureMessageWithProgress(
+	message: string,
+	progressText: string,
+): string {
+	return progressText
+		? `${message}\n\nLast progress:\n${progressText}`
+		: message;
 }
 
 /**
@@ -760,8 +845,12 @@ export function failureMessageWithProgress(message: string, progressText: string
  * stacking a fresh Text per update. Pure (no TUI runtime) — tested
  * hermetically in test-index.ts.
  */
-export function renderInPlace(context: { lastComponent?: unknown }, content: string): Text {
-	const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
+export function renderInPlace(
+	context: { lastComponent?: unknown },
+	content: string,
+): Text {
+	const text =
+		(context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
 	text.setText(content);
 	return text;
 }
@@ -793,7 +882,9 @@ export function workflowContractText(): string {
 /** The contract block gated by the RESOLVED config: enabled → the block,
  *  disabled → "". The before_agent_start wiring skips empty results, so
  *  the injection never blocks or throws. Pure — tested hermetically. */
-export function workflowContractBlock(config: { workflowContract: boolean }): string {
+export function workflowContractBlock(config: {
+	workflowContract: boolean;
+}): string {
 	return config.workflowContract ? workflowContractText() : "";
 }
 
@@ -864,7 +955,11 @@ export function readBudgetOverride(
 ): BudgetMode | undefined {
 	let latest: BudgetMode | undefined;
 	for (const entry of ctx.sessionManager.getEntries()) {
-		const e = entry as { type?: string; customType?: string; data?: { budgetMode?: unknown } };
+		const e = entry as {
+			type?: string;
+			customType?: string;
+			data?: { budgetMode?: unknown };
+		};
 		if (e.type === "custom" && e.customType === BUDGET_ENTRY_TYPE) {
 			latest = normalizeBudgetMode(e.data?.budgetMode, tiers);
 		}
@@ -888,8 +983,16 @@ export function readGoals(ctx: {
 }): string | undefined {
 	let latest: string | undefined;
 	for (const entry of ctx.sessionManager.getEntries()) {
-		const e = entry as { type?: string; customType?: string; data?: { goals?: unknown } };
-		if (e.type === "custom" && e.customType === GOALS_ENTRY_TYPE && typeof e.data?.goals === "string") {
+		const e = entry as {
+			type?: string;
+			customType?: string;
+			data?: { goals?: unknown };
+		};
+		if (
+			e.type === "custom" &&
+			e.customType === GOALS_ENTRY_TYPE &&
+			typeof e.data?.goals === "string"
+		) {
 			const goals = e.data.goals.trim();
 			latest = goals.length > 0 ? goals : undefined;
 		}
@@ -915,7 +1018,10 @@ export function readSessionTokensBefore(ctx: {
 	for (const entry of ctx.sessionManager.getEntries()) {
 		const e = entry as {
 			type?: string;
-			message?: { role?: string; usage?: { totalTokens?: number; input?: number; output?: number } };
+			message?: {
+				role?: string;
+				usage?: { totalTokens?: number; input?: number; output?: number };
+			};
 		};
 		if (e.type !== "message" || e.message?.role !== "assistant") continue;
 		const u = e.message.usage;
@@ -966,7 +1072,10 @@ export default function (pi: ExtensionAPI) {
 
 	/** Register (or re-register) the task tool with the current lock state +
 	 *  the loaded tier set (the schema enum follows the current task.toml). */
-	const registerTaskTool = (locked: boolean, tiers: Record<BudgetTier, BudgetTierConfig>): void => {
+	const registerTaskTool = (
+		locked: boolean,
+		tiers: Record<BudgetTier, BudgetTierConfig>,
+	): void => {
 		pi.registerTool<TSchema, TaskToolDetails>({
 			name: "task",
 			label: "Task",
@@ -977,8 +1086,11 @@ export default function (pi: ExtensionAPI) {
 				"work, prefer fully self-contained sub_specs (one per worker, each with its own Goal / " +
 				"Requirements / Verification, no cross-references); the spec + parallel mechanical split is the " +
 				"fallback. Budget: " +
-				(locked ? "locked by the user (see status bar)." : "optional (auto = task.toml default)."),
-			promptSnippet: "Execute a coding task in an isolated worker session (spec → typed result)",
+				(locked
+					? "locked by the user (see status bar)."
+					: "optional (auto = task.toml default)."),
+			promptSnippet:
+				"Execute a coding task in an isolated worker session (spec → typed result)",
 			parameters: taskToolSchema(locked, tiers),
 
 			async execute(_toolCallId, rawParams, signal, onUpdate, ctx) {
@@ -1004,19 +1116,37 @@ export default function (pi: ExtensionAPI) {
 					// degrades to "auto" and a /task-budget lock on it is ignored.
 					taskConfig.tiers,
 				);
+				// The resolver only returns tiers from this record (or "auto",
+				// which it maps to the config's fallback tier), so an absent
+				// entry is a broken task.toml — fail fast instead of leaking
+				// `undefined` model fields into the dispatch options below.
 				const tierConfig = taskConfig.tiers[tier];
+				if (!tierConfig) {
+					throw new Error(
+						`task: budget tier "${tier}" has no [budget.${tier}] section in task.toml`,
+					);
+				}
 
-				const parallel = hasSubSpecs ? subSpecs.length : Math.max(1, p.parallel ?? 1);
+				const parallel = hasSubSpecs
+					? subSpecs.length
+					: Math.max(1, p.parallel ?? 1);
 				// The orchestrator clamps mechanical splits to the requirement count;
 				// mirror it so the view matches the number of workers dispatched.
 				const workerCount =
-					hasSubSpecs || reqCount === null ? parallel : Math.min(parallel, reqCount);
+					hasSubSpecs || reqCount === null
+						? parallel
+						: Math.min(parallel, reqCount);
 				// The run-pipeline SHAPE (p.shape override or the tier's default):
 				// analysis promotes the strong prewalk model into the writer/review
 				// slots with no swap — the plan line shows what actually runs.
-				const shape = resolveTaskShape(p.shape ?? tierConfig.shape, taskConfig.shapes);
+				const shape = resolveTaskShape(
+					p.shape ?? tierConfig.shape,
+					taskConfig.shapes,
+				);
 				const workModel =
-					shape.workModel === "prewalk" ? (tierConfig.prewalkModel ?? tierConfig.executeModel) : tierConfig.executeModel;
+					shape.workModel === "prewalk"
+						? (tierConfig.prewalkModel ?? tierConfig.executeModel)
+						: tierConfig.executeModel;
 				// Review runs only on the single-worker non-sub_specs path (the
 				// orchestrator warns and skips it otherwise) — the plan line
 				// reflects that. The shape's DECLARED REVIEW AXES are the
@@ -1035,13 +1165,21 @@ export default function (pi: ExtensionAPI) {
 				const goals = readGoals(ctx);
 				const plan = buildRunPlan({
 					tier,
-					prewalkModel: shape.prewalk ? (tierConfig.prewalkModel ?? undefined) : undefined,
+					...(shape.prewalk &&
+						tierConfig.prewalkModel !== null && {
+							prewalkModel: tierConfig.prewalkModel,
+						}),
 					executeModel: workModel,
-					reviewModel: shape.reviewModel === "prewalk" ? (tierConfig.prewalkModel ?? tierConfig.reviewModel) : tierConfig.reviewModel,
+					reviewModel:
+						shape.reviewModel === "prewalk"
+							? (tierConfig.prewalkModel ?? tierConfig.reviewModel)
+							: tierConfig.reviewModel,
 					review: reviewWillRun,
 					wallTimeoutMs: tierConfig.wallTimeoutMs,
-					reviewWallTimeoutMs: reviewWillRun ? taskConfig.defaults.reviewWallTimeoutMs : undefined,
-					goals,
+					...(reviewWillRun && {
+						reviewWallTimeoutMs: taskConfig.defaults.reviewWallTimeoutMs,
+					}),
+					...(goals !== undefined && { goals }),
 				});
 
 				// Detached dispatch (R1): the run executes in a child process
@@ -1067,16 +1205,22 @@ export default function (pi: ExtensionAPI) {
 						cwd: ctx.cwd,
 						model: tierConfig.executeModel,
 						...(hasSubSpecs ? { subSpecs } : { spec }),
-						parallel: hasSubSpecs ? undefined : parallel,
-						prewalkModel: tierConfig.prewalkModel ?? undefined,
+						...(!hasSubSpecs && { parallel }),
+						...(tierConfig.prewalkModel !== null && {
+							prewalkModel: tierConfig.prewalkModel,
+						}),
 						executeModel: tierConfig.executeModel,
 						reviewModel: tierConfig.reviewModel,
 						review: tierConfig.review,
-						serviceTier: tierConfig.serviceTier,
-						providerOnly: tierConfig.providerOnly,
+						...(tierConfig.serviceTier !== undefined && {
+							serviceTier: tierConfig.serviceTier,
+						}),
+						...(tierConfig.providerOnly !== undefined && {
+							providerOnly: tierConfig.providerOnly,
+						}),
 						turnBudget: tierConfig.turnBudget,
 						checklist: tierConfig.checklist,
-						persona: p.review,
+						...(p.review !== undefined && { persona: p.review }),
 						maxFixIterations: taskConfig.defaults.maxFixIterations,
 						prewalkMinRequirements: taskConfig.defaults.prewalkMinRequirements,
 						// Phase 11 (R4/R5): the same per-tier wall + per-tool budgets
@@ -1104,7 +1248,10 @@ export default function (pi: ExtensionAPI) {
 					});
 					const requestPath = writeRunRequest(request);
 					const logPath = logPathFor(METRICS_DIR, project, runId);
-					const spawnInfo = resolveRunnerSpawn({ runnerPath: RUNNER_PATH, requestPath });
+					const spawnInfo = resolveRunnerSpawn({
+						runnerPath: RUNNER_PATH,
+						requestPath,
+					});
 					let child: ChildProcess;
 					try {
 						// detached: true + unref — the child outlives this pi
@@ -1154,7 +1301,12 @@ export default function (pi: ExtensionAPI) {
 						log_path: logPath,
 					};
 					return {
-						content: [{ type: "text", text: detachedDispatchText(runId, project, logPath) }],
+						content: [
+							{
+								type: "text",
+								text: detachedDispatchText(runId, project, logPath),
+							},
+						],
 						details: ret,
 					};
 				}
@@ -1163,7 +1315,10 @@ export default function (pi: ExtensionAPI) {
 				const progress = createProgressState(workerCount, plan, Date.now());
 				const emitProgress = (): void => {
 					const text = buildProgressText(progress, Date.now());
-					onUpdate?.({ content: [{ type: "text", text }], details: { progress: text } });
+					onUpdate?.({
+						content: [{ type: "text", text }],
+						details: { progress: text },
+					});
 				};
 				// R1: the dispatch plan (phase sequence + model per phase) is
 				// emitted synchronously, before any worker event or turn.
@@ -1193,13 +1348,19 @@ export default function (pi: ExtensionAPI) {
 						cwd: ctx.cwd,
 						model: tierConfig.executeModel,
 						...(hasSubSpecs ? { subSpecs } : { spec }),
-						parallel: hasSubSpecs ? undefined : parallel,
-						prewalkModel: tierConfig.prewalkModel ?? undefined,
+						...(!hasSubSpecs && { parallel }),
+						...(tierConfig.prewalkModel !== null && {
+							prewalkModel: tierConfig.prewalkModel,
+						}),
 						executeModel: tierConfig.executeModel,
 						reviewModel: tierConfig.reviewModel,
 						review: tierConfig.review,
-						serviceTier: tierConfig.serviceTier,
-						providerOnly: tierConfig.providerOnly,
+						...(tierConfig.serviceTier !== undefined && {
+							serviceTier: tierConfig.serviceTier,
+						}),
+						...(tierConfig.providerOnly !== undefined && {
+							providerOnly: tierConfig.providerOnly,
+						}),
 						turnBudget: tierConfig.turnBudget,
 						checklist: tierConfig.checklist,
 						prewalkMinRequirements: taskConfig.defaults.prewalkMinRequirements,
@@ -1219,11 +1380,14 @@ export default function (pi: ExtensionAPI) {
 						metricsDir: METRICS_DIR,
 						receivedAt,
 						mainSessionTokens,
-						persona: p.review,
-					shape,
+						...(p.review !== undefined && { persona: p.review }),
+						shape,
 					});
 					const ret = taskResultToToolReturn(result);
-					return { content: [{ type: "text", text: summarizeResult(result) }], details: ret };
+					return {
+						content: [{ type: "text", text: summarizeResult(result) }],
+						details: ret,
+					};
 				} catch (err) {
 					// Throwing signals isError: the model sees the precise
 					// message (e.g. a SpecError listing what's missing) and
@@ -1231,7 +1395,12 @@ export default function (pi: ExtensionAPI) {
 					// view so a timeout/abort failure carries the frozen worker
 					// state (phase, turns, checklist, idle) — todo #86.
 					const msg = err instanceof Error ? err.message : String(err);
-					throw new Error(failureMessageWithProgress(msg, buildProgressText(progress, Date.now())));
+					throw new Error(
+						failureMessageWithProgress(
+							msg,
+							buildProgressText(progress, Date.now()),
+						),
+					);
 				} finally {
 					clearInterval(heartbeat);
 				}
@@ -1254,8 +1423,11 @@ export default function (pi: ExtensionAPI) {
 					return renderInPlace(context, theme.fg("muted", d.progress));
 				}
 				if (d && "detached" in d) {
-					const det = d as TaskToolDetachedReturn;
-					let text = theme.fg("muted", `⇢ detached: run ${det.run_id} — track with /task-status ${det.run_id}`);
+					const det = d;
+					let text = theme.fg(
+						"muted",
+						`⇢ detached: run ${det.run_id} — track with /task-status ${det.run_id}`,
+					);
 					if (options.expanded) {
 						text += `\n  request: ${det.request_path}\n  log: ${det.log_path}`;
 					}
@@ -1284,7 +1456,9 @@ export default function (pi: ExtensionAPI) {
 						extras.push(...ret.files_changed.map((f) => `  ${f}`));
 					}
 					if (ret.review) {
-						extras.push(`Review: ${ret.review.verdict} (${ret.review.findings.length} findings)`);
+						extras.push(
+							`Review: ${ret.review.verdict} (${ret.review.findings.length} findings)`,
+						);
 					}
 					if (extras.length > 0) text += "\n" + extras.join("\n");
 				}
@@ -1294,7 +1468,9 @@ export default function (pi: ExtensionAPI) {
 	};
 
 	/** Re-register the task tool for the current lock state + status bar. */
-	const applyBudget = (ctx: { ui: { setStatus(key: string, value: string | undefined): void } }): void => {
+	const applyBudget = (ctx: {
+		ui: { setStatus(key: string, value: string | undefined): void };
+	}): void => {
 		const locked = isLockedBudget(budgetMode, taskConfig.tiers);
 		registerTaskTool(locked, taskConfig.tiers);
 		if (locked) ctx.ui.setStatus("task", `${budgetMode} (locked)`);
@@ -1316,8 +1492,9 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("task-budget", {
-		description: "Show or set the task worker budget tier (auto | any tier in task.toml)",
-		handler: async (args, ctx) => {
+		description:
+			"Show or set the task worker budget tier (auto | any tier in task.toml)",
+		handler: (args, ctx) => {
 			// Phase 11: refresh the config so the enum/validation reflects a
 			// mid-session task.toml edit (documented in the file header).
 			taskConfig = loadTaskConfig();
@@ -1327,17 +1504,24 @@ export default function (pi: ExtensionAPI) {
 					`task budget: ${budgetMode}${isLockedBudget(budgetMode, taskConfig.tiers) ? " (locked)" : ""}`,
 					"info",
 				);
-				return;
+				return Promise.resolve();
 			}
 			const mode = normalizeBudgetMode(arg, taskConfig.tiers);
 			if (mode === "auto" && arg !== "auto") {
-				ctx.ui.notify(`Invalid budget tier "${arg}" — use ${budgetModes(taskConfig.tiers).join(" | ")}`, "error");
-				return;
+				ctx.ui.notify(
+					`Invalid budget tier "${arg}" — use ${budgetModes(taskConfig.tiers).join(" | ")}`,
+					"error",
+				);
+				return Promise.resolve();
 			}
 			budgetMode = mode;
 			pi.appendEntry(BUDGET_ENTRY_TYPE, { budgetMode: mode });
 			applyBudget(ctx);
-			ctx.ui.notify(`task budget: ${mode}${isLockedBudget(mode, taskConfig.tiers) ? " (locked)" : ""}`, "info");
+			ctx.ui.notify(
+				`task budget: ${mode}${isLockedBudget(mode, taskConfig.tiers) ? " (locked)" : ""}`,
+				"info",
+			);
+			return Promise.resolve();
 		},
 	});
 
@@ -1351,43 +1535,60 @@ export default function (pi: ExtensionAPI) {
 	// them truncated on the widget's plan line (R2); the workflow
 	// contract tells the agent to reference them (R3).
 	pi.registerCommand("goals", {
-		description: "Show or set the session goals (/goals <statement>) — the vision every dispatch references",
-		handler: async (args, ctx) => {
+		description:
+			"Show or set the session goals (/goals <statement>) — the vision every dispatch references",
+		handler: (args, ctx) => {
 			const arg = (args ?? "").trim();
 			if (arg === "") {
 				const goals = readGoals(ctx);
 				ctx.ui.notify(
-					goals ? `goals: ${truncateGoals(goals)}` : "no goals set — /goals <statement> sets them",
+					goals
+						? `goals: ${truncateGoals(goals)}`
+						: "no goals set — /goals <statement> sets them",
 					"info",
 				);
-				return;
+				return Promise.resolve();
 			}
 			pi.appendEntry(GOALS_ENTRY_TYPE, { goals: arg });
 			ctx.ui.notify(`goals: ${truncateGoals(arg)}`, "info");
+			return Promise.resolve();
 		},
 	});
 
 	pi.registerCommand("task-stats", {
 		description:
 			"Summarize task runs from the agent-dir metrics — all projects, or one: /task-stats <project>",
-		handler: async (args, ctx) => {
+		handler: (args, ctx) => {
 			const project = (args ?? "").trim() || undefined;
 			const summary = summarizeRuns(METRICS_DIR, project);
 			const recent = recentCompletions(METRICS_DIR, 5)
 				.filter((c) => !project || c.project === project)
-				.map((c) => `  ${c.status === "failed" ? "✗" : "✓"} [${c.channel}] ${c.project}/${c.runId} (${formatDuration(Date.now() - c.completedAtMs)} ago)`);
-			ctx.ui.notify([...renderTaskStats(summary), ...(recent.length ? ["recent completions:", ...recent] : [])], "info");
+				.map(
+					(c) =>
+						`  ${c.status === "failed" ? "✗" : "✓"} [${c.channel}] ${c.project}/${c.runId} (${formatDuration(Date.now() - c.completedAtMs)} ago)`,
+				);
+			ctx.ui.notify(
+				[
+					...renderTaskStats(summary),
+					...(recent.length ? ["recent completions:", ...recent] : []),
+				].join("\n"),
+				"info",
+			);
+			return Promise.resolve();
 		},
 	});
 
 	pi.registerCommand("task-status", {
 		description:
 			"Show a task run's live or final state (/task-status <run_id>) — detached dispatches return a run_id",
-		handler: async (args, ctx) => {
+		handler: (args, ctx) => {
 			const runId = (args ?? "").trim();
 			if (!runId) {
-				ctx.ui.notify("usage: /task-status <run_id> — the id a detached task dispatch returned", "error");
-				return;
+				ctx.ui.notify(
+					"usage: /task-status <run_id> — the id a detached task dispatch returned",
+					"error",
+				);
+				return Promise.resolve();
 			}
 			// Live runs show the child's heartbeat (phases, elapsed, goals);
 			// finished runs show the manifest summary (verify result, findings,
@@ -1397,6 +1598,7 @@ export default function (pi: ExtensionAPI) {
 				renderRunStatus(status, Date.now()).join("\n"),
 				status.kind === "unknown" ? "warning" : "info",
 			);
+			return Promise.resolve();
 		},
 	});
 
@@ -1419,10 +1621,12 @@ export default function (pi: ExtensionAPI) {
 				"Return a relevance-sliced view of the cached codebase map for a query: entry points, patterns, " +
 				"test layout, and the files most relevant to the query (with summaries and symbols). Use it to " +
 				"orient on unfamiliar code before reading files — it is cached, so it is cheap after the first build.",
-			promptSnippet: "Get a relevance-sliced codebase map for a query (entry points, patterns, relevant files)",
+			promptSnippet:
+				"Get a relevance-sliced codebase map for a query (entry points, patterns, relevant files)",
 			parameters: Type.Object({
 				query: Type.String({
-					description: "What to look up, e.g. 'test layout', 'authentication flow', 'where rendering happens'",
+					description:
+						"What to look up, e.g. 'test layout', 'authentication flow', 'where rendering happens'",
 				}),
 			}),
 
@@ -1432,7 +1636,11 @@ export default function (pi: ExtensionAPI) {
 						mode: mapConfig.mode,
 						model: mapConfig.annotationModel,
 					});
-					const relevant = sliceRelevant(map, params.query, mapConfig.sliceLimit);
+					const relevant = sliceRelevant(
+						map,
+						params.query,
+						mapConfig.sliceLimit,
+					);
 					const text = formatMapPrompt(map, relevant);
 					return {
 						content: [{ type: "text", text }],
@@ -1477,7 +1685,9 @@ export default function (pi: ExtensionAPI) {
 			// Efficiency guidance (same cost theme as the worker prompt) rides
 			// with the contract — chained so it composes with the others.
 			const eff = efficiencyContractText();
-			return { systemPrompt: event.systemPrompt + "\n\n" + block + "\n\n" + eff };
+			return {
+				systemPrompt: event.systemPrompt + "\n\n" + block + "\n\n" + eff,
+			};
 		});
 	}
 
@@ -1493,7 +1703,7 @@ export default function (pi: ExtensionAPI) {
 	 *  remaining throwers are environmental (e.g. not a git repo). The
 	 *  refresh is fire-and-forget — a console write would leak into the
 	 *  prompt box, and the next refresh retries the build. */
-	function ignoreMapRefreshFailure(_err: unknown): void {}
+	function ignoreMapRefreshFailure(): void {}
 	let mapRefreshInFlight = false;
 	if (mapConfig.mainAgent) {
 		pi.on("session_start", (_event, ctx) => {
@@ -1504,7 +1714,10 @@ export default function (pi: ExtensionAPI) {
 			if (!ctx.hasUI) return;
 			if (mapRefreshInFlight) return;
 			mapRefreshInFlight = true;
-			buildMap(ctx.cwd, { mode: mapConfig.mode, model: mapConfig.annotationModel })
+			buildMap(ctx.cwd, {
+				mode: mapConfig.mode,
+				model: mapConfig.annotationModel,
+			})
 				.catch(ignoreMapRefreshFailure)
 				.finally(() => {
 					mapRefreshInFlight = false;

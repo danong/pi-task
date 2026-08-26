@@ -45,18 +45,52 @@ export type TaskVerdict = "ship" | "escalate" | "failed";
  */
 export type TaskLifecycleEvent =
 	| { type: "task.queued"; taskId: string }
-	| { type: "task.routed"; taskId: string; detail: { planMode: "cold" | "prewalk" | "bundle" | "fork" } }
+	| {
+			type: "task.routed";
+			taskId: string;
+			detail: { planMode: "cold" | "prewalk" | "bundle" | "fork" };
+	  }
 	| { type: "session.spawned"; taskId: string; sessionId: string }
 	| { type: "session.yielded"; taskId: string; sessionId: string }
 	| { type: "session.exhausted"; taskId: string; sessionId: string }
 	| { type: "verify.completed"; taskId: string; detail: { passed: boolean } }
-	| { type: "review.completed"; taskId: string; detail: { verdict: "ship" | "fix" | "escalate" } }
+	| {
+			type: "review.completed";
+			taskId: string;
+			detail: { verdict: "ship" | "fix" | "escalate" };
+	  }
 	| { type: "merge.completed"; taskId: string; detail: { commitId: string } }
-	| { type: "merge.conflict"; taskId: string; detail: { conflicts: readonly string[] } }
-	| { type: "permission.requested"; taskId: string; sessionId: string; requestId: string; action: string; detail: string; }
-	| { type: "task.completed"; taskId: string; sessionId?: string; detail: { verdict: Extract<TaskVerdict, "ship"> } }
-	| { type: "task.failed"; taskId: string; sessionId?: string; detail: { cause: string } }
-	| { type: "task.escalated"; taskId: string; sessionId?: string; detail: { verdict: Extract<TaskVerdict, "escalate"> } };
+	| {
+			type: "merge.conflict";
+			taskId: string;
+			detail: { conflicts: readonly string[] };
+	  }
+	| {
+			type: "permission.requested";
+			taskId: string;
+			sessionId: string;
+			requestId: string;
+			action: string;
+			detail: string;
+	  }
+	| {
+			type: "task.completed";
+			taskId: string;
+			sessionId?: string;
+			detail: { verdict: Extract<TaskVerdict, "ship"> };
+	  }
+	| {
+			type: "task.failed";
+			taskId: string;
+			sessionId?: string;
+			detail: { cause: string };
+	  }
+	| {
+			type: "task.escalated";
+			taskId: string;
+			sessionId?: string;
+			detail: { verdict: Extract<TaskVerdict, "escalate"> };
+	  };
 
 /** Event-name pattern for on() subscriptions: an exact type ("task.routed"),
  *  a family wildcard ("task.*"), or the catch-all ("*"). */
@@ -106,7 +140,10 @@ export function eventTypeOf(event: TaskLifecycleEvent): TaskLifecycleEventType {
  * trailing-dot forms ("task.") — is malformed and matches NOTHING rather
  * than silently widening into a raw-prefix match.
  */
-export function eventMatchesPattern(type: TaskLifecycleEventType, pattern: EventPattern): boolean {
+export function eventMatchesPattern(
+	type: TaskLifecycleEventType,
+	pattern: EventPattern,
+): boolean {
 	if (pattern === "*") return true;
 	const segments = pattern.split(".");
 	if (!pattern.includes(".")) return false; // malformed: family match needs a dot

@@ -23,11 +23,15 @@
  * applied to the v1 side.
  */
 
-// @ts-ignore type-gate covers packages/core-v2 only — this harness reads v1 only at runtime
+// This harness reads v1 only at runtime — the strict type gate covers
+// packages/core-v2 sources, not the imported v1 extension modules.
 import { parseSpec } from "../../../../extensions/task/schemas/spec.ts";
-// @ts-ignore type-gate covers packages/core-v2 only — this harness reads v1 only at runtime
 import { splitSpec } from "../../../../extensions/task/orchestrator.ts";
-import type { CanonicalDag, CanonicalDagNode, NormalizedV1Node } from "./types.ts";
+import type {
+	CanonicalDag,
+	CanonicalDagNode,
+	NormalizedV1Node,
+} from "./types.ts";
 
 /** Raw v1 outcome for one DAG node, as the executor seam produces it. */
 export interface V1NodeOutcome {
@@ -74,7 +78,9 @@ export function v1SubSpecFor(node: CanonicalDagNode): string {
 	// sub-spec carries all of the node's requirements in a single bucket.
 	const [subSpec] = splitSpec(spec, 1);
 	if (subSpec === undefined) {
-		throw new Error(`v1SubSpecFor: splitSpec produced no bucket for node "${node.id}"`);
+		throw new Error(
+			`v1SubSpecFor: splitSpec produced no bucket for node "${node.id}"`,
+		);
 	}
 	return subSpec;
 }
@@ -93,8 +99,12 @@ export function dryV1Executor(
 	return Promise.resolve({
 		subSpecMarkdown,
 		originalSpecMarkdown: node.specMarkdown,
-		commitIds: spec.requirements.map((_: unknown, i: number) => `${node.id}-c${i + 1}`),
-		filesChanged: spec.requirements.map((_: unknown, i: number) => `${node.id}-file-${i + 1}.txt`),
+		commitIds: spec.requirements.map(
+			(_: unknown, i: number) => `${node.id}-c${i + 1}`,
+		),
+		filesChanged: spec.requirements.map(
+			(_: unknown, i: number) => `${node.id}-file-${i + 1}.txt`,
+		),
 		verificationPassed: true,
 		escalated: false,
 		costUsd: 0,
@@ -110,7 +120,10 @@ export function dryV1Executor(
  * partition note (v1 splitSpec boilerplate) carries no Goal/
  * Requirements/Verification content, so parseSpec simply ignores it.
  */
-export function normalizeV1Node(nodeId: string, outcome: V1NodeOutcome): NormalizedV1Node {
+export function normalizeV1Node(
+	nodeId: string,
+	outcome: V1NodeOutcome,
+): NormalizedV1Node {
 	const source = outcome.originalSpecMarkdown ?? outcome.subSpecMarkdown;
 	const subSpec = parseSpec(source);
 	return {
@@ -155,8 +168,9 @@ export async function runV1Surface(options: {
 	for (const id of options.order) {
 		const node = byId.get(id)!;
 		const subSpec = v1SubSpecFor(node);
-		const outcome = await options.executor(node, subSpec);
-		if (outcome.originalSpecMarkdown === undefined) outcome = { ...outcome, originalSpecMarkdown: node.specMarkdown };
+		let outcome = await options.executor(node, subSpec);
+		if (outcome.originalSpecMarkdown === undefined)
+			outcome = { ...outcome, originalSpecMarkdown: node.specMarkdown };
 		normalized.push(normalizeV1Node(id, outcome));
 	}
 	return normalized;

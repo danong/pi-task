@@ -24,7 +24,11 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-import { ExecutionBundleSchema, type ExecutionBundle, type TargetFile } from "../contracts/index.ts";
+import {
+	ExecutionBundleSchema,
+	type ExecutionBundle,
+	type TargetFile,
+} from "../contracts/index.ts";
 import { stableStringify } from "../contracts/serialize.ts";
 
 /** Schema version of the bundle format — bumped when the prompt-bound
@@ -48,7 +52,10 @@ export interface BuildBundleInput {
  * the file's leading bytes, capped at the schema's 800-char limit. Real
  * deployments plug a ContextCompressor instead.
  */
-export function outlineFromFile(hostPath: string, maxChars = 800): TargetFile | undefined {
+export function outlineFromFile(
+	hostPath: string,
+	maxChars = 800,
+): TargetFile | undefined {
 	let text: string;
 	try {
 		text = readFileSync(hostPath, "utf-8");
@@ -87,14 +94,20 @@ export function buildExecutionBundle(input: BuildBundleInput): ExecutionBundle {
  */
 export function hashExecutionBundle(bundle: ExecutionBundle): string {
 	const canonical = stableStringify(ExecutionBundleSchema.parse(bundle));
-	const digest = createHash("sha256").update(canonical).digest("hex").slice(0, 16);
+	const digest = createHash("sha256")
+		.update(canonical)
+		.digest("hex")
+		.slice(0, 16);
 	return `v${EXECUTION_BUNDLE_VERSION}:${digest}`;
 }
 
 /** Is a bundle usable as grounding? Empty bundles cannot ground anything
  *  and are treated as immediate misses by the runner. */
 export function isBundleUsable(bundle: ExecutionBundle): boolean {
-	return ExecutionBundleSchema.safeParse(bundle).success && bundle.targetFiles.length > 0;
+	return (
+		ExecutionBundleSchema.safeParse(bundle).success &&
+		bundle.targetFiles.length > 0
+	);
 }
 
 /** Deterministic grounding section appended to the worker system prompt
@@ -105,7 +118,10 @@ export function bundleGroundingSection(bundle: ExecutionBundle): string {
 		"## Grounding bundle",
 		`Pre-computed context for this task (${hashExecutionBundle(bundle)}).`,
 		"The following files were selected as relevant to this spec:",
-		...bundle.targetFiles.map((t) => `- ${t.hostPath}${t.outlineTruncated ? " (outline truncated)" : ""}`),
+		...bundle.targetFiles.map(
+			(t) =>
+				`- ${t.hostPath}${t.outlineTruncated ? " (outline truncated)" : ""}`,
+		),
 		"Prefer working inside these files; explore beyond them only if the",
 		"bundle proves insufficient.",
 		"",
@@ -122,6 +138,8 @@ export function isBundleFocused(
 	changedFiles: readonly string[],
 	cwd: string,
 ): boolean {
-	const scoped = new Set(bundle.targetFiles.map((t) => resolve(cwd, t.hostPath)));
+	const scoped = new Set(
+		bundle.targetFiles.map((t) => resolve(cwd, t.hostPath)),
+	);
 	return changedFiles.every((f) => scoped.has(resolve(cwd, f)));
 }

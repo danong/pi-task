@@ -26,14 +26,15 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { LedgerStore } from "../src/ledger/store.ts";
-import { TaskReceiptSchema, type TaskReceipt } from "../src/contracts/payloads.ts";
+import {
+	TaskReceiptSchema,
+	type TaskReceipt,
+} from "../src/contracts/payloads.ts";
 import {
 	buildParityReport,
 	compareNodes,
-	parityExitCode,
 	PARITY_EXIT_MISMATCH,
 	PARITY_EXIT_OK,
-	renderParityDiff,
 	serializeParityReport,
 	writeParityReport,
 } from "../src/parity/report.ts";
@@ -48,10 +49,12 @@ import {
 	normalizeV2Node,
 	type V2NodeExecutor,
 } from "../src/parity/v2-build.ts";
-import { CanonicalDagError, validateCanonicalDag } from "../src/parity/canonical-dag.ts";
+import {
+	CanonicalDagError,
+	validateCanonicalDag,
+} from "../src/parity/canonical-dag.ts";
 import { runParity, type RunParityOptions } from "../src/parity/harness.ts";
 import type {
-	NodeParity,
 	CanonicalDag,
 	CanonicalDagNode,
 	NormalizedV1Node,
@@ -61,9 +64,10 @@ import type {
 // ─── Fixtures ─────────────────────────────────────────────────────────
 
 function nodeSpec(id: string, dependsOn: readonly string[] = []): string {
-	const deps = dependsOn.length === 0
-		? ""
-		: `\n## Depends On\n${dependsOn.map((d) => `- ${d}`).join("\n")}\n`;
+	const deps =
+		dependsOn.length === 0
+			? ""
+			: `\n## Depends On\n${dependsOn.map((d) => `- ${d}`).join("\n")}\n`;
 	return `## Goal\nNode ${id}\n\n## Requirements\n- R1: ${id} first requirement\n- R2: ${id} second requirement\n\n## Verification\n- test -f ${id}.txt${deps}`;
 }
 
@@ -79,7 +83,10 @@ function dagFixture(): CanonicalDag {
 }
 
 /** Receipt fixture shaped like the daemon's real per-node records. */
-function receiptFixture(nodeId: string, over: Partial<TaskReceipt> = {}): TaskReceipt {
+function receiptFixture(
+	nodeId: string,
+	over: Partial<TaskReceipt> = {},
+): TaskReceipt {
 	return TaskReceiptSchema.parse({
 		taskId: nodeId,
 		verdict: "ship",
@@ -111,7 +118,8 @@ export async function runTests(): Promise<void> {
 		};
 		const subSpec = v1SubSpecFor(node);
 		check(
-			subSpec.includes("R1: n1 first requirement") && subSpec.includes("R2: n1 second requirement"),
+			subSpec.includes("R1: n1 first requirement") &&
+				subSpec.includes("R2: n1 second requirement"),
 			"v1SubSpecFor derives the sub-spec through v1's splitSpec",
 		);
 		check(
@@ -132,11 +140,15 @@ export async function runTests(): Promise<void> {
 		const norm = normalizeV1Node("n1", outcome);
 		check(norm.verdict === "ship", "normalize maps passing v1 → ship");
 		check(
-			norm.requirements.join("|") === "R1: n1 first requirement|R2: n1 second requirement"
-				&& norm.requirements.every((r) => !r.startsWith("-")),
+			norm.requirements.join("|") ===
+				"R1: n1 first requirement|R2: n1 second requirement" &&
+				norm.requirements.every((r) => !r.startsWith("-")),
 			"v1 requirements extracted via v1's parseSpec, list markers stripped",
 		);
-		check(norm.commitCount === 2, `commit ids deduped to a count (got ${norm.commitCount})`);
+		check(
+			norm.commitCount === 2,
+			`commit ids deduped to a count (got ${norm.commitCount})`,
+		);
 		check(
 			norm.filesChanged.join(",") === "a.txt,z.txt",
 			"files sorted + deduped deterministically",
@@ -145,15 +157,22 @@ export async function runTests(): Promise<void> {
 
 	// ─── R2: dry-mode v1 executor is deterministic and LLM-free ───────
 	{
-		const node: CanonicalDagNode = { id: "d1", specMarkdown: nodeSpec("d1"), dependsOn: [] };
+		const node: CanonicalDagNode = {
+			id: "d1",
+			specMarkdown: nodeSpec("d1"),
+			dependsOn: [],
+		};
 		const o1 = await dryV1Executor(node, v1SubSpecFor(node));
 		const o2 = await dryV1Executor(node, v1SubSpecFor(node));
 		check(
-			o1.commitIds.join() === o2.commitIds.join()
-				&& o1.filesChanged.join() === o2.filesChanged.join(),
+			o1.commitIds.join() === o2.commitIds.join() &&
+				o1.filesChanged.join() === o2.filesChanged.join(),
 			"dry v1 executor deterministic across calls",
 		);
-		check(o1.costUsd === 0 && o1.turns === 0, "dry v1 side carries zero cost evidence");
+		check(
+			o1.costUsd === 0 && o1.turns === 0,
+			"dry v1 side carries zero cost evidence",
+		);
 	}
 
 	// ─── Canonical DAG structural validation (typed failures) ─────────
@@ -184,7 +203,10 @@ export async function runTests(): Promise<void> {
 			store.close();
 
 			check(report.parity === true, "identical dry fixtures hold parity");
-			check(exitCode === PARITY_EXIT_OK, `exit code 0 on parity (got ${exitCode})`);
+			check(
+				exitCode === PARITY_EXIT_OK,
+				`exit code 0 on parity (got ${exitCode})`,
+			);
 			check(
 				report.nodes.map((n) => n.nodeId).join() === "alpha,beta,gamma",
 				"per-node results sorted by id (deterministic order)",
@@ -203,8 +225,14 @@ export async function runTests(): Promise<void> {
 			const diffPath = writeParityReport(reportPath, report);
 			check(diffPath === null, "diff file NOT written when parity held");
 			check(existsSync(reportPath), "report file written even on parity");
-			const roundTrip = JSON.parse(readFileSync(reportPath, "utf-8")) as { parity: boolean; nodes: unknown[] };
-			check(roundTrip.parity === true && roundTrip.nodes.length === 3, "report file parses back typed");
+			const roundTrip = JSON.parse(readFileSync(reportPath, "utf-8")) as {
+				parity: boolean;
+				nodes: unknown[];
+			};
+			check(
+				roundTrip.parity === true && roundTrip.nodes.length === 3,
+				"report file parses back typed",
+			);
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
@@ -217,15 +245,22 @@ export async function runTests(): Promise<void> {
 			const store = new LedgerStore(join(dir, "tasks.db"));
 			// Real-mode-shaped v2 executor: one node ships, one escalates —
 			// receipts thread through the executor closure like the daemon does.
-			const failing: V2NodeExecutor = async (node) => {
+			const failing: V2NodeExecutor = (node) => {
 				if (node.id === "beta") {
-					return {
-						verdict: "failed",
+					return Promise.resolve({
+						verdict: "failed" as const,
 						cause: "verification failed",
-						receipt: receiptFixture(node.id, { verdict: "escalate", turns: 9, costUsd: 0.05 }),
-					};
+						receipt: receiptFixture(node.id, {
+							verdict: "escalate",
+							turns: 9,
+							costUsd: 0.05,
+						}),
+					});
 				}
-				return { verdict: "completed", receipt: receiptFixture(node.id) };
+				return Promise.resolve({
+					verdict: "completed" as const,
+					receipt: receiptFixture(node.id),
+				});
 			};
 			const { report, exitCode } = await runParity({
 				dag: dagFixture(),
@@ -252,13 +287,17 @@ export async function runTests(): Promise<void> {
 				"aggregate COR recomputed from receipt summaries (non-zero here)",
 			);
 			check(
-				typeof beta!.costDeltaUsd === "number" && typeof beta!.turnsDelta === "number",
+				typeof beta!.costDeltaUsd === "number" &&
+					typeof beta!.turnsDelta === "number",
 				"cost/turns deltas populated for comparable nodes",
 			);
 
 			const reportPath = join(dir, "parity.json");
 			const diffPath = writeParityReport(reportPath, report);
-			check(diffPath === `${reportPath}.diff`, "diff file written next to the report on mismatch");
+			check(
+				diffPath === `${reportPath}.diff`,
+				"diff file written next to the report on mismatch",
+			);
 			if (diffPath === null) throw new Error("diff should exist here");
 			check(existsSync(diffPath), "diff file exists on disk");
 			const diffText = readFileSync(diffPath, "utf-8");
@@ -272,7 +311,7 @@ export async function runTests(): Promise<void> {
 				dag: dagFixture(),
 				mode: "real",
 				v1: dryFixturesFor(dagFixture()),
-				v2: v2FixturesFromReport(report),
+				v2: v2FixturesFor(dagFixture()),
 			});
 			void again;
 		} finally {
@@ -282,11 +321,23 @@ export async function runTests(): Promise<void> {
 
 	// ─── R3: determinism — identical runs serialize identically ───────
 	{
-		const storeA = new LedgerStore(join(mkdtempSync(join(tmpdir(), "parity-det-a-")), "t.db"));
-		const { report: r1 } = await runParity({ dag: dagFixture(), store: storeA, mode: "dry" });
+		const storeA = new LedgerStore(
+			join(mkdtempSync(join(tmpdir(), "parity-det-a-")), "t.db"),
+		);
+		const { report: r1 } = await runParity({
+			dag: dagFixture(),
+			store: storeA,
+			mode: "dry",
+		});
 		storeA.close();
-		const storeB = new LedgerStore(join(mkdtempSync(join(tmpdir(), "parity-det-b-")), "t.db"));
-		const { report: r2 } = await runParity({ dag: dagFixture(), store: storeB, mode: "dry" });
+		const storeB = new LedgerStore(
+			join(mkdtempSync(join(tmpdir(), "parity-det-b-")), "t.db"),
+		);
+		const { report: r2 } = await runParity({
+			dag: dagFixture(),
+			store: storeB,
+			mode: "dry",
+		});
 		storeB.close();
 		check(
 			serializeParityReport(r1) === serializeParityReport(r2),
@@ -320,7 +371,10 @@ export async function runTests(): Promise<void> {
 			costUsd: 0.55,
 			turns: 11,
 		});
-		check(matching.passed, "matching nodes pass regardless of file-name placeholders");
+		check(
+			matching.passed,
+			"matching nodes pass regardless of file-name placeholders",
+		);
 		check(
 			matching.costDeltaUsd === 0.05 && matching.turnsDelta === 1,
 			"cost/turns deltas computed v2 − v1",
@@ -341,7 +395,10 @@ export async function runTests(): Promise<void> {
 				turns: 77,
 			},
 		);
-		check(skippedBoth.passed, "skipped-on-both-sides nodes match without content comparison");
+		check(
+			skippedBoth.passed,
+			"skipped-on-both-sides nodes match without content comparison",
+		);
 		check(
 			skippedBoth.costDeltaUsd === null && skippedBoth.turnsDelta === null,
 			"deltas null when either side skipped",
@@ -353,13 +410,20 @@ export async function runTests(): Promise<void> {
 		const dir = mkdtempSync(join(tmpdir(), "parity-m5-skip-"));
 		try {
 			const store = new LedgerStore(join(dir, "t.db"));
-			const failingRoot: V2NodeExecutor = async (node) =>
+			const failingRoot: V2NodeExecutor = (node) =>
 				node.id === "alpha"
-					? {
-						verdict: "failed",
-						receipt: receiptFixture(node.id, { verdict: "failed", commitIds: [], filesChanged: 0 }),
-					}
-					: { verdict: "completed", receipt: receiptFixture(node.id) };
+					? Promise.resolve({
+							verdict: "failed" as const,
+							receipt: receiptFixture(node.id, {
+								verdict: "failed",
+								commitIds: [],
+								filesChanged: 0,
+							}),
+						})
+					: Promise.resolve({
+							verdict: "completed" as const,
+							receipt: receiptFixture(node.id),
+						});
 			const { report, exitCode } = await runParity({
 				dag: dagFixture(),
 				store,
@@ -369,12 +433,18 @@ export async function runTests(): Promise<void> {
 			});
 			store.close();
 			const gamma = report.nodes.find((n) => n.nodeId === "gamma");
-			check(gamma !== undefined && !gamma.passed, "short-circuited dependent reported");
+			check(
+				gamma !== undefined && !gamma.passed,
+				"short-circuited dependent reported",
+			);
 			check(
 				Boolean(gamma!.mismatches.some((m) => m.startsWith("skipped:"))),
 				"skip asymmetry surfaced as a skipped mismatch",
 			);
-			check(exitCode === PARITY_EXIT_MISMATCH, "short-circuit run still exits 1");
+			check(
+				exitCode === PARITY_EXIT_MISMATCH,
+				"short-circuit run still exits 1",
+			);
 			check(
 				report.aggregate.v1TotalCostUsd === null,
 				"aggregate deltas null when any node was skipped on either side",
@@ -387,19 +457,19 @@ export async function runTests(): Promise<void> {
 	if (errors.length > 0) {
 		throw new Error("test-parity-m5 failed:\n  ✗ " + errors.join("\n  ✗ "));
 	}
-	console.log("✓ parity-m5: oracle reuse, canonical dual-feed, normalized diffing, typed report, exit codes, determinism");
-}
-
-interface ParityReportShape {
-	parity: boolean;
-	nodes: NodeParity[];
+	console.log(
+		"✓ parity-m5: oracle reuse, canonical dual-feed, normalized diffing, typed report, exit codes, determinism",
+	);
 }
 
 function dryFixturesFor(dag: CanonicalDag): NormalizedV1Node[] {
 	return dag.nodes.map((n) => ({
 		nodeId: n.id,
 		verdict: "ship" as const,
-		requirements: [`R1: ${n.id} first requirement`, `R2: ${n.id} second requirement`],
+		requirements: [
+			`R1: ${n.id} first requirement`,
+			`R2: ${n.id} second requirement`,
+		],
 		verificationCommands: [`test -f ${n.id}.txt`],
 		verificationPassed: true,
 		commitCount: 2,
@@ -410,15 +480,26 @@ function dryFixturesFor(dag: CanonicalDag): NormalizedV1Node[] {
 	}));
 }
 
-function v2FixturesFromReport(_report: unknown): never[] {
-	return [];
+/** v2-side fixture for the real-mode determinism check: normalize each
+ *  node through the production normalizer with a deterministic receipt. */
+function v2FixturesFor(dag: CanonicalDag): NormalizedV2Node[] {
+	return dag.nodes.map((n) =>
+		normalizeV2Node({
+			node: n,
+			result: { id: n.id, verdict: "completed" },
+			receipt: dryReceiptFor(n.id, 2),
+		}),
+	);
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (
+	process.argv[1] &&
+	import.meta.url === pathToFileURL(process.argv[1]).href
+) {
 	runTests()
 		.then(() => process.exit(0))
 		.catch((err) => {
-			console.error(err.message ?? err);
+			console.error(err instanceof Error ? err.message : String(err));
 			process.exit(1);
 		});
 }

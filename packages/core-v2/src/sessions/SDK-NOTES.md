@@ -103,7 +103,7 @@ Two paths exist; the SDK's `defineTool` is the engine-side one:
   from `dist/core/extensions/index.ts`. A `ToolDefinition` has `name`, `label`,
   `description`, `parameters` (a TypeBox `TSchema`), optional `promptSnippet` /
   `promptGuidelines`, and `execute(toolCallId, params, signal, onUpdate, ctx):
-  Promise<AgentToolResult<TDetails>>`. Pass the resulting definitions as
+Promise<AgentToolResult<TDetails>>`. Pass the resulting definitions as
   `customTools` on `CreateAgentSessionOptions`.
 - The v1 extension path `pi.registerTool(...)` routes through the extension runner
   and is only available inside a spawned extension host; the v2 host uses

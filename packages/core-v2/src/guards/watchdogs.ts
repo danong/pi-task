@@ -32,10 +32,7 @@ export type WatchedEventType = SessionHostEvent["type"];
 
 /** Discriminated reasons an abort can be raised. */
 export type WatchdogAbortReason =
-	| "wall_timeout"
-	| "no_progress"
-	| "tool_timeout"
-	| "settled_without_yield";
+	"wall_timeout" | "no_progress" | "tool_timeout" | "settled_without_yield";
 
 /**
  * A typed decision with no side effects. The driver turns `nudge` into
@@ -45,7 +42,11 @@ export type WatchdogAbortReason =
 export type WatchdogAction =
 	| { readonly kind: "continue" }
 	| { readonly kind: "nudge"; readonly text: string }
-	| { readonly kind: "abort"; readonly reason: WatchdogAbortReason; readonly message: string };
+	| {
+			readonly kind: "abort";
+			readonly reason: WatchdogAbortReason;
+			readonly message: string;
+	  };
 
 /** The `continue` singleton (no reason/message payload to carry). */
 const CONTINUE: WatchdogAction = { kind: "continue" };
@@ -77,11 +78,13 @@ export function formatDurationMs(ms: number): string {
 	const seconds = totalSeconds % 60;
 	const totalMinutes = Math.floor(totalSeconds / 60);
 	if (totalMinutes < 1) return `${totalSeconds}s`;
-	const minutes = totalMinutes % 60;
 	const totalHours = Math.floor(totalMinutes / 60);
-	if (totalHours < 1) return seconds > 0 ? `${totalMinutes}m ${seconds}s` : `${totalMinutes}m`;
+	if (totalHours < 1)
+		return seconds > 0 ? `${totalMinutes}m ${seconds}s` : `${totalMinutes}m`;
 	const remainMinutes = totalMinutes % 60;
-	return remainMinutes > 0 ? `${totalHours}h ${remainMinutes}m` : `${totalHours}h`;
+	return remainMinutes > 0
+		? `${totalHours}h ${remainMinutes}m`
+		: `${totalHours}h`;
 }
 
 /** Abort message for the wall-clock watchdog: names the limit. */
@@ -103,7 +106,10 @@ export function noProgressMessage(windowMs: number): string {
 }
 
 /** Abort message for the per-tool watchdog: names the tool + bound. */
-export function toolTimeoutMessage(timeoutMs: number, toolName: string): string {
+export function toolTimeoutMessage(
+	timeoutMs: number,
+	toolName: string,
+): string {
 	return (
 		`Session aborted: tool "${toolName}" exceeded its per-tool-call budget of ` +
 		`${formatDurationMs(timeoutMs)} (${timeoutMs} ms) — a hung tool the no-progress ` +
@@ -134,7 +140,11 @@ export function decideSettleAction(
 	if (eventType !== "settled") return CONTINUE;
 	if (hasYielded) return CONTINUE;
 	if (alreadyNudged) {
-		return { kind: "abort", reason: "settled_without_yield", message: settledWithoutYieldMessage() };
+		return {
+			kind: "abort",
+			reason: "settled_without_yield",
+			message: settledWithoutYieldMessage(),
+		};
 	}
 	return { kind: "nudge", text: DEFAULT_SETTLE_NUDGE_TEXT };
 }
@@ -155,7 +165,11 @@ export function decideNoProgressAction(opts: {
 }): WatchdogAction {
 	if (opts.inFlightTool) return CONTINUE;
 	if (opts.nowMs - opts.lastActivityMs >= opts.windowMs) {
-		return { kind: "abort", reason: "no_progress", message: noProgressMessage(opts.windowMs) };
+		return {
+			kind: "abort",
+			reason: "no_progress",
+			message: noProgressMessage(opts.windowMs),
+		};
 	}
 	return CONTINUE;
 }
@@ -171,7 +185,11 @@ export function decideWallAction(opts: {
 	wallTimeoutMs: number;
 }): WatchdogAction {
 	if (opts.nowMs - opts.startedAtMs >= opts.wallTimeoutMs) {
-		return { kind: "abort", reason: "wall_timeout", message: wallTimeoutMessage(opts.wallTimeoutMs) };
+		return {
+			kind: "abort",
+			reason: "wall_timeout",
+			message: wallTimeoutMessage(opts.wallTimeoutMs),
+		};
 	}
 	return CONTINUE;
 }
@@ -190,7 +208,11 @@ export function decideToolTimeoutAction(opts: {
 	toolName: string;
 }): WatchdogAction {
 	if (opts.nowMs - opts.startedAtMs >= opts.timeoutMs) {
-		return { kind: "abort", reason: "tool_timeout", message: toolTimeoutMessage(opts.timeoutMs, opts.toolName) };
+		return {
+			kind: "abort",
+			reason: "tool_timeout",
+			message: toolTimeoutMessage(opts.timeoutMs, opts.toolName),
+		};
 	}
 	return CONTINUE;
 }

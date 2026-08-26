@@ -23,7 +23,15 @@
  */
 
 import { execSync } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+	appendFileSync,
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
@@ -111,19 +119,28 @@ flags:
 exit codes: 0 ok · 1 usage/config error · 2 run failures · 3 NFR-4 violation`;
 
 /** Select configs honoring the strong gate; throws typed on bad filters. */
-export function selectConfigs(args: Pick<EvalCliArgs, "allowStrong" | "configFilter">): GroundingConfig[] {
-	return filterConfigs({ includeStrong: args.allowStrong, configFilter: args.configFilter });
+export function selectConfigs(
+	args: Pick<EvalCliArgs, "allowStrong" | "configFilter">,
+): GroundingConfig[] {
+	return filterConfigs({
+		includeStrong: args.allowStrong,
+		configFilter: args.configFilter,
+	});
 }
 
 /** Select suite-03 specs from the owner file (never duplicated). */
-export function selectSpecs(args: Pick<EvalCliArgs, "specFilter">): PlanSpecInput[] {
+export function selectSpecs(
+	args: Pick<EvalCliArgs, "specFilter">,
+): PlanSpecInput[] {
 	let specs: PlanSpecInput[] = GROUNDING_SPECS.map((s) => ({
 		id: s.id,
 		description: s.description,
 		baseline: s.baseline,
 	}));
 	if (args.specFilter.length > 0) {
-		const unknown = args.specFilter.filter((id) => !specs.some((s) => s.id === id));
+		const unknown = args.specFilter.filter(
+			(id) => !specs.some((s) => s.id === id),
+		);
 		if (unknown.length > 0) {
 			throw new Error(
 				`--spec matched no known suite-03 spec: ${unknown.join(", ")} (known: ${GROUNDING_SPECS.map((s) => s.id).join(", ")})`,
@@ -149,14 +166,20 @@ export function recordsPath(metricsDir: string): string {
 }
 
 /** Append one record (JSONL — additive, resumable). Throws on failure. */
-export function appendRecord(metricsDir: string, record: GroundingRunRecord): void {
+export function appendRecord(
+	metricsDir: string,
+	record: GroundingRunRecord,
+): void {
 	const path = recordsPath(metricsDir);
 	mkdirSync(join(path, ".."), { recursive: true });
 	appendFileSync(path, `${JSON.stringify(record)}\n`, "utf-8");
 }
 
 /** Load every stored record (blank lines skipped; corrupt counted). */
-export function loadRecords(metricsDir: string): { records: GroundingRunRecord[]; corrupt: number } {
+export function loadRecords(metricsDir: string): {
+	records: GroundingRunRecord[];
+	corrupt: number;
+} {
 	const path = recordsPath(metricsDir);
 	if (!existsSync(path)) return { records: [], corrupt: 0 };
 	const records: GroundingRunRecord[] = [];
@@ -173,7 +196,10 @@ export function loadRecords(metricsDir: string): { records: GroundingRunRecord[]
 }
 
 /** Build + persist the summary artifact; returns its rendered lines. */
-export function writeSummary(records: readonly GroundingRunRecord[], summaryOut: string): string[] {
+export function writeSummary(
+	records: readonly GroundingRunRecord[],
+	summaryOut: string,
+): string[] {
 	const aggs = [...aggregateRecords(records).values()];
 	const winners = buildWinsLoses(aggs);
 	const lines = renderSummaryLines(records, aggs, winners);
@@ -235,7 +261,11 @@ export async function dispatchOne(opts: {
 				cwd: repo.dir,
 				spec: spec.specMarkdown,
 				model: opts.tierConfig.executeModel,
-				prewalkModel: opts.tierConfig.prewalkModel ?? undefined,
+				// prewalkModel omitted when null (exactOptionalPropertyTypes:
+				// an explicit undefined is not assignable to `prewalkModel?: string`).
+				...(opts.tierConfig.prewalkModel !== null
+					? { prewalkModel: opts.tierConfig.prewalkModel }
+					: {}),
 				executeModel: opts.tierConfig.executeModel,
 				review: false,
 				reviewModel: opts.tierConfig.reviewModel,
@@ -245,7 +275,8 @@ export async function dispatchOne(opts: {
 				project: "eval",
 			});
 			const m = result.manifest;
-			const turns = (m?.phases.prewalk?.turns ?? 0) + (m?.phases.execute.turns ?? 0);
+			const turns =
+				(m?.phases.prewalk?.turns ?? 0) + (m?.phases.execute.turns ?? 0);
 			return {
 				configId: opts.config.id,
 				specId: opts.specId,
@@ -257,7 +288,9 @@ export async function dispatchOne(opts: {
 				groundingTokens: 0,
 				costUsd: m?.totals.cost_usd ?? 0,
 				durationMs: Date.now() - startedAt,
-				firstPassVerify: result.verification.passed && (m?.phases.fix_loop.iterations ?? 0) === 0,
+				firstPassVerify:
+					result.verification.passed &&
+					(m?.phases.fix_loop.iterations ?? 0) === 0,
 				bundleHit: null,
 				forkDeviationCount: 0,
 				retriedWithHandoff: false,
@@ -266,10 +299,11 @@ export async function dispatchOne(opts: {
 			};
 		}
 		// daemon + bare hosts go through the v2 pipeline (runTask).
-		const { runTask, estimateGroundingTokens, buildWorkerSystemPrompt } = await import(
-			"../../packages/core-v2/src/daemon/task-runner.ts"
-		);
-		const specMarkdown = GROUNDING_SPECS.find((s) => s.id === opts.specId)!.specMarkdown;
+		const { runTask, estimateGroundingTokens, buildWorkerSystemPrompt } =
+			await import("../../packages/core-v2/src/daemon/task-runner.ts");
+		const specMarkdown = GROUNDING_SPECS.find(
+			(s) => s.id === opts.specId,
+		)!.specMarkdown;
 		const usePrewalk =
 			opts.config.planMode === "prewalk" &&
 			opts.tierConfig.prewalkModel !== null &&
@@ -345,7 +379,9 @@ async function main(): Promise<number> {
 			console.error(`grounding-eval: ${(err as Error).message}`);
 			return 1;
 		}
-		console.log("(dry run — pass --run to execute; strong configs stay gated without --allow-strong)");
+		console.log(
+			"(dry run — pass --run to execute; strong configs stay gated without --allow-strong)",
+		);
 		return 0;
 	}
 
@@ -354,7 +390,8 @@ async function main(): Promise<number> {
 	const config = loadTaskConfig();
 	let tierConfig = config.tiers[args.tier];
 	if (!tierConfig) {
-		tierConfig = config.tiers[config.defaults.budget] ?? Object.values(config.tiers)[0];
+		tierConfig =
+			config.tiers[config.defaults.budget] ?? Object.values(config.tiers)[0];
 	}
 	if (!tierConfig) {
 		console.error("grounding-eval: no usable budget tier in task.toml");
@@ -376,9 +413,14 @@ async function main(): Promise<number> {
 		for (const spec of specs) {
 			process.stdout.write(`\n── grounding-eval: ${cfg.id} × ${spec.id} ──\n`);
 			try {
-				const record = await dispatchOne({ config: cfg, specId: spec.id, tierConfig });
+				const record = await dispatchOne({
+					config: cfg,
+					specId: spec.id,
+					tierConfig,
+				});
 				appendRecord(metricsDir, record);
-				if (record.retriedWithHandoff && record.cacheHitOnRetry === false) violations += 1;
+				if (record.retriedWithHandoff && record.cacheHitOnRetry === false)
+					violations += 1;
 				console.log(
 					`  ✓ ${record.turns} turns · $${record.costUsd.toFixed(4)} · ` +
 						`verify ${record.firstPassVerify ? "first-pass" : "retried"}`,
@@ -392,21 +434,31 @@ async function main(): Promise<number> {
 	}
 
 	const { records, corrupt } = loadRecords(metricsDir);
-	const summaryOut = args.summaryOut ?? join(metricsDir, "eval-grounding", "summary.md");
+	const summaryOut =
+		args.summaryOut ?? join(metricsDir, "eval-grounding", "summary.md");
 	const lines = writeSummary(records, summaryOut);
 	for (const line of lines) console.log(line);
-	console.log(`\nevidence: ${recordsPath(metricsDir)}\nsummary:  ${summaryOut}`);
-	if (corrupt > 0) console.warn(`warning: skipped ${corrupt} corrupt record line(s)`);
+	console.log(
+		`\nevidence: ${recordsPath(metricsDir)}\nsummary:  ${summaryOut}`,
+	);
+	if (corrupt > 0)
+		console.warn(`warning: skipped ${corrupt} corrupt record line(s)`);
 
 	if (violations > 0) return 3;
 	return failures.length > 0 ? 2 : 0;
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (
+	process.argv[1] &&
+	import.meta.url === pathToFileURL(process.argv[1]).href
+) {
 	main()
 		.then((code) => process.exit(code))
 		.catch((err) => {
-			console.error("grounding-eval FAILED:", err instanceof Error ? err.message : err);
+			console.error(
+				"grounding-eval FAILED:",
+				err instanceof Error ? err.message : err,
+			);
 			process.exit(1);
 		});
 }

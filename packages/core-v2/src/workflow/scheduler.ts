@@ -31,7 +31,9 @@ export interface NodeResult {
 export interface ScheduleOptions {
 	dag: SynthesizedDag;
 	/** Injected per-node executor — the caller wires real seams; tests inject a fake. */
-	runNode: (nodeId: string) => Promise<{ verdict: "completed" | "failed"; cause?: string | undefined }>;
+	runNode: (
+		nodeId: string,
+	) => Promise<{ verdict: "completed" | "failed"; cause?: string | undefined }>;
 	/** Fan-out limit for this run. Capped by DEFAULT_MAX_FAN_OUT. */
 	maxParallel?: number | undefined;
 	/** Gateway for lifecycle events. One routed + one terminal per node. */
@@ -50,7 +52,9 @@ function effectiveMaxParallel(requested: number | undefined): number {
 	return Math.min(Math.floor(capped), DEFAULT_MAX_FAN_OUT);
 }
 
-export async function scheduleDag(options: ScheduleOptions): Promise<ScheduleResult> {
+export async function scheduleDag(
+	options: ScheduleOptions,
+): Promise<ScheduleResult> {
 	const maxParallel = effectiveMaxParallel(options.maxParallel);
 	const dag = options.dag;
 	const orderIndex = new Map<string, number>();
@@ -72,18 +76,34 @@ export async function scheduleDag(options: ScheduleOptions): Promise<ScheduleRes
 	const emitRouted = (taskId: string): void => {
 		if (options.gateway === undefined) return;
 		try {
-			options.gateway.emit({ type: "task.routed", taskId, detail: { planMode: "cold" } });
+			options.gateway.emit({
+				type: "task.routed",
+				taskId,
+				detail: { planMode: "cold" },
+			});
 		} catch {
 			// gateway isolation is elsewhere; never crash scheduling
 		}
 	};
-	const emitTerminal = (id: string, verdict: NodeVerdict, cause: string | undefined): void => {
+	const emitTerminal = (
+		id: string,
+		verdict: NodeVerdict,
+		cause: string | undefined,
+	): void => {
 		if (options.gateway === undefined) return;
 		try {
 			if (verdict === "completed") {
-				options.gateway.emit({ type: "task.completed", taskId: id, detail: { verdict: "ship" } });
+				options.gateway.emit({
+					type: "task.completed",
+					taskId: id,
+					detail: { verdict: "ship" },
+				});
 			} else if (verdict === "failed") {
-				options.gateway.emit({ type: "task.failed", taskId: id, detail: { cause: cause ?? "failed" } });
+				options.gateway.emit({
+					type: "task.failed",
+					taskId: id,
+					detail: { cause: cause ?? "failed" },
+				});
 			} else {
 				// skipped is a typed failed-dependent — surface as task.failed with a skipped cause so every node has a terminal event
 				options.gateway.emit({
@@ -146,7 +166,11 @@ export async function scheduleDag(options: ScheduleOptions): Promise<ScheduleRes
 			chunk.map(async (id) => {
 				try {
 					const outcome = await options.runNode(id);
-					return { id, verdict: outcome.verdict as NodeVerdict, cause: outcome.cause };
+					return {
+						id,
+						verdict: outcome.verdict as NodeVerdict,
+						cause: outcome.cause,
+					};
 				} catch (err) {
 					const cause = err instanceof Error ? err.message : String(err);
 					return { id, verdict: "failed" as NodeVerdict, cause };
@@ -162,7 +186,11 @@ export async function scheduleDag(options: ScheduleOptions): Promise<ScheduleRes
 				emitTerminal(r.id, "completed", undefined);
 			} else {
 				failed.add(r.id);
-				results.set(r.id, { id: r.id, verdict: "failed", cause: r.cause ?? "failed" });
+				results.set(r.id, {
+					id: r.id,
+					verdict: "failed",
+					cause: r.cause ?? "failed",
+				});
 				emitTerminal(r.id, "failed", r.cause ?? "failed");
 			}
 		}

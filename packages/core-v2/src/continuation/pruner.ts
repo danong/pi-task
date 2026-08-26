@@ -52,17 +52,42 @@ export type ContinuationScorer = (
 	context?: ScorerContext,
 ) => ContinuationEntry[];
 
+/** String form of a non-string entry content: scalars via String,
+ *  objects via JSON (never '[object Object]'). */
+function scalarOrJsonString(content: unknown): string {
+	if (
+		typeof content === "string" ||
+		typeof content === "number" ||
+		typeof content === "boolean" ||
+		typeof content === "bigint"
+	) {
+		return String(content);
+	}
+	try {
+		return JSON.stringify(content) ?? "";
+	} catch {
+		// Cyclic/unserializable content degrades to a placeholder.
+		return "[unserializable]";
+	}
+}
+
 /** Token estimate for one entry. Mirrors task-runner.ts estimateGroundingTokens
  *  (4 bytes ≈ 1 token) so budgets are comparable across the pipeline. */
 export function estimateEntryTokens(entry: ContinuationEntry): number {
-	if (typeof entry.tokens === "number" && Number.isFinite(entry.tokens) && entry.tokens >= 0) {
+	if (
+		typeof entry.tokens === "number" &&
+		Number.isFinite(entry.tokens) &&
+		entry.tokens >= 0
+	) {
 		return Math.max(1, Math.ceil(entry.tokens));
 	}
 	const content = entry.content;
 	let bytes = 0;
 	if (typeof content === "string") bytes = Buffer.byteLength(content, "utf-8");
-	else if (Array.isArray(content)) bytes = Buffer.byteLength(JSON.stringify(content), "utf-8");
-	else if (content !== undefined && content !== null) bytes = Buffer.byteLength(String(content), "utf-8");
+	else if (Array.isArray(content))
+		bytes = Buffer.byteLength(JSON.stringify(content), "utf-8");
+	else if (content !== undefined && content !== null)
+		bytes = Buffer.byteLength(scalarOrJsonString(content), "utf-8");
 	else bytes = 16;
 	// + role/toolName overhead
 	bytes += Buffer.byteLength(entry.role ?? "", "utf-8");
@@ -80,7 +105,9 @@ function isToolResult(e: ContinuationEntry): boolean {
 	return e.role === "toolResult";
 }
 
-function cloneEntries(entries: readonly ContinuationEntry[]): ContinuationEntry[] {
+function cloneEntries(
+	entries: readonly ContinuationEntry[],
+): ContinuationEntry[] {
 	return entries.map((e) => ({ ...e }));
 }
 
@@ -119,7 +146,9 @@ function enforceBudget(
 	// toolResults but the input has at least one, force the best-scoring
 	// toolResult in, evicting the lowest-scoring kept non-tool if needed.
 	const hasToolResult = entries.some(isToolResult);
-	const keptHasTool = [...kept].some((idx) => isToolResult(entries[idx] as ContinuationEntry));
+	const keptHasTool = [...kept].some((idx) =>
+		isToolResult(entries[idx] as ContinuationEntry),
+	);
 	if (hasToolResult && !keptHasTool && kept.size > 0) {
 		const bestTool = sortedByScore.find((s) => isToolResult(s.entry));
 		if (bestTool) {
@@ -187,7 +216,7 @@ export function recencyToolScorer(
 	if (entries.length === 0) return [];
 	const n = entries.length;
 	const isRetry =
-		(context?.alreadyPruned === true) ||
+		context?.alreadyPruned === true ||
 		(context?.attemptNumber !== undefined && context.attemptNumber > 1) ||
 		(context?.retryBudgetSpent !== undefined && context.retryBudgetSpent > 0);
 
@@ -195,7 +224,8 @@ export function recencyToolScorer(
 	// the only tool result (the at-least-one-tool invariant would just
 	// force it back, so keep it scored).
 	const oldestIsOnlyTool =
-		isToolResult(entries[0] as ContinuationEntry) && !entries.slice(1).some(isToolResult);
+		isToolResult(entries[0] as ContinuationEntry) &&
+		!entries.slice(1).some(isToolResult);
 	const start = isRetry && n > 1 && !oldestIsOnlyTool ? 1 : 0;
 
 	const toolBonusBase = isRetry ? 0.5 : 0.35;
@@ -228,7 +258,7 @@ export function uniformScorer(
 ): ContinuationEntry[] {
 	if (entries.length === 0) return [];
 	const isRetry =
-		(context?.alreadyPruned === true) ||
+		context?.alreadyPruned === true ||
 		(context?.attemptNumber !== undefined && context.attemptNumber > 1) ||
 		(context?.retryBudgetSpent !== undefined && context.retryBudgetSpent > 0);
 
@@ -238,7 +268,8 @@ export function uniformScorer(
 	const offset = isRetry ? 1 : 0;
 	const scored = entries.map((e, i) => {
 		// Uniform: base 0.5 everywhere, recency contributes only ε to break ties.
-		const recencyEpsilon = 0.01 * ((i + offset) % entries.length) / entries.length;
+		const recencyEpsilon =
+			(0.01 * ((i + offset) % entries.length)) / entries.length;
 		let score = 0.5 + recencyEpsilon;
 		if (isToolResult(e)) score += 0.05; // tiny tool bias for invariant
 		return { entry: e, score, index: i };
@@ -258,7 +289,9 @@ const REGISTRY: Record<ScorerName, ContinuationScorer> = {
 
 export function selectScorer(name: string): ContinuationScorer {
 	if (name in REGISTRY) return REGISTRY[name as ScorerName];
-	throw new Error(`unknown continuation scorer "${name}" — expected one of ${SCORER_NAMES.join(", ")}`);
+	throw new Error(
+		`unknown continuation scorer "${name}" — expected one of ${SCORER_NAMES.join(", ")}`,
+	);
 }
 
 export function listScorers(): ScorerName[] {

@@ -41,5 +41,9 @@ export interface ExecResult {
 export interface EnvironmentDriver {
 	name: string;
 	resolvePath(context: WorkspaceContext): Promise<PathResolution>;
-	exec(command: string, args: string[], options?: ExecOptions): Promise<ExecResult>;
+	exec(
+		command: string,
+		args: string[],
+		options?: ExecOptions,
+	): Promise<ExecResult>;
 }

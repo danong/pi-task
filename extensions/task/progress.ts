@@ -40,16 +40,18 @@ export interface RunPlan {
 	/** Phases in run order: prewalk → work → review (omitting skipped ones). */
 	phases: PlanPhase[];
 	/** The tier's wall-clock budget (ms) — shown as the total-clock
-	 *  headroom ("total 45s/25m") so a wall abort is never a surprise. */
-	wallTimeoutMs?: number;
+	 *  headroom ("total 45s/25m") so a wall abort is never a surprise.
+	 *  Optional AND nullable under exactOptionalPropertyTypes — callers
+	 *  forward their own `T | undefined` options verbatim. */
+	wallTimeoutMs?: number | undefined;
 	/** R5: the per-review-fork wall budget (ms) — shown on the plan line
 	 *  as the review phase's own budget headroom ("· review wall 20m").
 	 *  Only rendered when the plan INCLUDES a review phase; independent of
 	 *  wallTimeoutMs (the worker and review phases have separate walls). */
-	reviewWallTimeoutMs?: number;
+	reviewWallTimeoutMs?: number | undefined;
 	/** The session's current /goals statement (resolved at execute via
 	 *  readGoals; absent → no goals clause anywhere). */
-	goals?: string;
+	goals?: string | undefined;
 }
 
 export interface BuildRunPlanOptions {
@@ -80,12 +82,18 @@ export interface BuildRunPlanOptions {
  */
 export function buildRunPlan(opts: BuildRunPlanOptions): RunPlan {
 	const phases: PlanPhase[] = [];
-	if (opts.prewalkModel !== undefined && opts.prewalkModel !== opts.executeModel) {
+	if (
+		opts.prewalkModel !== undefined &&
+		opts.prewalkModel !== opts.executeModel
+	) {
 		phases.push({ name: "prewalk", model: opts.prewalkModel });
 	}
 	phases.push({ name: "work", model: opts.executeModel });
 	if (opts.review) {
-		phases.push({ name: "review", model: opts.reviewModel ?? opts.executeModel });
+		phases.push({
+			name: "review",
+			model: opts.reviewModel ?? opts.executeModel,
+		});
 	}
 	return {
 		tier: opts.tier,
@@ -141,11 +149,22 @@ export interface ProgressState {
 	merge?: { commit_id: string; files_changed: number };
 }
 
-export function createProgressState(total: number, plan: RunPlan, nowMs: number): ProgressState {
+export function createProgressState(
+	total: number,
+	plan: RunPlan,
+	nowMs: number,
+): ProgressState {
 	const workers = new Map<number, WorkerProgress>();
 	const phase = initialPhaseOf(plan);
 	for (let i = 0; i < total; i++) {
-		workers.set(i, { turns: 0, done: false, phase, checklist: null, lastEventMs: nowMs, phaseStartMs: nowMs });
+		workers.set(i, {
+			turns: 0,
+			done: false,
+			phase,
+			checklist: null,
+			lastEventMs: nowMs,
+			phaseStartMs: nowMs,
+		});
 	}
 	return { plan, workers, done: 0, total, startMs: nowMs };
 }
@@ -170,10 +189,15 @@ export function extractFileScope(markdown: string, max = 5): string[] {
 	const out: string[] = [];
 	for (const m of markdown.matchAll(/[\w./-]+\.[A-Za-z0-9]{1,5}/g)) {
 		const tok = m[0];
-		if (tok.startsWith("http") || tok.startsWith("www") || tok.startsWith("/")) continue;
+		if (tok.startsWith("http") || tok.startsWith("www") || tok.startsWith("/"))
+			continue;
 		// A match that starts mid-URL ("https://example.com/x.md" matches at
 		// "example…") — the char(s) right before it include "//".
-		if (m.index !== undefined && markdown.slice(Math.max(0, m.index - 3), m.index).includes("//")) continue;
+		if (
+			m.index !== undefined &&
+			markdown.slice(Math.max(0, m.index - 3), m.index).includes("//")
+		)
+			continue;
 		const ext = tok.split(".").pop() ?? "";
 		if (ext.length > 0 && /^\d+$/.test(ext)) continue; // versions like 0.83.0
 		if (!seen.has(tok)) {
@@ -192,20 +216,23 @@ export function extractFileScope(markdown: string, max = 5): string[] {
  * change nothing; worker-scoped events update the worker's liveness
  * timestamp. Pure — tested hermetically.
  */
-export function applyProgressEvent(state: ProgressState, rawEvent: unknown, nowMs: number): void {
+export function applyProgressEvent(
+	state: ProgressState,
+	rawEvent: unknown,
+	nowMs: number,
+): void {
 	const ev = rawEvent as Record<string, unknown> | null;
 	if (!ev || typeof ev.type !== "string") return;
 
 	const index = typeof ev.index === "number" ? ev.index : 0;
 	const worker = (): WorkerProgress => {
-		const w =
-			state.workers.get(index) ?? {
-				turns: 0,
-				done: false,
-				phase: initialPhaseOf(state.plan),
-				checklist: null,
-				phaseStartMs: nowMs,
-			};
+		const w = state.workers.get(index) ?? {
+			turns: 0,
+			done: false,
+			phase: initialPhaseOf(state.plan),
+			checklist: null,
+			phaseStartMs: nowMs,
+		};
 		state.workers.set(index, w);
 		w.lastEventMs = nowMs;
 		return w;
@@ -217,10 +244,12 @@ export function applyProgressEvent(state: ProgressState, rawEvent: unknown, nowM
 			// emitted once before the workers start; the widget answers
 			// "what is this worker doing" without any LLM.
 			if (Array.isArray(ev.metas)) {
-				(ev.metas as Array<{ goal?: string; scope?: string[] }>).forEach((meta, i) => {
-					const w = state.workers.get(i);
-					if (w) w.meta = { goal: meta.goal ?? "", scope: meta.scope ?? [] };
-				});
+				(ev.metas as Array<{ goal?: string; scope?: string[] }>).forEach(
+					(meta, i) => {
+						const w = state.workers.get(i);
+						if (w) w.meta = { goal: meta.goal ?? "", scope: meta.scope ?? [] };
+					},
+				);
 			}
 			return;
 		}
@@ -230,7 +259,8 @@ export function applyProgressEvent(state: ProgressState, rawEvent: unknown, nowM
 			if (typeof ev.commit_id === "string") {
 				state.merge = {
 					commit_id: ev.commit_id,
-					files_changed: typeof ev.files_changed === "number" ? ev.files_changed : 0,
+					files_changed:
+						typeof ev.files_changed === "number" ? ev.files_changed : 0,
 				};
 			}
 			return;
@@ -240,14 +270,22 @@ export function applyProgressEvent(state: ProgressState, rawEvent: unknown, nowM
 			// R3: the reviewer is a separate process — its turn events must
 			// not advance the worker's turn counter while in review (liveness
 			// still updates via worker()).
-			if (w.phase !== "review" && typeof ev.turns === "number") w.turns = ev.turns;
+			if (w.phase !== "review" && typeof ev.turns === "number")
+				w.turns = ev.turns;
 			break;
 		}
 		case "tool_start": {
 			const w = worker();
 			// Live "what is it touching" — the tool name + summarized args
 			// (surface only the summary; full args stay worker-side).
-			w.lastTool = { name: String(ev.toolName ?? "tool"), args: typeof ev.args === "string" ? ev.args : "" };
+			w.lastTool = {
+				name:
+					typeof ev.toolName === "string" ||
+					(typeof ev.toolName === "number" && Number.isFinite(ev.toolName))
+						? String(ev.toolName)
+						: "tool",
+				args: typeof ev.args === "string" ? ev.args : "",
+			};
 			break;
 		}
 		case "tool_end": {
@@ -256,7 +294,11 @@ export function applyProgressEvent(state: ProgressState, rawEvent: unknown, nowM
 			// prewalk → work on the same signal as the model swap: the first
 			// SUCCESSFUL edit/write (an errored edit does not swap, so it must
 			// not transition the display either).
-			if ((ev.toolName === "edit" || ev.toolName === "write") && ev.isError !== true && w.phase === "prewalk") {
+			if (
+				(ev.toolName === "edit" || ev.toolName === "write") &&
+				ev.isError !== true &&
+				w.phase === "prewalk"
+			) {
 				w.phase = "work";
 				w.phaseStartMs = nowMs;
 			}
@@ -266,7 +308,11 @@ export function applyProgressEvent(state: ProgressState, rawEvent: unknown, nowM
 			const w = worker();
 			// R3: frozen during review (the worker's checklist is final; the
 			// reviewer never sends checklist events anyway).
-			if (w.phase !== "review" && typeof ev.done === "number" && typeof ev.total === "number") {
+			if (
+				w.phase !== "review" &&
+				typeof ev.done === "number" &&
+				typeof ev.total === "number"
+			) {
 				w.checklist = { done: ev.done, total: ev.total };
 			}
 			break;
@@ -309,7 +355,9 @@ export function formatDuration(ms: number): string {
 	const minutes = Math.floor(totalSeconds / 60);
 	const seconds = totalSeconds % 60;
 	if (minutes < 60) {
-		return seconds > 0 ? `${minutes}m${String(seconds).padStart(2, "0")}s` : `${minutes}m`;
+		return seconds > 0
+			? `${minutes}m${String(seconds).padStart(2, "0")}s`
+			: `${minutes}m`;
 	}
 	const hours = Math.floor(minutes / 60);
 	const remainingMinutes = minutes % 60;
@@ -324,7 +372,10 @@ export function renderPlanLine(plan: RunPlan): string {
 	const clauses: string[] = [];
 	const goals = renderGoalsClause(plan.goals);
 	if (goals) clauses.push(goals);
-	if (plan.phases.some((p) => p.name === "review") && plan.reviewWallTimeoutMs !== undefined) {
+	if (
+		plan.phases.some((p) => p.name === "review") &&
+		plan.reviewWallTimeoutMs !== undefined
+	) {
 		clauses.push(`review wall ${formatDuration(plan.reviewWallTimeoutMs)}`);
 	}
 	return clauses.length > 0 ? `${base} · ${clauses.join(" · ")}` : base;
@@ -338,7 +389,10 @@ export const PLAN_LINE_GOALS_MAX = 60;
  * PLAN_LINE_GOALS_MAX characters (the existing tool-arg cut convention:
  * max−3 chars + "…" when cut). Pure — tested hermetically.
  */
-export function truncateGoals(goals: string, max: number = PLAN_LINE_GOALS_MAX): string {
+export function truncateGoals(
+	goals: string,
+	max: number = PLAN_LINE_GOALS_MAX,
+): string {
 	// Collapse whitespace (incl. newlines) to a single line FIRST: a
 	// multi-line goals statement must never embed a newline into the
 	// plan line or a notify message (the RPC crash vector).
@@ -365,7 +419,11 @@ export function renderGoalsClause(goals: string | undefined | null): string {
  * all marked). A phase outside the plan (defensive; can't happen in practice)
  * renders bare. The plan line itself keeps showing models as-is.
  */
-export function renderPhaseChain(plan: RunPlan, phase: WorkerPhase, done: boolean): string {
+export function renderPhaseChain(
+	plan: RunPlan,
+	phase: WorkerPhase,
+	done: boolean,
+): string {
 	const idx = plan.phases.findIndex((p) => p.name === phase);
 	if (idx === -1) return phase;
 	return plan.phases
@@ -381,8 +439,14 @@ export function renderPhaseChain(plan: RunPlan, phase: WorkerPhase, done: boolea
  * worker in review shows liveness because the forked review is still
  * running on its behalf.
  */
-export function buildProgressText(state: ProgressState, nowMs: number = Date.now()): string {
-	const lines: string[] = [renderPlanLine(state.plan), `${state.done}/${state.total} workers done`];
+export function buildProgressText(
+	state: ProgressState,
+	nowMs: number = Date.now(),
+): string {
+	const lines: string[] = [
+		renderPlanLine(state.plan),
+		`${state.done}/${state.total} workers done`,
+	];
 	for (let i = 0; i < state.total; i++) {
 		lines.push(...renderWorkerLine(state, i, nowMs));
 	}
@@ -399,7 +463,11 @@ export function buildProgressText(state: ProgressState, nowMs: number = Date.now
 	return lines.join("\n");
 }
 
-function renderWorkerLine(state: ProgressState, index: number, nowMs: number): string[] {
+function renderWorkerLine(
+	state: ProgressState,
+	index: number,
+	nowMs: number,
+): string[] {
 	const label = `worker-${index + 1}`;
 	const w = state.workers.get(index) ?? {
 		turns: 0,
@@ -414,19 +482,30 @@ function renderWorkerLine(state: ProgressState, index: number, nowMs: number): s
 	const chain = renderPhaseChain(state.plan, w.phase, w.done);
 	const phaseElapsed = formatDuration(nowMs - w.phaseStartMs);
 	const totalElapsed = formatDuration(nowMs - state.startMs);
-	const wall = state.plan.wallTimeoutMs ? `/${formatDuration(state.plan.wallTimeoutMs)}` : "";
+	const wall = state.plan.wallTimeoutMs
+		? `/${formatDuration(state.plan.wallTimeoutMs)}`
+		: "";
 	const clocks = `${phaseElapsed} | total ${totalElapsed}${wall}`;
-	const checklistText = w.checklist ? `checklist ${w.checklist.done}/${w.checklist.total}` : "no checklist yet";
+	const checklistText = w.checklist
+		? `checklist ${w.checklist.done}/${w.checklist.total}`
+		: "no checklist yet";
 	const turnsText = `${w.turns} turn${w.turns === 1 ? "" : "s"}`;
 
 	const lines: string[] = [];
 	if (w.done && w.phase !== "review") {
-		lines.push(`  ✓ ${label}: ${chain} ${clocks} | ${checklistText} | ${turnsText}`);
+		lines.push(
+			`  ✓ ${label}: ${chain} ${clocks} | ${checklistText} | ${turnsText}`,
+		);
 	} else {
 		const idleSeconds =
-			w.lastEventMs === undefined ? null : Math.max(0, Math.floor((nowMs - w.lastEventMs) / 1000));
-		const liveness = idleSeconds === null ? turnsText : `${turnsText}, ${idleSeconds}s idle`;
-		lines.push(`  ⏳ ${label}: ${chain} ${clocks} | ${checklistText} | ${liveness}`);
+			w.lastEventMs === undefined
+				? null
+				: Math.max(0, Math.floor((nowMs - w.lastEventMs) / 1000));
+		const liveness =
+			idleSeconds === null ? turnsText : `${turnsText}, ${idleSeconds}s idle`;
+		lines.push(
+			`  ⏳ ${label}: ${chain} ${clocks} | ${checklistText} | ${liveness}`,
+		);
 	}
 
 	// A: dispatch-time context — the worker's goal + file scope, extracted
@@ -441,7 +520,10 @@ function renderWorkerLine(state: ProgressState, index: number, nowMs: number): s
 	}
 	// B: live "what is it touching right now" — the in-flight tool.
 	if (w.lastTool && !(w.done && w.phase !== "review")) {
-		const args = w.lastTool.args.length > 60 ? w.lastTool.args.slice(0, 57) + "…" : w.lastTool.args;
+		const args =
+			w.lastTool.args.length > 60
+				? w.lastTool.args.slice(0, 57) + "…"
+				: w.lastTool.args;
 		lines.push(`  ⎈ ${w.lastTool.name}${args ? `: ${args}` : ""}`);
 	}
 	return lines;

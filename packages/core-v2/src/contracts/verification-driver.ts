@@ -25,5 +25,8 @@ export interface VerificationResult {
 
 export interface VerificationDriver {
 	name: string;
-	runVerification(context: WorkspaceContext, commands: string[]): Promise<VerificationResult>;
+	runVerification(
+		context: WorkspaceContext,
+		commands: string[],
+	): Promise<VerificationResult>;
 }

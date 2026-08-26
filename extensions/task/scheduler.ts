@@ -12,13 +12,22 @@
  * models/keys) and the fake batch provider in tests.
  */
 
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync, rmSync } from "node:fs";
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { spawn, type ChildProcess } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
-import { loadTaskConfig, resolveTaskShape, type JobConfig } from "./config.ts";
-import { buildRunRequest, resolveRunnerSpawn, requestPathFor } from "./runner.ts";
+import {
+	loadTaskConfig,
+	resolveTaskShape,
+	type JobConfig,
+	type RunChannel,
+} from "./config.ts";
+import {
+	buildRunRequest,
+	resolveRunnerSpawn,
+	requestPathFor,
+} from "./runner.ts";
 import { generateRunId } from "./metrics.ts";
 
 export const SCHEDULER_STATE_FILENAME = "scheduler-state.json";
@@ -52,12 +61,20 @@ export function writeSchedulerState(path: string, state: SchedulerState): void {
 
 /** True when a job is due: never run, or everyMs has elapsed since the
  *  last dispatch. Pure — tested. */
-export function isDue(job: JobConfig, lastRunMs: number | undefined, nowMs: number): boolean {
+export function isDue(
+	job: JobConfig,
+	lastRunMs: number | undefined,
+	nowMs: number,
+): boolean {
 	return lastRunMs === undefined || nowMs - lastRunMs >= job.everyMs;
 }
 
 /** The jobs due now, in config order. Pure — tested. */
-export function dueJobs(config: { jobs: Record<string, JobConfig> }, state: SchedulerState, nowMs: number): Array<{ name: string; job: JobConfig }> {
+export function dueJobs(
+	config: { jobs: Record<string, JobConfig> },
+	state: SchedulerState,
+	nowMs: number,
+): Array<{ name: string; job: JobConfig }> {
 	const out: Array<{ name: string; job: JobConfig }> = [];
 	for (const [name, job] of Object.entries(config.jobs)) {
 		if (isDue(job, state[name]?.lastRunMs, nowMs)) out.push({ name, job });
@@ -72,7 +89,9 @@ export function resolveJobSpec(job: JobConfig): string {
 		try {
 			return readFileSync(job.spec.slice(5), "utf-8");
 		} catch (err) {
-			throw new Error(`[jobs] ${job.spec}: cannot read spec file (${(err as Error).message})`);
+			throw new Error(
+				`[jobs] ${job.spec}: cannot read spec file (${(err as Error).message})`,
+			);
 		}
 	}
 	return job.spec;
@@ -98,7 +117,12 @@ export function buildJobRequest(input: {
 	// wall, the shared tool timeout, and the AI identity — otherwise the
 	// runner child starts with model id "economy" and the session dies
 	// before the first model call (review P1).
-	const shape = { ...resolveTaskShape(input.shape, input.config.shapes), channel: input.channel };
+	const shape = {
+		...resolveTaskShape(input.shape, input.config.shapes),
+		// JobConfig.channel is a free string from task.toml; the resolved
+		// shape requires the closed RunChannel set.
+		channel: input.channel as RunChannel,
+	};
 	const request = buildRunRequest({
 		run_id: runId,
 		metrics_dir: input.metricsDir,
@@ -108,12 +132,13 @@ export function buildJobRequest(input: {
 			tier: input.tier,
 			phases: [],
 			wallTimeoutMs: tierConfig.wallTimeoutMs,
-			goals: undefined,
 		},
 		options: {
 			cwd: input.cwd,
 			model: tierConfig.executeModel,
-			prewalkModel: tierConfig.prewalkModel ?? undefined,
+			...(tierConfig.prewalkModel != null && {
+				prewalkModel: tierConfig.prewalkModel,
+			}),
 			executeModel: tierConfig.executeModel,
 			reviewModel: tierConfig.reviewModel,
 			review: tierConfig.review,
@@ -128,7 +153,7 @@ export function buildJobRequest(input: {
 			shape,
 			sandbox: input.config.sandbox,
 		},
-		now: input.now,
+		...(input.now !== undefined && { now: input.now }),
 	});
 	mkdirSync(dirname(requestPath), { recursive: true });
 	writeFileSync(requestPath, JSON.stringify(request), "utf-8");
@@ -144,7 +169,7 @@ export interface DispatchResult {
 /** Dispatch a due job onto its channel. flex/sync → spawn the detached
  *  runner; batch → submit a batch job via the provider. Pure decision +
  *  spawn. */
-export async function dispatchJob(
+export function dispatchJob(
 	name: string,
 	job: JobConfig,
 	opts: {
@@ -155,7 +180,7 @@ export async function dispatchJob(
 		baseDir: string;
 		spawnRunner?: (cmd: string, args: string[], cwd: string) => ChildProcess;
 	},
-): Promise<DispatchResult> {
+): DispatchResult {
 	const spec = resolveJobSpec(job);
 	// Both flex and batch dispatch through the detached runner: the child's
 	// orchestrator routes by the shape's channel — batch runs the full lane
@@ -174,25 +199,33 @@ export async function dispatchJob(
 		cwd: opts.cwd,
 	});
 	const runnerPath = join(opts.baseDir, "runner.ts");
-	const { command, args } = resolveRunnerSpawn({ runnerPath, requestPath, baseDir: opts.baseDir });
-	const spawnFn = opts.spawnRunner ?? spawn;
-	spawnFn(command, args, { cwd: opts.cwd, detached: true, stdio: "ignore" }).unref();
+	const { command, args } = resolveRunnerSpawn({
+		runnerPath,
+		requestPath,
+		baseDir: opts.baseDir,
+	});
+	const proc = opts.spawnRunner
+		? opts.spawnRunner(command, args, opts.cwd)
+		: spawn(command, args, {
+				cwd: opts.cwd,
+				detached: true,
+				stdio: "ignore",
+			});
+	proc.unref();
 	return { lane: job.channel as "flex" | "batch", id: runId };
 }
 
 /** Check due jobs, dispatch them, record state. Returns the dispatched
  *  results (empty when dryRun). */
-export async function runOnce(
-	opts: {
-		agentDir: string;
-		metricsDir: string;
-		project: string;
-		cwd: string;
-		baseDir: string;
-		now?: Date;
-		dryRun?: boolean;
-	},
-): Promise<Array<{ name: string; lane: string; id: string }>> {
+export function runOnce(opts: {
+	agentDir: string;
+	metricsDir: string;
+	project: string;
+	cwd: string;
+	baseDir: string;
+	now?: Date;
+	dryRun?: boolean;
+}): Array<{ name: string; lane: string; id: string }> {
 	const config = loadTaskConfig();
 	const statePath = schedulerStatePath(opts.agentDir);
 	const state = readSchedulerState(statePath);
@@ -203,15 +236,21 @@ export async function runOnce(
 	if (opts.dryRun || due.length === 0) {
 		for (const { name } of due) {
 			console.log(`[scheduler] due: ${name} (dry-run — not dispatched)`);
-			dispatched.push({ name, lane: (config.jobs[name]?.channel ?? "flex"), id: "(dry)" });
+			dispatched.push({
+				name,
+				lane: config.jobs[name]?.channel ?? "flex",
+				id: "(dry)",
+			});
 		}
 		return dispatched;
 	}
 
 	for (const { name, job } of due) {
-		console.log(`[scheduler] dispatching ${name} on ${job.channel} (${job.description})…`);
+		console.log(
+			`[scheduler] dispatching ${name} on ${job.channel} (${job.description})…`,
+		);
 		try {
-			const result = await dispatchJob(name, job, {
+			const result = dispatchJob(name, job, {
 				metricsDir: opts.metricsDir,
 				project: opts.project,
 				config,
@@ -220,9 +259,13 @@ export async function runOnce(
 			});
 			state[name] = { lastRunMs: nowMs, runId: result.id };
 			dispatched.push({ name, lane: result.lane, id: result.id });
-			console.log(`[scheduler] dispatched ${name} → ${result.lane}:${result.id}`);
+			console.log(
+				`[scheduler] dispatched ${name} → ${result.lane}:${result.id}`,
+			);
 		} catch (err) {
-			console.error(`[scheduler] dispatch ${name} failed: ${(err as Error).message}`);
+			console.error(
+				`[scheduler] dispatch ${name} failed: ${(err as Error).message}`,
+			);
 		}
 	}
 	writeSchedulerState(statePath, state);
@@ -290,17 +333,30 @@ export async function main(): Promise<number> {
 	// run regardless. A dry-run uses the fake provider (no key needed).
 	const baseDir = dirname(fileURLToPath(import.meta.url));
 	if (args.mode === "loop") {
-		// eslint-disable-next-line no-constant-condition
 		while (true) {
 			try {
-				await runOnce({ agentDir, metricsDir, project, cwd, baseDir, dryRun: args.dryRun });
+				runOnce({
+					agentDir,
+					metricsDir,
+					project,
+					cwd,
+					baseDir,
+					dryRun: args.dryRun,
+				});
 			} catch (err) {
 				console.error(`[scheduler] run failed: ${(err as Error).message}`);
 			}
 			await new Promise((r) => setTimeout(r, 60_000));
 		}
 	}
-	await runOnce({ agentDir, metricsDir, project, cwd, baseDir, dryRun: args.dryRun });
+	runOnce({
+		agentDir,
+		metricsDir,
+		project,
+		cwd,
+		baseDir,
+		dryRun: args.dryRun,
+	});
 	return 0;
 }
 
@@ -309,11 +365,14 @@ function basename(p: string): string {
 }
 
 // Guard: only run when executed directly.
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (
+	process.argv[1] &&
+	import.meta.url === pathToFileURL(process.argv[1]).href
+) {
 	main()
 		.then((code) => process.exit(code))
-		.catch((err) => {
-			console.error(err.message ?? err);
+		.catch((err: unknown) => {
+			console.error(err instanceof Error ? err.message : String(err));
 			process.exit(1);
 		});
 }

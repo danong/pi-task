@@ -32,10 +32,19 @@ import {
 } from "./worker.ts";
 import type { RequirementStatus, ReviewResult } from "./schemas/findings.ts";
 import { DEFAULT_PERSONA, type Persona } from "./personas.ts";
-import { REASONING_EXCLUDE_EXTENSION_PATH, SERVICE_TIER_EXTENSION_PATH, SESSION_ID_EXTENSION_PATH, TOOL_GUARD_EXTENSION_PATH } from "./worker.ts";
+import {
+	REASONING_EXCLUDE_EXTENSION_PATH,
+	SERVICE_TIER_EXTENSION_PATH,
+	SESSION_ID_EXTENSION_PATH,
+	TOOL_GUARD_EXTENSION_PATH,
+} from "./worker.ts";
 
 /** Absolute path to the reviewer-side extension (report_findings + pruning). */
-export const FINDINGS_EXTENSION_PATH = join(dirname(fileURLToPath(import.meta.url)), "tools", "findings.ts");
+export const FINDINGS_EXTENSION_PATH = join(
+	dirname(fileURLToPath(import.meta.url)),
+	"tools",
+	"findings.ts",
+);
 
 const SIGKILL_DELAY_MS = 5000;
 
@@ -159,7 +168,9 @@ export function buildReviewPrompt(opts: {
 		`## Worker summary\n${opts.summary}`,
 	];
 	if (opts.deviations.length > 0) {
-		parts.push(`## Worker-declared deviations\n${opts.deviations.map((d) => `- ${d}`).join("\n")}`);
+		parts.push(
+			`## Worker-declared deviations\n${opts.deviations.map((d) => `- ${d}`).join("\n")}`,
+		);
 	}
 	return parts.join("\n\n");
 }
@@ -177,13 +188,26 @@ export function settleReview(
 		return { ok: true, result: reportPayload };
 	}
 	const detail = stderr.trim() ? `\nstderr: ${stderr.slice(0, 500)}` : "";
-	return { ok: false, error: new Error(`Reviewer exited (code ${exitCode}) without reporting findings.${detail}`) };
+	return {
+		ok: false,
+		error: new Error(
+			`Reviewer exited (code ${exitCode}) without reporting findings.${detail}`,
+		),
+	};
 }
 
 /** Verdict order for merging: ship < fix < escalate. */
-const VERDICT_ORDER: Record<ReviewResult["verdict"], number> = { ship: 0, fix: 1, escalate: 2 };
+const VERDICT_ORDER: Record<ReviewResult["verdict"], number> = {
+	ship: 0,
+	fix: 1,
+	escalate: 2,
+};
 /** Requirement status order for merging: met < uncertain < unmet. */
-const STATUS_ORDER: Record<RequirementStatus["status"], number> = { met: 0, uncertain: 1, unmet: 2 };
+const STATUS_ORDER: Record<RequirementStatus["status"], number> = {
+	met: 0,
+	uncertain: 1,
+	unmet: 2,
+};
 
 /**
  * Merge the outcomes of PARALLEL review axes (the default axes: standards +
@@ -200,20 +224,28 @@ export function mergeReviewOutcomes(
 	for (const o of outcomes) {
 		for (const req of o.result.requirements) {
 			const existing = requirementsById.get(req.id);
-			if (!existing || STATUS_ORDER[req.status] > STATUS_ORDER[existing.status]) {
+			if (
+				!existing ||
+				STATUS_ORDER[req.status] > STATUS_ORDER[existing.status]
+			) {
 				requirementsById.set(req.id, req);
 			}
 		}
 	}
 	const verdict = outcomes.reduce<ReviewResult["verdict"]>(
-		(worst, o) => (VERDICT_ORDER[o.result.verdict] > VERDICT_ORDER[worst] ? o.result.verdict : worst),
+		(worst, o) =>
+			VERDICT_ORDER[o.result.verdict] > VERDICT_ORDER[worst]
+				? o.result.verdict
+				: worst,
 		"ship",
 	);
 	return {
 		result: {
 			verdict,
 			findings,
-			requirements: [...requirementsById.values()].sort((a, b) => (a.id < b.id ? -1 : 1)),
+			requirements: [...requirementsById.values()].sort((a, b) =>
+				a.id < b.id ? -1 : 1,
+			),
 		},
 		costUsd: outcomes.reduce((sum, o) => sum + (o.usage.cost_usd ?? 0), 0),
 	};
@@ -235,7 +267,9 @@ export function decideFirstEventAction(opts: {
 	firstEventArrived: boolean;
 }): "abort" | null {
 	if (opts.firstEventArrived) return null;
-	return opts.nowMs - opts.promptWrittenAtMs >= opts.deadlineMs ? "abort" : null;
+	return opts.nowMs - opts.promptWrittenAtMs >= opts.deadlineMs
+		? "abort"
+		: null;
 }
 
 /**
@@ -243,7 +277,10 @@ export function decideFirstEventAction(opts: {
  * the CAUSE (the initial model call emitted nothing) and the deadline, plus
  * the wall limit for context. Pure — hermetically tested.
  */
-export function firstEventTimeoutErrorMessage(deadlineMs: number, wallTimeoutMs: number): string {
+export function firstEventTimeoutErrorMessage(
+	deadlineMs: number,
+	wallTimeoutMs: number,
+): string {
 	return (
 		`Reviewer aborted: the first model call produced no events — no turn, tool, or ` +
 		`agent activity within ${formatDuration(deadlineMs)} (${deadlineMs} ms) of the ` +
@@ -259,7 +296,10 @@ export function firstEventTimeoutErrorMessage(deadlineMs: number, wallTimeoutMs:
  * noProgressErrorMessage (its "Worker aborted" wording doesn't fit the
  * reviewer). Pure — hermetically tested.
  */
-export function reviewNoProgressErrorMessage(windowMs: number, wallTimeoutMs: number): string {
+export function reviewNoProgressErrorMessage(
+	windowMs: number,
+	wallTimeoutMs: number,
+): string {
 	return (
 		`Reviewer aborted: no progress — no RPC activity (turns, tool calls, or events) ` +
 		`observed for ${formatDuration(windowMs)} (${windowMs} ms); wall limit is ` +
@@ -273,7 +313,9 @@ export function reviewNoProgressErrorMessage(windowMs: number, wallTimeoutMs: nu
  * structured report. Only supports personas with the 'findings' output
  * contract (report-style personas are a future concern).
  */
-export async function forkedReview(opts: ForkReviewOptions): Promise<ReviewOutcome> {
+export async function forkedReview(
+	opts: ForkReviewOptions,
+): Promise<ReviewOutcome> {
 	const persona = opts.persona ?? DEFAULT_PERSONA;
 	if (persona.output.kind !== "findings") {
 		throw new Error(
@@ -295,10 +337,14 @@ export async function forkedReview(opts: ForkReviewOptions): Promise<ReviewOutco
 	};
 
 	const args = [
-		"--mode", "rpc",
-		"--fork", opts.sessionFile,
-		"--session-dir", opts.sessionDir,
-		"--model", opts.model,
+		"--mode",
+		"rpc",
+		"--fork",
+		opts.sessionFile,
+		"--session-dir",
+		opts.sessionDir,
+		"--model",
+		opts.model,
 		// --no-extensions: the reviewer loads ONLY the findings extension (see
 		// worker.ts buildWorkerArgs for why discovery must be disabled).
 		"--no-extensions",
@@ -307,34 +353,39 @@ export async function forkedReview(opts: ForkReviewOptions): Promise<ReviewOutco
 		// omitted when the flag is disabled so an operator can restore the
 		// verbose prefix.
 		...(opts.slimWorkerPrompt === false ? [] : ["--no-skills"]),
-		"--extension", FINDINGS_EXTENSION_PATH,
-		"--extension", TOOL_GUARD_EXTENSION_PATH,
-		"--extension", REASONING_EXCLUDE_EXTENSION_PATH,
-		"--extension", SESSION_ID_EXTENSION_PATH,
+		"--extension",
+		FINDINGS_EXTENSION_PATH,
+		"--extension",
+		TOOL_GUARD_EXTENSION_PATH,
+		"--extension",
+		REASONING_EXCLUDE_EXTENSION_PATH,
+		"--extension",
+		SESSION_ID_EXTENSION_PATH,
 		...(opts.serviceTier ? ["--extension", SERVICE_TIER_EXTENSION_PATH] : []),
-		"--append-system-prompt", promptPath,
+		"--append-system-prompt",
+		promptPath,
 	];
 	const invocation = getPiInvocation(args);
 	const proc: ChildProcess = spawn(invocation.command, invocation.args, {
 		cwd: opts.cwd,
 		shell: false,
 		stdio: ["pipe", "pipe", "pipe"],
-			env: {
-				...process.env,
-				...(opts.serviceTier ? { PI_TASK_SERVICE_TIER: opts.serviceTier } : {}),
-				...(opts.serviceTierExcludes?.length
-					? { PI_TASK_SERVICE_TIER_EXCLUDES: opts.serviceTierExcludes.join(",") }
-					: {}),
-				...(opts.providerOnly?.length
-					? { PI_TASK_PROVIDER_ONLY: opts.providerOnly.join(",") }
-					: {}),
-				// Session-id (wave-4): mirrors spawnWorkerSession — the reviewer's
-				// calls carry the run id as session_id too.
-				...(opts.sessionId ? { PI_TASK_SESSION_ID: opts.sessionId } : {}),
-				// Reasoning-exclusion (wave-1): mirrors spawnWorkerSession — the
-				// reviewer's reasoning is excluded too (transcript stays flat).
-				PI_TASK_EXCLUDE_REASONING: "1",
-			},
+		env: {
+			...process.env,
+			...(opts.serviceTier ? { PI_TASK_SERVICE_TIER: opts.serviceTier } : {}),
+			...(opts.serviceTierExcludes?.length
+				? { PI_TASK_SERVICE_TIER_EXCLUDES: opts.serviceTierExcludes.join(",") }
+				: {}),
+			...(opts.providerOnly?.length
+				? { PI_TASK_PROVIDER_ONLY: opts.providerOnly.join(",") }
+				: {}),
+			// Session-id (wave-4): mirrors spawnWorkerSession — the reviewer's
+			// calls carry the run id as session_id too.
+			...(opts.sessionId ? { PI_TASK_SESSION_ID: opts.sessionId } : {}),
+			// Reasoning-exclusion (wave-1): mirrors spawnWorkerSession — the
+			// reviewer's reasoning is excluded too (transcript stays flat).
+			PI_TASK_EXCLUDE_REASONING: "1",
+		},
 	});
 
 	const state = createWorkerEventState();
@@ -364,7 +415,15 @@ export async function forkedReview(opts: ForkReviewOptions): Promise<ReviewOutco
 	let noProgressFired = false;
 	let firstEventTimer: NodeJS.Timeout | null = null;
 
-	const processEvent = (event: any): void => {
+	// The JSONL RPC stream is untyped at this seam (worker.ts exposes raw
+	// events); narrow to the fields the reducer and report capture inspect.
+	const processEvent = (raw: unknown): void => {
+		const event = raw as {
+			type?: string;
+			toolName?: string;
+			isError?: boolean;
+			result?: { details?: unknown };
+		};
 		// Any RPC line on stdout counts as activity: resets the no-progress
 		// watchdog's clock and satisfies the first-call fail-fast deadline.
 		lastActivityMs = Date.now();
@@ -377,14 +436,21 @@ export async function forkedReview(opts: ForkReviewOptions): Promise<ReviewOutco
 		}
 		// An in-flight tool execution counts as progress even when it streams
 		// nothing (a long silent bash/test tool is legitimate); track depth.
-		if (event?.type === "tool_execution_start") toolCallDepth++;
-		if (event?.type === "tool_execution_end") toolCallDepth = Math.max(0, toolCallDepth - 1);
+		if (
+			event.type === "tool_execution_start" ||
+			event.type === "tool_execution_end"
+		) {
+			toolCallDepth = Math.max(
+				0,
+				toolCallDepth + (event.type === "tool_execution_start" ? 1 : -1),
+			);
+		}
 		// Reuse the worker reducer for usage accumulation (turns/tokens/cost).
 		const { updates } = reduceWorkerEvent(state, event);
 		for (const u of updates) opts.onUpdate?.(u);
 		// Capture the structured report (pi already validated it).
 		if (
-			event?.type === "tool_execution_end" &&
+			event.type === "tool_execution_end" &&
 			event.toolName === "report_findings" &&
 			!event.isError &&
 			event.result?.details
@@ -395,11 +461,20 @@ export async function forkedReview(opts: ForkReviewOptions): Promise<ReviewOutco
 		// once with a report_findings reminder, then fail the review. Reuses
 		// worker.ts's exported decideIdleAction + AGENT_SETTLED_EVENT.
 		if (!aborted && !failed) {
-			const action = decideIdleAction(event?.type, reportPayload !== null, nudged);
+			const action = decideIdleAction(
+				event.type ?? "",
+				reportPayload !== null,
+				nudged,
+			);
 			if (action === "nudge") {
 				nudged = true;
 				try {
-					proc.stdin!.write(JSON.stringify({ type: "prompt", message: REVIEW_IDLE_NUDGE_PROMPT }) + "\n");
+					proc.stdin!.write(
+						JSON.stringify({
+							type: "prompt",
+							message: REVIEW_IDLE_NUDGE_PROMPT,
+						}) + "\n",
+					);
 				} catch {
 					// stdin may already be closed — the close handler reports the exit.
 				}
@@ -410,7 +485,7 @@ export async function forkedReview(opts: ForkReviewOptions): Promise<ReviewOutco
 	};
 
 	attachJsonlReader(proc.stdout!, processEvent);
-	proc.stderr!.on("data", (d) => (stderrOutput += d.toString()));
+	proc.stderr!.on("data", (d: Buffer) => (stderrOutput += d.toString()));
 
 	let resolveOutcome!: (o: ReviewOutcome) => void;
 	let rejectOutcome!: (e: Error) => void;
@@ -450,7 +525,8 @@ export async function forkedReview(opts: ForkReviewOptions): Promise<ReviewOutco
 			return;
 		}
 		const settled = settleReview(reportPayload, code ?? 1, stderrOutput);
-		if (settled.ok) resolveOutcome({ result: settled.result, usage: state.usage });
+		if (settled.ok)
+			resolveOutcome({ result: settled.result, usage: state.usage });
 		else rejectOutcome(settled.error);
 	});
 	proc.on("error", (err) => {
@@ -521,10 +597,17 @@ export async function forkedReview(opts: ForkReviewOptions): Promise<ReviewOutco
 	// unguarded throw (e.g. EPIPE) would surface as an unhandled error
 	// instead of a precise spawn-write rejection (R8).
 	try {
-		proc.stdin!.write(JSON.stringify({ type: "prompt", message: buildReviewPrompt(opts) }) + "\n");
+		proc.stdin!.write(
+			JSON.stringify({ type: "prompt", message: buildReviewPrompt(opts) }) +
+				"\n",
+		);
 	} catch (err) {
 		proc.kill("SIGKILL");
-		rejectOutcome(new Error(`Failed to write review prompt to reviewer: ${(err as Error).message}`));
+		rejectOutcome(
+			new Error(
+				`Failed to write review prompt to reviewer: ${(err as Error).message}`,
+			),
+		);
 		return outcome;
 	}
 
@@ -534,7 +617,8 @@ export async function forkedReview(opts: ForkReviewOptions): Promise<ReviewOutco
 	// emitting zero RPC events. Any first event disarms this one-shot timer;
 	// expiry aborts and rejects naming the stalled call — minutes, not the
 	// 20-min wall. Cleared on close/error (see the close handler above).
-	const firstEventTimeoutMs = opts.firstEventTimeoutMs ?? REVIEW_FIRST_EVENT_TIMEOUT_MS;
+	const firstEventTimeoutMs =
+		opts.firstEventTimeoutMs ?? REVIEW_FIRST_EVENT_TIMEOUT_MS;
 	const promptWrittenAtMs = Date.now();
 	firstEventTimer = setTimeout(() => {
 		firstEventTimer = null;
@@ -546,7 +630,9 @@ export async function forkedReview(opts: ForkReviewOptions): Promise<ReviewOutco
 				firstEventArrived,
 			}) === "abort"
 		) {
-			failReview(firstEventTimeoutErrorMessage(firstEventTimeoutMs, wallTimeoutMs));
+			failReview(
+				firstEventTimeoutErrorMessage(firstEventTimeoutMs, wallTimeoutMs),
+			);
 		}
 	}, firstEventTimeoutMs);
 
@@ -556,7 +642,8 @@ export async function forkedReview(opts: ForkReviewOptions): Promise<ReviewOutco
 	// event resets the clock; an in-flight tool execution counts as progress
 	// (a long silent bash/test tool is legitimate). Reuses worker.ts's
 	// decideNoProgressAction (generic — fits the review path unchanged).
-	const noProgressTimeoutMs = opts.noProgressTimeoutMs ?? REVIEW_NO_PROGRESS_TIMEOUT_MS;
+	const noProgressTimeoutMs =
+		opts.noProgressTimeoutMs ?? REVIEW_NO_PROGRESS_TIMEOUT_MS;
 	noProgressTimer = setInterval(() => {
 		if (
 			!noProgressFired &&
@@ -572,7 +659,9 @@ export async function forkedReview(opts: ForkReviewOptions): Promise<ReviewOutco
 			noProgressFired = true;
 			if (noProgressTimer) clearInterval(noProgressTimer);
 			noProgressTimer = null;
-			failReview(reviewNoProgressErrorMessage(noProgressTimeoutMs, wallTimeoutMs));
+			failReview(
+				reviewNoProgressErrorMessage(noProgressTimeoutMs, wallTimeoutMs),
+			);
 		}
 	}, REVIEW_NO_PROGRESS_CHECK_INTERVAL_MS);
 

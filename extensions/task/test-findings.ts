@@ -43,7 +43,7 @@ function sampleReview(over: Partial<ReviewResult> = {}): ReviewResult {
 	};
 }
 
-export async function runTests(): Promise<void> {
+export function runTests(): Promise<void> {
 	const errors: string[] = [];
 	const check = (cond: boolean, msg: string): void => {
 		if (!cond) errors.push(msg);
@@ -53,15 +53,30 @@ export async function runTests(): Promise<void> {
 
 	// 1. Valid shapes pass
 	check(ok(sampleReview()), "well-formed ReviewResult should validate");
-	check(ok(sampleReview({ findings: [] })), "empty findings (clean review) should validate");
-	check(ok(sampleReview({ verdict: "ship" })), "verdict 'ship' should validate");
-	check(ok(sampleReview({ verdict: "escalate" })), "verdict 'escalate' should validate");
+	check(
+		ok(sampleReview({ findings: [] })),
+		"empty findings (clean review) should validate",
+	);
+	check(
+		ok(sampleReview({ verdict: "ship" })),
+		"verdict 'ship' should validate",
+	);
+	check(
+		ok(sampleReview({ verdict: "escalate" })),
+		"verdict 'escalate' should validate",
+	);
 	check(findingOk(sampleFinding()), "well-formed Finding should validate");
 	for (const p of ["P0", "P1", "P2", "P3"] as const) {
-		check(findingOk(sampleFinding({ priority: p })), `priority ${p} should validate`);
+		check(
+			findingOk(sampleFinding({ priority: p })),
+			`priority ${p} should validate`,
+		);
 	}
 	for (const s of ["met", "unmet", "uncertain"] as const) {
-		check(ok(sampleReview({ requirements: [{ id: "R1", status: s }] })), `requirement status '${s}' should validate`);
+		check(
+			ok(sampleReview({ requirements: [{ id: "R1", status: s }] })),
+			`requirement status '${s}' should validate`,
+		);
 	}
 
 	// 2. Missing required fields are rejected
@@ -75,34 +90,71 @@ export async function runTests(): Promise<void> {
 		delete f.verification;
 		check(!findingOk(f), "finding missing 'verification' should be rejected");
 	}
-	check(!ok(sampleReview({ requirements: [{ id: "R1" } as never] })), "requirement missing 'status' should be rejected");
+	check(
+		!ok(sampleReview({ requirements: [{ id: "R1" } as never] })),
+		"requirement missing 'status' should be rejected",
+	);
 
 	// 3. Closed enums reject unknown values
-	check(!findingOk(sampleFinding({ priority: "P5" as never })), "priority 'P5' should be rejected");
-	check(!ok(sampleReview({ verdict: "maybe" as never })), "verdict 'maybe' should be rejected");
-	check(!ok(sampleReview({ requirements: [{ id: "R1", status: "done" as never }] })), "requirement status 'done' should be rejected");
+	check(
+		!findingOk(sampleFinding({ priority: "P5" as never })),
+		"priority 'P5' should be rejected",
+	);
+	check(
+		!ok(sampleReview({ verdict: "maybe" as never })),
+		"verdict 'maybe' should be rejected",
+	);
+	check(
+		!ok(
+			sampleReview({ requirements: [{ id: "R1", status: "done" as never }] }),
+		),
+		"requirement status 'done' should be rejected",
+	);
 
 	// 4. confidence is bounded [0,1]
-	check(!findingOk(sampleFinding({ confidence: 1.5 })), "confidence 1.5 should be rejected");
-	check(!findingOk(sampleFinding({ confidence: -0.1 })), "confidence -0.1 should be rejected");
-	check(findingOk(sampleFinding({ confidence: 0 })), "confidence 0 should validate");
-	check(findingOk(sampleFinding({ confidence: 1 })), "confidence 1 should validate");
+	check(
+		!findingOk(sampleFinding({ confidence: 1.5 })),
+		"confidence 1.5 should be rejected",
+	);
+	check(
+		!findingOk(sampleFinding({ confidence: -0.1 })),
+		"confidence -0.1 should be rejected",
+	);
+	check(
+		findingOk(sampleFinding({ confidence: 0 })),
+		"confidence 0 should validate",
+	);
+	check(
+		findingOk(sampleFinding({ confidence: 1 })),
+		"confidence 1 should validate",
+	);
 
 	// 5. Wrong container types are rejected
-	check(!ok(sampleReview({ findings: "none" as never })), "non-array findings should be rejected");
+	check(
+		!ok(sampleReview({ findings: "none" as never })),
+		"non-array findings should be rejected",
+	);
 
 	if (errors.length > 0) {
-		throw new Error("test-findings failed:\n  ✗ " + errors.join("\n  ✗ "));
+		return Promise.reject(
+			new Error("test-findings failed:\n  ✗ " + errors.join("\n  ✗ ")),
+		);
 	}
-	console.log("✓ ReviewResult/Finding schema: valid shapes pass, malformed rejected");
+	console.log(
+		"✓ ReviewResult/Finding schema: valid shapes pass, malformed rejected",
+	);
+	return Promise.resolve();
 }
 
 // Direct execution support: `npx tsx extensions/task/test-findings.ts`
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (
+	process.argv[1] &&
+	import.meta.url === pathToFileURL(process.argv[1]).href
+) {
 	runTests()
 		.then(() => process.exit(0))
 		.catch((err) => {
-			console.error(err.message ?? err);
+			console.error((err as Error).message ?? err);
 			process.exit(1);
 		});
 }

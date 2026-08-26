@@ -17,7 +17,13 @@ export interface WorkspaceContext {
 	containerPath?: string;
 	branchName: string;
 	/** Mirrors the ledger `workspaces` status enum; see ledger/store.ts. */
-	status: "provisioning" | "active" | "merging" | "cleaning_up" | "released" | "orphaned";
+	status:
+		| "provisioning"
+		| "active"
+		| "merging"
+		| "cleaning_up"
+		| "released"
+		| "orphaned";
 }
 
 /** How finished worker work integrates back (config-selected). */
@@ -45,14 +51,19 @@ export interface WorkspaceDriver {
 	 *  failures must not throw (local-only repos are supported). */
 	prepare?(): Promise<void>;
 	/** Provision an isolated workspace off `parentBranch` (default = base). */
-	createWorkspace(taskId: string, parentBranch?: string): Promise<WorkspaceContext>;
+	createWorkspace(
+		taskId: string,
+		parentBranch?: string,
+	): Promise<WorkspaceContext>;
 	/**
 	 * Deterministic merge of the workspace's changes back into the task
 	 * base. On success `conflicts` is empty; a residual-LM or human
 	 * escalation path is signalled via `conflicts` when the union
 	 * resolution cannot auto-resolve. Failed merges PRESERVE the workspace.
 	 */
-	mergeWorkspace(context: WorkspaceContext): Promise<{ success: boolean; conflicts?: string[] }>;
+	mergeWorkspace(
+		context: WorkspaceContext,
+	): Promise<{ success: boolean; conflicts?: string[] }>;
 	/** Remove the workspace after a verifiably-complete merge. */
 	cleanupWorkspace(context: WorkspaceContext): Promise<void>;
 	/** AI-authored empty integration base; returns its CHANGE id
@@ -60,7 +71,10 @@ export interface WorkspaceDriver {
 	prepareIntegrationBase?(goal: string): Promise<string>;
 	/** ONE atomic operation combining every worker's commits into the base
 	 *  (v1 ladder R1 — never per-workspace incremental squashes). */
-	combine?(baseChangeId: string, contexts: readonly WorkspaceContext[]): Promise<CombineOutcome>;
+	combine?(
+		baseChangeId: string,
+		contexts: readonly WorkspaceContext[],
+	): Promise<CombineOutcome>;
 	/** feature-branch mode: leave each worker's tip under a named bookmark
 	 *  for human review; returns the created bookmark names. */
 	publishBookmarks?(contexts: readonly WorkspaceContext[]): Promise<string[]>;
@@ -76,7 +90,10 @@ export interface WorkspaceDriver {
 export interface TaskBaseWorkspaceDriver extends WorkspaceDriver {
 	integrationMode: IntegrationMode;
 	prepareIntegrationBase(goal: string): Promise<string>;
-	combine(baseChangeId: string, contexts: readonly WorkspaceContext[]): Promise<CombineOutcome>;
+	combine(
+		baseChangeId: string,
+		contexts: readonly WorkspaceContext[],
+	): Promise<CombineOutcome>;
 	/** Materialize the integrated tree at projectDir. */
 	materialize(baseChangeId: string): Promise<void>;
 }

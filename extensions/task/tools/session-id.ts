@@ -26,7 +26,10 @@
  * enters prompt text, so the deterministic-prefix/cache rule is preserved.
  */
 
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type {
+	ExtensionAPI,
+	ExtensionContext,
+} from "@earendil-works/pi-coding-agent";
 
 export const SESSION_ID_ENV_VAR = "PI_TASK_SESSION_ID";
 /** Cap on a usable session_id; longer values are dropped, never truncated. */
@@ -40,7 +43,10 @@ export const SESSION_ID_MAX_LENGTH = 256;
  * identifier (>256 chars → DROPPED, never truncated) all return the input
  * as-is. Never mutates its input.
  */
-export function injectSessionId(payload: unknown, sessionId: string | undefined): unknown {
+export function injectSessionId(
+	payload: unknown,
+	sessionId: string | undefined,
+): unknown {
 	if (!sessionId) return payload;
 	if (sessionId.length > SESSION_ID_MAX_LENGTH) return payload; // dropped, never truncated
 	if (typeof payload !== "object" || payload === null) return payload;
@@ -66,29 +72,35 @@ export function resolveSessionId(
 let dropLogged = false;
 
 export default function (pi: ExtensionAPI) {
-	pi.on("before_provider_request", (event: { payload: unknown }, ctx: ExtensionContext) => {
-		// Read the identifier at REQUEST time so it reflects the current
-		// process/session rather than a stale load-time capture.
-		let piSessionId: string | undefined;
-		try {
-			const id = ctx?.sessionManager?.getSessionId?.();
-			if (typeof id === "string" && id.length > 0) piSessionId = id;
-		} catch {
-			piSessionId = undefined;
-		}
-		const sessionId = resolveSessionId(piSessionId, process.env[SESSION_ID_ENV_VAR]);
-		if (!sessionId) return; // strict no-op when no identifier is present
-		if (sessionId.length > SESSION_ID_MAX_LENGTH) {
-			// Drop (never truncate); log once per process so it is surfaceable.
-			if (!dropLogged) {
-				dropLogged = true;
-				console.warn(
-					`[session-id] session_id dropped: ${sessionId.length} chars exceeds the ` +
-						`${SESSION_ID_MAX_LENGTH}-char cap (not truncated); request sent without it`,
-				);
+	pi.on(
+		"before_provider_request",
+		(event: { payload: unknown }, ctx: ExtensionContext) => {
+			// Read the identifier at REQUEST time so it reflects the current
+			// process/session rather than a stale load-time capture.
+			let piSessionId: string | undefined;
+			try {
+				const id = ctx?.sessionManager?.getSessionId?.();
+				if (typeof id === "string" && id.length > 0) piSessionId = id;
+			} catch {
+				piSessionId = undefined;
 			}
-			return;
-		}
-		return injectSessionId(event.payload, sessionId) as never;
-	});
+			const sessionId = resolveSessionId(
+				piSessionId,
+				process.env[SESSION_ID_ENV_VAR],
+			);
+			if (!sessionId) return; // strict no-op when no identifier is present
+			if (sessionId.length > SESSION_ID_MAX_LENGTH) {
+				// Drop (never truncate); log once per process so it is surfaceable.
+				if (!dropLogged) {
+					dropLogged = true;
+					console.warn(
+						`[session-id] session_id dropped: ${sessionId.length} chars exceeds the ` +
+							`${SESSION_ID_MAX_LENGTH}-char cap (not truncated); request sent without it`,
+					);
+				}
+				return;
+			}
+			return injectSessionId(event.payload, sessionId);
+		},
+	);
 }

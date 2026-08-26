@@ -25,12 +25,18 @@ export class EnvironmentVerificationDriver implements VerificationDriver {
 		this.name = `verify-${env.name}`;
 	}
 
-	async runVerification(context: WorkspaceContext, commands: string[]): Promise<VerificationResult> {
+	async runVerification(
+		context: WorkspaceContext,
+		commands: string[],
+	): Promise<VerificationResult> {
 		const resolved = await this.#env.resolvePath(context);
 		return runVerification(commands, {
 			cwd: resolved.effectivePath,
 			exec: (command, args, execOptions) =>
-				this.#env.exec(command, args, { cwd: execOptions.cwd, timeoutMs: execOptions.timeoutMs }),
+				this.#env.exec(command, args, {
+					cwd: execOptions.cwd,
+					timeoutMs: execOptions.timeoutMs,
+				}),
 		});
 	}
 }
@@ -40,7 +46,10 @@ export async function verifyThroughEnvironment(
 	env: EnvironmentDriver,
 	cwd: string,
 	commands: string[],
-	options?: Pick<VerifyOptions, "commandTimeoutMs" | "wallTimeoutMs" | "graceMs">,
+	options?: Pick<
+		VerifyOptions,
+		"commandTimeoutMs" | "wallTimeoutMs" | "graceMs"
+	>,
 ): Promise<VerificationResult> {
 	const resolved = await env.resolvePath({
 		taskId: "verify",
@@ -51,7 +60,10 @@ export async function verifyThroughEnvironment(
 	return runVerification(commands, {
 		cwd: resolved.effectivePath,
 		exec: (command, args, execOptions) =>
-			env.exec(command, args, { cwd: execOptions.cwd, timeoutMs: execOptions.timeoutMs }),
+			env.exec(command, args, {
+				cwd: execOptions.cwd,
+				timeoutMs: execOptions.timeoutMs,
+			}),
 		...(options ?? {}),
 	});
 }

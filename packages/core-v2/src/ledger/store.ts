@@ -31,7 +31,13 @@ export type TaskStatus =
 export type PlanMode = "prewalk" | "bundle" | "fork" | "cold";
 export type SessionRole = "worker" | "reviewer";
 export type SessionStatus = "active" | "yielded" | "exhausted" | "crashed";
-export type WorkspaceStatus = "provisioning" | "active" | "merging" | "cleaning_up" | "released" | "orphaned";
+export type WorkspaceStatus =
+	| "provisioning"
+	| "active"
+	| "merging"
+	| "cleaning_up"
+	| "released"
+	| "orphaned";
 
 export interface NewTask {
 	id: string;
@@ -165,7 +171,9 @@ const MIGRATIONS: Migration[] = [
 ];
 
 function migrate(db: DatabaseSync): void {
-	const row = db.prepare("PRAGMA user_version").get() as { user_version: number };
+	const row = db.prepare("PRAGMA user_version").get() as {
+		user_version: number;
+	};
 	const current = row.user_version ?? 0;
 	for (const migration of MIGRATIONS) {
 		if (migration.version > current) {
@@ -213,33 +221,43 @@ export class LedgerStore {
 
 	getTask(id: string): TaskRow | null {
 		const row = this.db.prepare("SELECT * FROM tasks WHERE id = ?").get(id) as
-			| (Record<string, unknown> & { id: string })
-			| undefined;
+			(Record<string, unknown> & { id: string }) | undefined;
 		return row ? rowToTask(row) : null;
 	}
 
 	setTaskStatus(id: string, status: TaskStatus): void {
 		this.db
-			.prepare("UPDATE tasks SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+			.prepare(
+				"UPDATE tasks SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+			)
 			.run(status, id);
 	}
 
 	setTaskPlanMode(id: string, planMode: PlanMode): void {
 		this.db
-			.prepare("UPDATE tasks SET plan_mode = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+			.prepare(
+				"UPDATE tasks SET plan_mode = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+			)
 			.run(planMode, id);
 	}
 
 	incrementRetry(id: string): void {
 		this.db
-			.prepare("UPDATE tasks SET retry_count = retry_count + 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+			.prepare(
+				"UPDATE tasks SET retry_count = retry_count + 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+			)
 			.run(id);
 	}
 
 	listTasks(status?: TaskStatus): TaskRow[] {
 		const rows = status
-			? (this.db.prepare("SELECT * FROM tasks WHERE status = ?").all(status) as Record<string, unknown>[])
-			: (this.db.prepare("SELECT * FROM tasks").all() as Record<string, unknown>[]);
+			? (this.db
+					.prepare("SELECT * FROM tasks WHERE status = ?")
+					.all(status) as Record<string, unknown>[])
+			: (this.db.prepare("SELECT * FROM tasks").all() as Record<
+					string,
+					unknown
+				>[]);
 		return rows.map(rowToTask);
 	}
 
@@ -251,29 +269,45 @@ export class LedgerStore {
 				`INSERT INTO micro_sessions (id, task_id, role, status, turn_count, yield_payload)
 					 VALUES (?, ?, ?, 'active', ?, ?)`,
 			)
-			.run(session.id, session.taskId, session.role, session.turnCount ?? 0, session.yieldPayload ?? null);
+			.run(
+				session.id,
+				session.taskId,
+				session.role,
+				session.turnCount ?? 0,
+				session.yieldPayload ?? null,
+			);
 	}
 
 	getMicroSession(id: string): MicroSessionRow | null {
-		const row = this.db.prepare("SELECT * FROM micro_sessions WHERE id = ?").get(id) as
-			| (Record<string, unknown> & { id: string })
-			| undefined;
+		const row = this.db
+			.prepare("SELECT * FROM micro_sessions WHERE id = ?")
+			.get(id) as (Record<string, unknown> & { id: string }) | undefined;
 		return row ? rowToSession(row) : null;
 	}
 
-	setSessionStatus(id: string, status: SessionStatus, yieldPayload?: string | null): void {
+	setSessionStatus(
+		id: string,
+		status: SessionStatus,
+		yieldPayload?: string | null,
+	): void {
 		if (yieldPayload !== undefined) {
 			this.db
-				.prepare("UPDATE micro_sessions SET status = ?, yield_payload = ? WHERE id = ?")
+				.prepare(
+					"UPDATE micro_sessions SET status = ?, yield_payload = ? WHERE id = ?",
+				)
 				.run(status, yieldPayload, id);
 		} else {
-			this.db.prepare("UPDATE micro_sessions SET status = ? WHERE id = ?").run(status, id);
+			this.db
+				.prepare("UPDATE micro_sessions SET status = ? WHERE id = ?")
+				.run(status, id);
 		}
 	}
 
 	heartbeat(id: string): void {
 		this.db
-			.prepare("UPDATE micro_sessions SET last_heartbeat_at = CURRENT_TIMESTAMP WHERE id = ?")
+			.prepare(
+				"UPDATE micro_sessions SET last_heartbeat_at = CURRENT_TIMESTAMP WHERE id = ?",
+			)
 			.run(id);
 	}
 
@@ -287,17 +321,29 @@ export class LedgerStore {
 	// ─── routing_feedback ──────────────────────────────────────────────
 
 	recordRoutingFeedback(repo: string, mode: string, hit: number): void {
-		this.db.prepare("INSERT INTO routing_feedback (repo, mode, hit) VALUES (?, ?, ?)").run(repo, mode, hit);
+		this.db
+			.prepare(
+				"INSERT INTO routing_feedback (repo, mode, hit) VALUES (?, ?, ?)",
+			)
+			.run(repo, mode, hit);
 	}
 
 	/** Raw per-observation feedback rows for a repo, oldest first — the
 	 *  router's aggregateRoutingFeedback consumes these directly (§5.4);
 	 *  never feed aggregated counts back into the aggregator. */
-	routingRows(repo: string): Array<{ repo: string; mode: string; hit: number }> {
+	routingRows(
+		repo: string,
+	): Array<{ repo: string; mode: string; hit: number }> {
 		const rows = this.db
-			.prepare("SELECT repo, mode, hit FROM routing_feedback WHERE repo = ? ORDER BY rowid")
+			.prepare(
+				"SELECT repo, mode, hit FROM routing_feedback WHERE repo = ? ORDER BY rowid",
+			)
 			.all(repo) as Array<{ repo: string; mode: string; hit: number }>;
-		return rows.map((r) => ({ repo: String(r.repo), mode: String(r.mode), hit: Number(r.hit) }));
+		return rows.map((r) => ({
+			repo: String(r.repo),
+			mode: String(r.mode),
+			hit: Number(r.hit),
+		}));
 	}
 
 	// ─── workspaces ────────────────────────────────────────────────────
@@ -319,15 +365,17 @@ export class LedgerStore {
 	}
 
 	getWorkspace(id: string): WorkspaceRow | null {
-		const row = this.db.prepare("SELECT * FROM workspaces WHERE id = ?").get(id) as
-			| (Record<string, unknown> & { id: string })
-			| undefined;
+		const row = this.db
+			.prepare("SELECT * FROM workspaces WHERE id = ?")
+			.get(id) as (Record<string, unknown> & { id: string }) | undefined;
 		return row ? rowToWorkspace(row) : null;
 	}
 
 	setWorkspaceStatus(id: string, status: WorkspaceStatus): void {
 		this.db
-			.prepare("UPDATE workspaces SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+			.prepare(
+				"UPDATE workspaces SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+			)
 			.run(status, id);
 	}
 
@@ -341,9 +389,11 @@ export class LedgerStore {
 	// ─── workflow approvals (human gate, FR-2/FR-7 planning-only workflow) ──
 
 	getWorkflowApproval(dagId: string): WorkflowApprovalRow | null {
-		const row = this.db.prepare("SELECT dag_id, approved, updated_at FROM workflow_approvals WHERE dag_id = ?").get(dagId) as
-			| Record<string, unknown>
-			| undefined;
+		const row = this.db
+			.prepare(
+				"SELECT dag_id, approved, updated_at FROM workflow_approvals WHERE dag_id = ?",
+			)
+			.get(dagId) as Record<string, unknown> | undefined;
 		if (!row) return null;
 		return {
 			dagId: String(row.dag_id),
@@ -368,11 +418,21 @@ export class LedgerStore {
 	}
 
 	clearWorkflowApproval(dagId: string): void {
-		this.db.prepare("DELETE FROM workflow_approvals WHERE dag_id = ?").run(dagId);
+		this.db
+			.prepare("DELETE FROM workflow_approvals WHERE dag_id = ?")
+			.run(dagId);
 	}
 
-	listWorkflowApprovals(): Array<{ dagId: string; approved: boolean; updatedAt: string }> {
-		const rows = this.db.prepare("SELECT dag_id, approved, updated_at FROM workflow_approvals ORDER BY dag_id").all() as Record<string, unknown>[];
+	listWorkflowApprovals(): Array<{
+		dagId: string;
+		approved: boolean;
+		updatedAt: string;
+	}> {
+		const rows = this.db
+			.prepare(
+				"SELECT dag_id, approved, updated_at FROM workflow_approvals ORDER BY dag_id",
+			)
+			.all() as Record<string, unknown>[];
 		return rows.map((r) => ({
 			dagId: String(r.dag_id),
 			approved: Number(r.approved) === 1,
@@ -399,7 +459,11 @@ export class LedgerStore {
 			"UPDATE tasks SET status = 'failed', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
 		);
 		for (const task of inFlight) {
-			const decision = reconcileCrashedTask({ status: task.status, retryCount: task.retryCount, maxRetries: task.maxRetries });
+			const decision = reconcileCrashedTask({
+				status: task.status,
+				retryCount: task.retryCount,
+				maxRetries: task.maxRetries,
+			});
 			if (decision.action === "requeue") {
 				requeueStmt.run(task.id);
 				requeued.push(task.id);
@@ -414,12 +478,20 @@ export class LedgerStore {
 
 // ─── Row mappers (snake_case DDL → camelCase TS) ─────────────────────
 
+/** Text column reader: strings pass through; other JSON scalars render
+ *  via JSON so objects can never become '[object Object]'. */
+function textColumn(value: unknown): string {
+	if (typeof value === "string") return value;
+	return JSON.stringify(value) ?? "";
+}
+
 function rowToTask(row: Record<string, unknown>): TaskRow {
 	return {
 		id: String(row.id),
 		status: row.status as TaskStatus,
 		goal: String(row.goal),
-		parentBranch: row.parent_branch === null ? null : String(row.parent_branch),
+		parentBranch:
+			row.parent_branch === null ? null : textColumn(row.parent_branch),
 		planMode: row.plan_mode === null ? null : (row.plan_mode as PlanMode),
 		retryCount: Number(row.retry_count),
 		maxRetries: Number(row.max_retries),
@@ -435,8 +507,10 @@ function rowToSession(row: Record<string, unknown>): MicroSessionRow {
 		role: row.role as SessionRole,
 		status: row.status as SessionStatus,
 		turnCount: Number(row.turn_count),
-		yieldPayload: row.yield_payload === null ? null : String(row.yield_payload),
-		lastHeartbeatAt: row.last_heartbeat_at === null ? null : String(row.last_heartbeat_at),
+		yieldPayload:
+			row.yield_payload === null ? null : textColumn(row.yield_payload),
+		lastHeartbeatAt:
+			row.last_heartbeat_at === null ? null : textColumn(row.last_heartbeat_at),
 	};
 }
 
@@ -446,7 +520,8 @@ function rowToWorkspace(row: Record<string, unknown>): WorkspaceRow {
 		taskId: String(row.task_id),
 		driver: String(row.driver),
 		hostPath: String(row.host_path),
-		containerPath: row.container_path === null ? null : String(row.container_path),
+		containerPath:
+			row.container_path === null ? null : textColumn(row.container_path),
 		branchName: String(row.branch_name),
 		status: row.status as WorkspaceStatus,
 		createdAt: String(row.created_at),
@@ -466,16 +541,19 @@ export interface WorkflowApprovalRow {
 // ─── Boot reconciliation policy (pure, unit-testable) ────────────────
 
 /** Statuses that indicate a task was mid-flight when the daemon died. */
-export const IN_FLIGHT_STATUSES: TaskStatus[] = ["planning", "executing", "verifying", "reviewing"];
+export const IN_FLIGHT_STATUSES: TaskStatus[] = [
+	"planning",
+	"executing",
+	"verifying",
+	"reviewing",
+];
 
 export function isInFlight(status: TaskStatus): boolean {
 	return (IN_FLIGHT_STATUSES as string[]).includes(status);
 }
 
 export type ReconcileDecision =
-	| { action: "keep" }
-	| { action: "requeue" }
-	| { action: "fail" };
+	{ action: "keep" } | { action: "requeue" } | { action: "fail" };
 
 /**
  * Pure crash-recovery policy (subsystems §4 / NFR-1): a task that was
@@ -488,5 +566,7 @@ export function reconcileCrashedTask(task: {
 	maxRetries: number;
 }): ReconcileDecision {
 	if (!isInFlight(task.status)) return { action: "keep" };
-	return task.retryCount < task.maxRetries ? { action: "requeue" } : { action: "fail" };
+	return task.retryCount < task.maxRetries
+		? { action: "requeue" }
+		: { action: "fail" };
 }

@@ -74,7 +74,8 @@ export interface BuildSummary {
 // ─── Per-node extraction (pure, R1 + R2) ─────────────────────────────
 
 function cacheWriteOf(receipt: TaskReceipt): number {
-	const maybe = (receipt as unknown as Record<string, unknown>).cacheWriteTokens;
+	const maybe = (receipt as unknown as Record<string, unknown>)
+		.cacheWriteTokens;
 	return typeof maybe === "number" && Number.isFinite(maybe) ? maybe : 0;
 }
 
@@ -128,9 +129,15 @@ function emptyAggregate(): AggregateSummary {
 	};
 }
 
-export function aggregateFromNodes(nodes: readonly NodeSummary[]): AggregateSummary {
+export function aggregateFromNodes(
+	nodes: readonly NodeSummary[],
+): AggregateSummary {
 	if (nodes.length === 0) return emptyAggregate();
-	const counts: Record<TaskReceipt["verdict"], number> = { ship: 0, escalate: 0, failed: 0 };
+	const counts: Record<TaskReceipt["verdict"], number> = {
+		ship: 0,
+		escalate: 0,
+		failed: 0,
+	};
 	let totalInputTokens = 0;
 	let totalOutputTokens = 0;
 	let totalCacheReadTokens = 0;
@@ -164,8 +171,13 @@ export function aggregateFromNodes(nodes: readonly NodeSummary[]): AggregateSumm
 
 // ─── Escalation digest (R1, deterministic) ───────────────────────────
 
-export function buildEscalationDigest(nodes: readonly NodeSummary[]): string | null {
-	const escalated = nodes.filter((n) => n.verdict === "escalate").map((n) => n.nodeId).sort();
+export function buildEscalationDigest(
+	nodes: readonly NodeSummary[],
+): string | null {
+	const escalated = nodes
+		.filter((n) => n.verdict === "escalate")
+		.map((n) => n.nodeId)
+		.sort();
 	if (escalated.length === 0) return null;
 	return `escalated: ${escalated.join(", ")}`;
 }
@@ -181,7 +193,9 @@ export function renderEscalationDigest(digest: string | null): string {
  * Pure: sorts by taskId, maps through nodeSummaryFromReceipt, aggregates,
  * and renders the single escalation digest.
  */
-export function buildBuildSummary(receipts: readonly TaskReceipt[]): BuildSummary {
+export function buildBuildSummary(
+	receipts: readonly TaskReceipt[],
+): BuildSummary {
 	const sorted = [...receipts].sort((a, b) => a.taskId.localeCompare(b.taskId));
 	const nodes = sorted.map(nodeSummaryFromReceipt);
 	const aggregate = aggregateFromNodes(nodes);
@@ -206,7 +220,10 @@ export function serializeBuildSummary(summary: BuildSummary): string {
  * Persist a BuildSummary to a file deterministically (sorted keys, stable
  * bytes). Creates parent directories as needed.
  */
-export function writeBuildSummary(filePath: string, summary: BuildSummary): void {
+export function writeBuildSummary(
+	filePath: string,
+	summary: BuildSummary,
+): void {
 	mkdirSync(dirname(filePath), { recursive: true });
 	const bytes = serializeBuildSummary(summary);
 	writeFileSync(filePath, bytes + "\n", "utf-8");

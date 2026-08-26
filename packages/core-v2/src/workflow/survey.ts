@@ -37,12 +37,15 @@
  * instead of a scan; the survey never bypasses a refused gate.
  */
 
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { readdirSync, statSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 
 import type { ExecutionBundle } from "../contracts/index.ts";
 import { isBundleUsable } from "../grounding/bundle.ts";
-import { estimateEntryTokens, type ContinuationEntry } from "../continuation/pruner.ts";
+import {
+	estimateEntryTokens,
+	type ContinuationEntry,
+} from "../continuation/pruner.ts";
 
 // ─── Report shape ─────────────────────────────────────────────────────
 
@@ -125,7 +128,8 @@ export interface SurveyInput {
 	 *  candidates absent from bundle.targetFiles become findings. */
 	bundleCandidates?: readonly string[] | undefined;
 	/** Continuation transcript shape + its token budget (optional). */
-	continuation?: { entries: readonly ContinuationEntry[]; budgetTokens: number } | undefined;
+	continuation?:
+		{ entries: readonly ContinuationEntry[]; budgetTokens: number } | undefined;
 	budget?: SurveyBudget | undefined;
 }
 
@@ -198,7 +202,8 @@ function walkTree(root: string, budget: Required<SurveyBudget>): WalkResult {
 		for (const entry of entries) {
 			const full = join(dir.path, entry.name);
 			if (entry.isDirectory()) {
-				if (dir.depth >= budget.maxDepth || SKIP_DIR_NAMES.has(entry.name)) continue;
+				if (dir.depth >= budget.maxDepth || SKIP_DIR_NAMES.has(entry.name))
+					continue;
 				queue.push({ path: full, depth: dir.depth + 1 });
 				continue;
 			}
@@ -268,7 +273,9 @@ function findingsFromBundle(
 		});
 	}
 	if (candidates !== undefined) {
-		const bundled = new Set(bundle.targetFiles.map((t) => resolve(root, t.hostPath)));
+		const bundled = new Set(
+			bundle.targetFiles.map((t) => resolve(root, t.hostPath)),
+		);
 		for (const c of candidates) {
 			if (!bundled.has(resolve(root, c))) {
 				out.push({
@@ -285,7 +292,10 @@ function findingsFromBundle(
 
 // ─── Continuation-derived findings ────────────────────────────────────
 
-function findingsFromContinuation(entries: readonly ContinuationEntry[], budgetTokens: number): SurveyFinding[] {
+function findingsFromContinuation(
+	entries: readonly ContinuationEntry[],
+	budgetTokens: number,
+): SurveyFinding[] {
 	let total = 0;
 	for (const e of entries) total += estimateEntryTokens(e);
 	if (total <= budgetTokens) return [];
@@ -348,23 +358,29 @@ export function gatewaySurveyGate(
 
 /** Denial outcome: typed, inspectable, and still side-effect-free. */
 export type SurveyOutcome =
-	| { kind: "report"; report: SurveyReport }
-	| { kind: "denied"; reason: string };
+	{ kind: "report"; report: SurveyReport } | { kind: "denied"; reason: string };
 
 /**
  * Run a read-only survey. Pure with respect to the tree: reads only,
  * writes nothing, spawns nothing, touches no ledger. Sync by design —
  * there is no session, retry, or clock anywhere under this call.
  */
-export function runWorkflowSurvey(input: SurveyInput, gate?: SurveyGate | undefined): SurveyOutcome {
+export function runWorkflowSurvey(
+	input: SurveyInput,
+	gate?: SurveyGate,
+): SurveyOutcome {
 	const permission: SurveyPermissionRequest = {
 		action: SURVEY_PERMISSION_ACTION,
 		detail: `read-only survey of ${input.root}`,
 	};
 	if (gate !== undefined && !gate.request(permission)) {
-		return { kind: "denied", reason: `survey gate denied ${permission.action} on ${input.root}` };
+		return {
+			kind: "denied",
+			reason: `survey gate denied ${permission.action} on ${input.root}`,
+		};
 	}
-	const gateDecision: SurveyGateDecision = gate === undefined ? "ungated" : "granted";
+	const gateDecision: SurveyGateDecision =
+		gate === undefined ? "ungated" : "granted";
 
 	const budget: Required<SurveyBudget> = {
 		maxFiles: input.budget?.maxFiles ?? DEFAULT_MAX_FILES,
@@ -377,10 +393,17 @@ export function runWorkflowSurvey(input: SurveyInput, gate?: SurveyGate | undefi
 	const walk = walkTree(input.root, budget);
 	findings.push(...walk.findings);
 	if (input.bundle !== undefined) {
-		findings.push(...findingsFromBundle(input.bundle, input.bundleCandidates, input.root));
+		findings.push(
+			...findingsFromBundle(input.bundle, input.bundleCandidates, input.root),
+		);
 	}
 	if (input.continuation !== undefined) {
-		findings.push(...findingsFromContinuation(input.continuation.entries, input.continuation.budgetTokens));
+		findings.push(
+			...findingsFromContinuation(
+				input.continuation.entries,
+				input.continuation.budgetTokens,
+			),
+		);
 	}
 
 	const deduped = dedupeFindings(findings);
@@ -425,6 +448,8 @@ export function renderSurveyReport(report: SurveyReport): string {
 		const cat = f.category === undefined ? "" : ` [${f.category}]`;
 		lines.push(`  ${f.severity}${cat} ${f.location}: ${f.message}`);
 	}
-	lines.push(`verdict: ${s.findingsProduced === 0 ? "clean" : s.truncated ? "bounded-findings" : "complete"}`);
+	lines.push(
+		`verdict: ${s.findingsProduced === 0 ? "clean" : s.truncated ? "bounded-findings" : "complete"}`,
+	);
 	return lines.join("\n");
 }

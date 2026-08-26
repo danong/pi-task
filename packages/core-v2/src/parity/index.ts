@@ -37,4 +37,8 @@ export {
 	serializeParityReport,
 	writeParityReport,
 } from "./report.ts";
-export { runParity, type ParityRunResult, type RunParityOptions } from "./harness.ts";
+export {
+	runParity,
+	type ParityRunResult,
+	type RunParityOptions,
+} from "./harness.ts";

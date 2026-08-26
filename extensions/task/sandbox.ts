@@ -77,9 +77,11 @@ export interface BuildBwrapOptions {
 	 * Orchestrator-created temp dirs that must stay visible inside the
 	 * namespace: the worker system-prompt dir and, when present, the
 	 * session dir. Both currently live under the OS tmpdir; --tmpfs /tmp
-	 * shadows it, so each is bound explicitly rw.
+	 * shadows it, so each is bound explicitly rw. Optional AND nullable
+	 * under exactOptionalPropertyTypes — the caller forwards its own
+	 * `string[] | undefined` field verbatim.
 	 */
-	tempDirs?: string[];
+	tempDirs?: string[] | undefined;
 	/**
 	 * The project repo root (where the shared jj store lives). Needed when
 	 * cwd differs from it — parallel workers run in jj workspaces under the
@@ -87,9 +89,10 @@ export interface BuildBwrapOptions {
 	 * SHARED store (the workspace's .jj/repo points at it; verified: a
 	 * read-only store fails the commit with EROFS). When set and != cwd,
 	 * its .jj/.git are bound rw. Omit when cwd IS the project (single
-	 * workers) — the cwd rw bind already covers the store.
+	 * workers) — the cwd rw bind already covers the store. Optional AND
+	 * nullable under exactOptionalPropertyTypes (see tempDirs).
 	 */
-	projectDir?: string;
+	projectDir?: string | undefined;
 }
 
 /**
@@ -127,10 +130,15 @@ export function buildBwrapArgs(opts: BuildBwrapOptions): string[] | null {
 
 	const args: string[] = [
 		// ── Strict policy base ──
-		"--ro-bind", "/", "/", // read-only root FIRST; rw binds below shadow it
-		"--dev", "/dev",
-		"--proc", "/proc",
-		"--tmpfs", "/tmp", // fresh per-worker scratchpad (no cross-worker leakage)
+		"--ro-bind",
+		"/",
+		"/", // read-only root FIRST; rw binds below shadow it
+		"--dev",
+		"/dev",
+		"--proc",
+		"/proc",
+		"--tmpfs",
+		"/tmp", // fresh per-worker scratchpad (no cross-worker leakage)
 		"--unshare-user",
 		"--unshare-pid",
 		"--die-with-parent",
@@ -259,7 +267,11 @@ export function resolveSandbox(
 	probe: () => boolean = probeBwrapAvailability,
 ): ResolvedSandbox {
 	const cfg: SandboxConfig = config
-		? { ...config, extraRoBinds: [...config.extraRoBinds], extraRwBinds: [...config.extraRwBinds] }
+		? {
+				...config,
+				extraRoBinds: [...config.extraRoBinds],
+				extraRwBinds: [...config.extraRwBinds],
+			}
 		: { ...DEFAULT_SANDBOX_CONFIG, extraRoBinds: [], extraRwBinds: [] };
 	if (!cfg.enabled) return { config: cfg, active: false };
 	return { config: cfg, active: probe() };
@@ -299,6 +311,11 @@ export function wrapWorkerInvocation(opts: {
 	if (bwrapArgs === null) return opts.invocation;
 	return {
 		command: opts.bwrapBinary ?? BWRAP_BINARY,
-		args: [...bwrapArgs, "--", opts.invocation.command, ...opts.invocation.args],
+		args: [
+			...bwrapArgs,
+			"--",
+			opts.invocation.command,
+			...opts.invocation.args,
+		],
 	};
 }

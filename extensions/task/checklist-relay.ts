@@ -41,6 +41,22 @@ export function createChecklistRelayState(): ChecklistRelayState {
 }
 
 /**
+ * Narrow an untrusted payload to a plain object record, or null.
+ * The relay only ever reads shallowly-typed fields off these records,
+ * so every field stays `unknown` until individually validated below.
+ */
+function asRecord(value: unknown): Record<string, unknown> | null {
+	return typeof value === "object" && value !== null
+		? (value as Record<string, unknown>)
+		: null;
+}
+
+/** Type guard keeping array payloads as `unknown[]` instead of `any[]`. */
+function isUnknownArray(value: unknown): value is unknown[] {
+	return Array.isArray(value);
+}
+
+/**
  * Fold one raw RPC event into relay state. Emits an update only when a
  * checklist call actually changed the reconstructed state; returns null
  * otherwise (non-checklist tools, errored calls, unknown actions).
@@ -50,7 +66,7 @@ export function reduceChecklistRelayEvent(
 	state: ChecklistRelayState,
 	event: unknown,
 ): { state: ChecklistRelayState; update: ChecklistProgress | null } {
-	const ev = event as Record<string, any> | null;
+	const ev = asRecord(event);
 	if (!ev || ev.toolName !== "checklist" || typeof ev.toolCallId !== "string") {
 		return { state, update: null };
 	}
@@ -58,7 +74,8 @@ export function reduceChecklistRelayEvent(
 	// Capture the action at start; consume it at end (mirrors the read-path
 	// correlation in worker.ts). A missing start event yields no update.
 	if (ev.type === "tool_execution_start") {
-		const action = typeof ev.args?.action === "string" ? ev.args.action : "";
+		const args = asRecord(ev.args);
+		const action = args && typeof args.action === "string" ? args.action : "";
 		state.pendingActions.set(ev.toolCallId, action);
 		return { state, update: null };
 	}
@@ -66,12 +83,15 @@ export function reduceChecklistRelayEvent(
 
 	const action = state.pendingActions.get(ev.toolCallId);
 	state.pendingActions.delete(ev.toolCallId);
-	if (action === undefined || ev.isError === true) return { state, update: null };
-	const details = ev.result?.details as Record<string, any> | undefined;
+	if (action === undefined || ev.isError === true)
+		return { state, update: null };
+	const result = asRecord(ev.result);
+	const details = result === null ? null : asRecord(result.details);
 
 	if (action === "init") {
 		// The tool reports the post-truncation item list — authoritative total.
-		if (!details || !Array.isArray(details.items)) return { state, update: null };
+		if (!details || !isUnknownArray(details.items))
+			return { state, update: null };
 		state.total = details.items.length;
 		state.remaining = state.total;
 		return { state, update: { done: 0, total: state.total } };
@@ -80,7 +100,8 @@ export function reduceChecklistRelayEvent(
 	// done / status: the tool reports the unchecked count. Duplicate marks
 	// (alreadyDone) carry no remaining field → no change.
 	const remaining = details?.remaining;
-	if (typeof remaining !== "number" || state.total === null) return { state, update: null };
+	if (typeof remaining !== "number" || state.total === null)
+		return { state, update: null };
 	state.remaining = remaining;
 	const done = Math.min(state.total, Math.max(0, state.total - remaining));
 	return { state, update: { done, total: state.total } };

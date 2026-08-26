@@ -79,10 +79,14 @@ function sectionLines(markdown: string, sectionName: string): string[] {
 
 /** Strip one leading list marker ("- ", "* ", "1. ", "2)") from a line. */
 function cleanListItem(line: string): string {
-	let s = line.trim();
+	const s = line.trim();
 	if (s.startsWith("- ") || s.startsWith("* ")) return s.slice(2).trim();
 	let digitsEnd = 0;
-	while (digitsEnd < s.length && s.charCodeAt(digitsEnd) >= 48 && s.charCodeAt(digitsEnd) <= 57) {
+	while (
+		digitsEnd < s.length &&
+		s.charCodeAt(digitsEnd) >= 48 &&
+		s.charCodeAt(digitsEnd) <= 57
+	) {
 		digitsEnd += 1;
 	}
 	if (digitsEnd > 0) {
@@ -124,14 +128,18 @@ export function validateSpec(specMarkdown: string): ValidatedSpec {
 	} catch (err) {
 		if (err instanceof SpecValidationError) {
 			throw new PlanValidationError(
-				err.missing === "requirements" ? "missing_requirements" : "missing_verification",
+				err.missing === "requirements"
+					? "missing_requirements"
+					: "missing_verification",
 				err.message,
 			);
 		}
 		throw err;
 	}
 
-	const badCommand = parsed.verificationCommands.find((c) => !isWellFormedBashLine(c));
+	const badCommand = parsed.verificationCommands.find(
+		(c) => !isWellFormedBashLine(c),
+	);
 	if (badCommand !== undefined) {
 		throw new PlanValidationError(
 			"bad_verification_command",
@@ -153,7 +161,10 @@ export function validateSpec(specMarkdown: string): ValidatedSpec {
 function parseTaskSpecGoal(specMarkdown: string): string {
 	const goal = sectionLines(specMarkdown, "goal").find((l) => l.length > 0);
 	if (goal === undefined) {
-		throw new PlanValidationError("missing_goal", 'spec has no "## Goal" section with a non-empty line');
+		throw new PlanValidationError(
+			"missing_goal",
+			'spec has no "## Goal" section with a non-empty line',
+		);
 	}
 	return goal;
 }

@@ -29,7 +29,13 @@
  * hooks.ts (throw-isolated, never crashes the pipeline).
  */
 
-import type { EventPattern, TaskLifecycleEvent, Unsubscribe, TaskGateway, TaskPlugin } from "../../contracts/task-plugin.ts";
+import type {
+	EventPattern,
+	TaskLifecycleEvent,
+	Unsubscribe,
+	TaskGateway,
+	TaskPlugin,
+} from "../../contracts/task-plugin.ts";
 
 /** Bounded event journal — oldest entries drop off first. */
 export const LIFECYCLE_COLLECTOR_MAX_EVENTS = 256;
@@ -57,9 +63,12 @@ const plugin: LifecycleCollectorPlugin = {
 		// keep a bounded in-memory journal. Unsubscribe stays captured so a
 		// host can detach (idempotent per the gateway contract).
 		const pattern: EventPattern = "*";
-		const unsubscribe: Unsubscribe = gateway.on(pattern, (event: TaskLifecycleEvent) => {
-			record(plugin, event);
-		});
+		const unsubscribe: Unsubscribe = gateway.on(
+			pattern,
+			(event: TaskLifecycleEvent) => {
+				record(plugin, event);
+			},
+		);
 		void unsubscribe;
 	},
 	onLifecycleEvent(event: TaskLifecycleEvent): void {
@@ -69,7 +78,10 @@ const plugin: LifecycleCollectorPlugin = {
 	},
 };
 
-function record(target: LifecycleCollectorPlugin, event: TaskLifecycleEvent): void {
+function record(
+	target: LifecycleCollectorPlugin,
+	event: TaskLifecycleEvent,
+): void {
 	target.journal.push(event);
 	if (target.journal.length > LIFECYCLE_COLLECTOR_MAX_EVENTS) {
 		target.journal.shift();

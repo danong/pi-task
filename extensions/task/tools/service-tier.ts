@@ -44,7 +44,12 @@ export function injectServiceTier(
 	if (!tier || !VALID_SERVICE_TIERS.has(tier)) return payload;
 	if (typeof payload !== "object" || payload === null) return payload;
 	const record = payload as Record<string, unknown>;
-	if (excludes && excludes.length > 0 && typeof record.model === "string" && excludes.includes(record.model)) {
+	if (
+		excludes &&
+		excludes.length > 0 &&
+		typeof record.model === "string" &&
+		excludes.includes(record.model)
+	) {
 		return payload;
 	}
 	return { ...record, service_tier: tier };
@@ -65,7 +70,12 @@ export function injectProviderOnly(
 	if (!only || only.length === 0) return payload;
 	if (typeof payload !== "object" || payload === null) return payload;
 	const record = payload as Record<string, unknown>;
-	if (excludes && excludes.length > 0 && typeof record.model === "string" && excludes.includes(record.model)) {
+	if (
+		excludes &&
+		excludes.length > 0 &&
+		typeof record.model === "string" &&
+		excludes.includes(record.model)
+	) {
 		return payload;
 	}
 	return { ...record, provider: { only: [...only], allow_fallbacks: false } };
@@ -82,8 +92,10 @@ export default function (pi: ExtensionAPI) {
 		.split(",")
 		.map((m) => m.trim())
 		.filter((m) => m.length > 0);
-	pi.on("before_provider_request", (event: { payload: unknown }) => {
-		const withTier = tier ? injectServiceTier(event.payload, tier, excludes) : event.payload;
-		return injectProviderOnly(withTier, providerOnly, excludes) as never;
+	pi.on("before_provider_request", (event) => {
+		const withTier = tier
+			? injectServiceTier(event.payload, tier, excludes)
+			: event.payload;
+		return injectProviderOnly(withTier, providerOnly, excludes);
 	});
 }

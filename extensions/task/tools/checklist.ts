@@ -47,8 +47,13 @@ export interface ChecklistState {
 }
 
 /** Create checklist state from item texts; truncates at maxItems (default 12). */
-export function createChecklistState(items: string[], maxItems = MAX_CHECKLIST_ITEMS): ChecklistState {
-	return { items: items.slice(0, maxItems).map((text) => ({ text, done: false })) };
+export function createChecklistState(
+	items: string[],
+	maxItems = MAX_CHECKLIST_ITEMS,
+): ChecklistState {
+	return {
+		items: items.slice(0, maxItems).map((text) => ({ text, done: false })),
+	};
 }
 
 /**
@@ -63,12 +68,26 @@ export function createChecklistState(items: string[], maxItems = MAX_CHECKLIST_I
 export function markChecklistDone(
 	state: ChecklistState,
 	index: number,
-): { ok: true; state: ChecklistState; remaining: number } | { ok: false; error: string; alreadyDone: boolean } {
-	if (index === undefined || index < 0 || index >= state.items.length) {
-		return { ok: false, error: `Index ${index} invalid (expected 0..${state.items.length - 1}).`, alreadyDone: false };
+):
+	| { ok: true; state: ChecklistState; remaining: number }
+	| { ok: false; error: string; alreadyDone: boolean } {
+	if (
+		index < 0 ||
+		index >= state.items.length ||
+		state.items[index] === undefined
+	) {
+		return {
+			ok: false,
+			error: `Index ${index} invalid (expected 0..${state.items.length - 1}).`,
+			alreadyDone: false,
+		};
 	}
 	if (state.items[index].done) {
-		return { ok: false, error: `Item ${index} ("${state.items[index].text}") was already done.`, alreadyDone: true };
+		return {
+			ok: false,
+			error: `Item ${index} ("${state.items[index].text}") was already done.`,
+			alreadyDone: true,
+		};
 	}
 	state.items[index].done = true;
 	return { ok: true, state, remaining: checklistRemaining(state) };
@@ -113,16 +132,19 @@ export function shouldInjectChecklistReminder(
 // flat-schema pattern.
 const ChecklistParams = Type.Object({
 	action: StringEnum(["init", "done", "status"] as const, {
-		description: "What to do: init (create from requirements), done (mark complete), status (list remaining)",
+		description:
+			"What to do: init (create from requirements), done (mark complete), status (list remaining)",
 	}),
 	items: Type.Optional(
 		Type.Array(Type.String(), {
-			description: "Checklist items derived from the task requirements (max 12); required for init",
+			description:
+				"Checklist items derived from the task requirements (max 12); required for init",
 		}),
 	),
 	index: Type.Optional(
 		Type.Integer({
-			description: "0-based index of the item to mark complete; required for done",
+			description:
+				"0-based index of the item to mark complete; required for done",
 		}),
 	),
 });
@@ -131,12 +153,13 @@ function errorResult(text: string) {
 	return {
 		content: [{ type: "text" as const, text }],
 		details: {},
-		isError: true,
 	};
 }
 
 /** Latest checklist state from session entries, or null if not initialized. */
-function readState(ctx: { sessionManager: { getEntries(): unknown[] } }): ChecklistState | null {
+function readState(ctx: {
+	sessionManager: { getEntries(): unknown[] };
+}): ChecklistState | null {
 	let latest: ChecklistState | null = null;
 	for (const entry of ctx.sessionManager.getEntries()) {
 		const e = entry as { type?: string; customType?: string; data?: unknown };
@@ -169,10 +192,12 @@ export default function (pi: ExtensionAPI) {
 			"mark items complete as you finish them (done), and query remaining items (status). " +
 			"Use this to track your progress through the requirements; remaining items are " +
 			"surfaced back to you until complete.",
-		promptSnippet: "Track progress through task requirements (init/done/status)",
+		promptSnippet:
+			"Track progress through task requirements (init/done/status)",
 		parameters: ChecklistParams,
 
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			await Promise.resolve();
 			switch (params.action) {
 				case "init": {
 					const raw = params.items ?? [];
@@ -184,8 +209,11 @@ export default function (pi: ExtensionAPI) {
 						content: [
 							{
 								type: "text",
-								text: `Checklist initialized with ${n} item${n === 1 ? "" : "s"}.` +
-									(truncated ? ` (truncated from ${raw.length} to ${MAX_CHECKLIST_ITEMS}.)` : ""),
+								text:
+									`Checklist initialized with ${n} item${n === 1 ? "" : "s"}.` +
+									(truncated
+										? ` (truncated from ${raw.length} to ${MAX_CHECKLIST_ITEMS}.)`
+										: ""),
 							},
 						],
 						details: { items: state.items.map((i) => i.text) },
@@ -236,15 +264,23 @@ export default function (pi: ExtensionAPI) {
 						.filter((i) => !i.done);
 					if (unchecked.length === 0) {
 						return {
-							content: [{ type: "text", text: "All checklist items are complete." }],
+							content: [
+								{ type: "text", text: "All checklist items are complete." },
+							],
 							details: { remaining: 0 },
 						};
 					}
 					return {
 						content: [
-							{ type: "text", text: `Remaining:\n${unchecked.map((i) => `${i.index}: ${i.text}`).join("\n")}` },
+							{
+								type: "text",
+								text: `Remaining:\n${unchecked.map((i) => `${i.index}: ${i.text}`).join("\n")}`,
+							},
 						],
-						details: { remaining: unchecked.length, items: unchecked.map((i) => i.text) },
+						details: {
+							remaining: unchecked.length,
+							items: unchecked.map((i) => i.text),
+						},
 					};
 				}
 			}
@@ -259,7 +295,14 @@ export default function (pi: ExtensionAPI) {
 		if (!shouldInjectChecklistReminder(firstEditDone, state) || !state) return;
 
 		return {
-			messages: [...event.messages, { role: "user", content: checklistReminder(state), timestamp: Date.now() }],
+			messages: [
+				...event.messages,
+				{
+					role: "user",
+					content: checklistReminder(state),
+					timestamp: Date.now(),
+				},
+			],
 		};
 	});
 }

@@ -32,7 +32,9 @@ export const DEFAULT_ENV_COMMAND_TIMEOUT_MS = 10 * 60_000;
 export const ENV_TIMEOUT_EXIT_CODE = 124;
 
 function cap(value: string): string {
-	return value.length > ENV_OUTPUT_TAIL_CHARS ? value.slice(-ENV_OUTPUT_TAIL_CHARS) : value;
+	return value.length > ENV_OUTPUT_TAIL_CHARS
+		? value.slice(-ENV_OUTPUT_TAIL_CHARS)
+		: value;
 }
 
 /**
@@ -41,7 +43,12 @@ function cap(value: string): string {
  * the driver never re-wraps (a flattened `bash -c a b c` would run only
  * `a` and silently drop every argument boundary).
  */
-function execArgv(command: string, args: string[], options: ExecOptions | undefined, cwd: string): Promise<ExecResult> {
+function execArgv(
+	command: string,
+	args: string[],
+	options: ExecOptions | undefined,
+	cwd: string,
+): Promise<ExecResult> {
 	const timeoutMs = options?.timeoutMs ?? DEFAULT_ENV_COMMAND_TIMEOUT_MS;
 	return new Promise((resolve) => {
 		execFile(
@@ -51,13 +58,19 @@ function execArgv(command: string, args: string[], options: ExecOptions | undefi
 				cwd,
 				timeout: timeoutMs,
 				maxBuffer: 16 * 1024 * 1024,
-				env: options?.env === undefined ? undefined : { ...process.env, ...options.env },
+				env:
+					options?.env === undefined
+						? undefined
+						: { ...process.env, ...options.env },
 			},
 			(error, stdout, stderr) => {
 				// Node reports execFile timeouts as killed + SIGTERM.
-				const timedOut = error !== null && (error as { killed?: boolean }).killed === true;
+				const timedOut =
+					error !== null && (error as { killed?: boolean }).killed === true;
 				resolve({
-					exitCode: timedOut ? ENV_TIMEOUT_EXIT_CODE : (error?.code as number ?? 0),
+					exitCode: timedOut
+						? ENV_TIMEOUT_EXIT_CODE
+						: ((error?.code as number) ?? 0),
 					stdout: cap(stdout.toString()),
 					stderr: cap(stderr.toString()),
 					timedOut,
@@ -71,11 +84,18 @@ function execArgv(command: string, args: string[], options: ExecOptions | undefi
 export class HostEnvironmentDriver implements EnvironmentDriver {
 	readonly name = "host";
 
-	async resolvePath(context: WorkspaceContext): Promise<PathResolution> {
-		return { effectivePath: context.hostPath, inContainer: false };
+	resolvePath(context: WorkspaceContext): Promise<PathResolution> {
+		return Promise.resolve({
+			effectivePath: context.hostPath,
+			inContainer: false,
+		});
 	}
 
-	async exec(command: string, args: string[], options?: ExecOptions): Promise<ExecResult> {
+	async exec(
+		command: string,
+		args: string[],
+		options?: ExecOptions,
+	): Promise<ExecResult> {
 		return execArgv(command, args, options, options?.cwd ?? process.cwd());
 	}
 }
@@ -102,12 +122,24 @@ export class MiseEnvironmentDriver implements EnvironmentDriver {
 		this.#envDir = envDir;
 	}
 
-	async resolvePath(context: WorkspaceContext): Promise<PathResolution> {
-		return { effectivePath: context.hostPath, inContainer: false };
+	resolvePath(context: WorkspaceContext): Promise<PathResolution> {
+		return Promise.resolve({
+			effectivePath: context.hostPath,
+			inContainer: false,
+		});
 	}
 
-	async exec(command: string, args: string[], options?: ExecOptions): Promise<ExecResult> {
-		return execArgv("mise", ["exec", "--", command, ...args], options, options?.cwd ?? this.#envDir ?? process.cwd());
+	async exec(
+		command: string,
+		args: string[],
+		options?: ExecOptions,
+	): Promise<ExecResult> {
+		return execArgv(
+			"mise",
+			["exec", "--", command, ...args],
+			options,
+			options?.cwd ?? this.#envDir ?? process.cwd(),
+		);
 	}
 }
 

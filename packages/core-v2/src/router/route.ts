@@ -172,7 +172,7 @@ export function normalizeLane(value: string | undefined): Lane {
 
 /** Layer config overrides onto the named defaults (R3). */
 export function resolveThresholds(
-	overrides?: Partial<RoutingThresholds> | undefined,
+	overrides?: Partial<RoutingThresholds>,
 ): RoutingThresholds {
 	return { ...DEFAULT_ROUTING_THRESHOLDS, ...overrides };
 }
@@ -181,7 +181,9 @@ export function resolveThresholds(
 export function routeTask(input: RouteInput): RouteDecision {
 	const count = input.spec.requirementCount;
 	if (!Number.isInteger(count) || count < 0) {
-		throw new TypeError(`requirementCount must be a non-negative integer, got ${count}`);
+		throw new TypeError(
+			`requirementCount must be a non-negative integer, got ${count}`,
+		);
 	}
 
 	const thresholds = resolveThresholds(input.thresholds);

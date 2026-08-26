@@ -45,7 +45,12 @@ import {
 /** Index of the triple [flag, dest, dest] (or [flag, arg]) in args, else -1. */
 function findTriple(args: string[], a: string, b: string, c?: string): number {
 	for (let i = 0; i < args.length; i++) {
-		if (args[i] === a && args[i + 1] === b && (c === undefined || args[i + 2] === c)) return i;
+		if (
+			args[i] === a &&
+			args[i + 1] === b &&
+			(c === undefined || args[i + 2] === c)
+		)
+			return i;
 	}
 	return -1;
 }
@@ -81,7 +86,10 @@ function testDisabled(errors: string[]): void {
 		cwd: "/proj",
 		agentDir: "/home/u/.pi/agent",
 	});
-	check(args === null, `disabled sandbox must return null, got ${JSON.stringify(args)}`);
+	check(
+		args === null,
+		`disabled sandbox must return null, got ${JSON.stringify(args)}`,
+	);
 	console.log("✓ disabled sandbox → null (R3)");
 }
 
@@ -110,14 +118,26 @@ function testStrictPolicy(errors: string[]): void {
 	const dev = findTriple(args, "--dev", "/dev");
 	const proc = findTriple(args, "--proc", "/proc");
 	const tmp = findTriple(args, "--tmpfs", "/tmp");
-	check(dev > roRoot && proc > dev && tmp > proc,
-		`--dev /dev, --proc /proc, --tmpfs /tmp must follow the ro root in order, got ${JSON.stringify(args)}`);
-	for (const flag of ["--unshare-user", "--unshare-pid", "--die-with-parent", "--new-session"]) {
+	check(
+		dev > roRoot && proc > dev && tmp > proc,
+		`--dev /dev, --proc /proc, --tmpfs /tmp must follow the ro root in order, got ${JSON.stringify(args)}`,
+	);
+	for (const flag of [
+		"--unshare-user",
+		"--unshare-pid",
+		"--die-with-parent",
+		"--new-session",
+	]) {
 		check(args.includes(flag), `strict policy must include ${flag}`);
 	}
 	// Default network mode "allow" → no network isolation.
-	check(!args.includes("--unshare-net"), `network "allow" must not add --unshare-net`);
-	console.log("✓ strict policy arg set: ro root first, dev/proc/tmpfs, unshare-user/pid, die-with-parent, new-session (R1)");
+	check(
+		!args.includes("--unshare-net"),
+		`network "allow" must not add --unshare-net`,
+	);
+	console.log(
+		"✓ strict policy arg set: ro root first, dev/proc/tmpfs, unshare-user/pid, die-with-parent, new-session (R1)",
+	);
 }
 
 // ─── Section 3: agent dir ro-bind + cwd rw bind ordering (R1) ────────
@@ -136,14 +156,24 @@ function testRwBinds(errors: string[]): void {
 	const roRoot = findTriple(args, "--ro-bind", "/", "/");
 	const agentRo = findTriple(args, "--ro-bind", agentDir, agentDir);
 	const cwdBind = findTriple(args, "--bind", cwd, cwd);
-	check(agentRo > roRoot, `agent dir ro bind must come after the ro root bind, got ${JSON.stringify(args)}`);
-	check(cwdBind > agentRo, `cwd rw bind must come AFTER the agent-dir ro bind (so it shadows it when cwd == agentDir), got ${JSON.stringify(args)}`);
-	check(cwdBind !== -1 && agentRo !== -1,
-		`cwd must be --bind rw and the agent dir --ro-bind, got ${JSON.stringify(args)}`);
+	check(
+		agentRo > roRoot,
+		`agent dir ro bind must come after the ro root bind, got ${JSON.stringify(args)}`,
+	);
+	check(
+		cwdBind > agentRo,
+		`cwd rw bind must come AFTER the agent-dir ro bind (so it shadows it when cwd == agentDir), got ${JSON.stringify(args)}`,
+	);
+	check(
+		cwdBind !== -1 && agentRo !== -1,
+		`cwd must be --bind rw and the agent dir --ro-bind, got ${JSON.stringify(args)}`,
+	);
 	// The agent dir is NEVER rw-bound: a parallel worker must not write
 	// into the main repo through it (issue #83 reproduction).
-	check(findTriple(args, "--bind", agentDir, agentDir) === -1,
-		`agent dir must not be rw-bound, got ${JSON.stringify(args)}`);
+	check(
+		findTriple(args, "--bind", agentDir, agentDir) === -1,
+		`agent dir must not be rw-bound, got ${JSON.stringify(args)}`,
+	);
 	console.log("✓ agent dir ro-bind before cwd rw bind (R1)");
 }
 
@@ -156,16 +186,28 @@ function testCwdEqualsAgentDir(errors: string[]): void {
 	};
 
 	const p = "/home/u/.pi/agent";
-	const args = buildBwrapArgs({ sandbox: sandboxConfig({}), cwd: p, agentDir: p });
+	const args = buildBwrapArgs({
+		sandbox: sandboxConfig({}),
+		cwd: p,
+		agentDir: p,
+	});
 	check(args !== null, "enabled sandbox must return args");
 	if (args === null) return;
 
 	const ro = findTriple(args, "--ro-bind", p, p);
 	const rw = findTriple(args, "--bind", p, p);
-	check(ro !== -1, `agent-dir ro bind must be present when cwd == agentDir, got ${JSON.stringify(args)}`);
-	check(rw !== -1 && rw > ro, `the cwd rw bind must come AFTER the ro bind for the same path (it shadows it), got ${JSON.stringify(args)}`);
-	check(rw === args.lastIndexOf("--bind"),
-		`the cwd rw bind must be the last rw bind for that path (nothing later shadows it), got ${JSON.stringify(args)}`);
+	check(
+		ro !== -1,
+		`agent-dir ro bind must be present when cwd == agentDir, got ${JSON.stringify(args)}`,
+	);
+	check(
+		rw !== -1 && rw > ro,
+		`the cwd rw bind must come AFTER the ro bind for the same path (it shadows it), got ${JSON.stringify(args)}`,
+	);
+	check(
+		rw === args.lastIndexOf("--bind"),
+		`the cwd rw bind must be the last rw bind for that path (nothing later shadows it), got ${JSON.stringify(args)}`,
+	);
 	console.log("✓ cwd == agentDir: cwd rw bind shadows the ro bind (R1)");
 }
 
@@ -202,25 +244,53 @@ function testRuntimeStateBinds(errors: string[]): void {
 		for (const rel of ["settings.json", "trust.json", "sessions", "cache"]) {
 			const p = join(agentDir, rel);
 			const rw = findTriple(args, "--bind", p, p);
-			check(rw !== -1 && rw > roAgent && rw < rwCwd,
-				`runtime state ${rel} must be rw-bound between the agent-dir ro bind and the cwd rw bind, got ${JSON.stringify(args)}`);
+			check(
+				rw !== -1 && rw > roAgent && rw < rwCwd,
+				`runtime state ${rel} must be rw-bound between the agent-dir ro bind and the cwd rw bind, got ${JSON.stringify(args)}`,
+			);
 		}
 		// Absent runtime paths are skipped (bwrap fails on missing sources):
 		// results/ was not created above.
-		check(findTriple(args, "--bind", join(agentDir, "results"), join(agentDir, "results")) === -1,
-			"absent runtime paths must not be bound");
+		check(
+			findTriple(
+				args,
+				"--bind",
+				join(agentDir, "results"),
+				join(agentDir, "results"),
+			) === -1,
+			"absent runtime paths must not be bound",
+		);
 		// Repo content + secrets stay out of the rw binds.
-		check(findTriple(args, "--bind", join(agentDir, "auth.json"), join(agentDir, "auth.json")) === -1,
-			"auth.json must not be rw-bound (secrets: readable for provider auth, never writable)");
-		check(findTriple(args, "--bind", join(agentDir, "config"), join(agentDir, "config")) === -1,
-			"repo content (config/) must not be rw-bound");
+		check(
+			findTriple(
+				args,
+				"--bind",
+				join(agentDir, "auth.json"),
+				join(agentDir, "auth.json"),
+			) === -1,
+			"auth.json must not be rw-bound (secrets: readable for provider auth, never writable)",
+		);
+		check(
+			findTriple(
+				args,
+				"--bind",
+				join(agentDir, "config"),
+				join(agentDir, "config"),
+			) === -1,
+			"repo content (config/) must not be rw-bound",
+		);
 		// The runtime list is the contract — guard against accidental edits.
-		check(PI_RUNTIME_STATE_PATHS.includes("settings.json") && PI_RUNTIME_STATE_PATHS.includes("sessions"),
-			"PI_RUNTIME_STATE_PATHS carries the pi runtime state entries");
+		check(
+			PI_RUNTIME_STATE_PATHS.includes("settings.json") &&
+				PI_RUNTIME_STATE_PATHS.includes("sessions"),
+			"PI_RUNTIME_STATE_PATHS carries the pi runtime state entries",
+		);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
-	console.log("✓ pi runtime state: rw binds for existing state paths only; repo content + auth.json stay ro (todo #89)");
+	console.log(
+		"✓ pi runtime state: rw binds for existing state paths only; repo content + auth.json stay ro (todo #89)",
+	);
 }
 
 // ─── Section 3.6: shared jj store rw bind for parallel commits (todo #89) ──
@@ -245,36 +315,71 @@ function testProjectDirStoreBinds(errors: string[]): void {
 		// projectDir differs from cwd (the parallel case): the shared store
 		// (.jj/.git) must be rw-bound, after the runtime binds and before
 		// the cwd rw bind.
-		const args = buildBwrapArgs({ sandbox: sandboxConfig({}), cwd, agentDir, projectDir });
+		const args = buildBwrapArgs({
+			sandbox: sandboxConfig({}),
+			cwd,
+			agentDir,
+			projectDir,
+		});
 		check(args !== null, "enabled sandbox must return args");
 		if (args === null) return;
 		const rwCwd = findTriple(args, "--bind", cwd, cwd);
 		for (const rel of [".jj", ".git"]) {
 			const p = join(projectDir, rel);
 			const rw = findTriple(args, "--bind", p, p);
-			check(rw !== -1 && rw < rwCwd,
-				`shared store ${rel} must be rw-bound before the cwd rw bind, got ${JSON.stringify(args)}`);
+			check(
+				rw !== -1 && rw < rwCwd,
+				`shared store ${rel} must be rw-bound before the cwd rw bind, got ${JSON.stringify(args)}`,
+			);
 		}
 
 		// projectDir == cwd (single worker): the cwd rw bind already covers
 		// the store — no extra binds.
-		const single = buildBwrapArgs({ sandbox: sandboxConfig({}), cwd: projectDir, agentDir, projectDir });
-		check(single !== null && findTriple(single, "--bind", join(projectDir, ".jj"), join(projectDir, ".jj")) === -1,
-			"no store binds when projectDir == cwd (the cwd rw bind covers it)");
+		const single = buildBwrapArgs({
+			sandbox: sandboxConfig({}),
+			cwd: projectDir,
+			agentDir,
+			projectDir,
+		});
+		check(
+			single !== null &&
+				findTriple(
+					single,
+					"--bind",
+					join(projectDir, ".jj"),
+					join(projectDir, ".jj"),
+				) === -1,
+			"no store binds when projectDir == cwd (the cwd rw bind covers it)",
+		);
 
 		// Missing store paths are skipped (bwrap fails on missing sources).
 		const noStore = mkdtempSync(join(tmpdir(), "pi-task-sbx-nostore-"));
 		try {
-			const bare = buildBwrapArgs({ sandbox: sandboxConfig({}), cwd, agentDir, projectDir: noStore });
-			check(bare !== null && findTriple(bare, "--bind", join(noStore, ".jj"), join(noStore, ".jj")) === -1,
-				"absent store paths must not be bound");
+			const bare = buildBwrapArgs({
+				sandbox: sandboxConfig({}),
+				cwd,
+				agentDir,
+				projectDir: noStore,
+			});
+			check(
+				bare !== null &&
+					findTriple(
+						bare,
+						"--bind",
+						join(noStore, ".jj"),
+						join(noStore, ".jj"),
+					) === -1,
+				"absent store paths must not be bound",
+			);
 		} finally {
 			rmSync(noStore, { recursive: true, force: true });
 		}
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
-	console.log("✓ shared jj store: rw binds when projectDir != cwd, skipped otherwise (todo #89)");
+	console.log(
+		"✓ shared jj store: rw binds when projectDir != cwd, skipped otherwise (todo #89)",
+	);
 }
 
 // ─── Section 4: temp dirs bound after --tmpfs /tmp (R2) ─────────────
@@ -299,14 +404,26 @@ function testTempDirs(errors: string[]): void {
 	check(tmp !== -1, "--tmpfs /tmp must be present");
 	for (const dir of [promptDir, sessionDir]) {
 		const bind = findTriple(args, "--bind", dir, dir);
-		check(bind !== -1, `temp dir ${dir} must be bound rw, got ${JSON.stringify(args)}`);
-		check(bind > tmp, `temp dir ${dir} bind must come AFTER --tmpfs /tmp (mount order), got ${JSON.stringify(args)}`);
+		check(
+			bind !== -1,
+			`temp dir ${dir} must be bound rw, got ${JSON.stringify(args)}`,
+		);
+		check(
+			bind > tmp,
+			`temp dir ${dir} bind must come AFTER --tmpfs /tmp (mount order), got ${JSON.stringify(args)}`,
+		);
 	}
 
 	// No temp dirs → only cwd is a rw bind (the agent dir is ro, not rw).
-	const none = buildBwrapArgs({ sandbox: sandboxConfig({}), cwd: "/proj", agentDir: "/home/u/.pi/agent" });
-	check(none !== null && none.filter((a) => a === "--bind").length === 1,
-		`without tempDirs only cwd is a rw bind, got ${JSON.stringify(none)}`);
+	const none = buildBwrapArgs({
+		sandbox: sandboxConfig({}),
+		cwd: "/proj",
+		agentDir: "/home/u/.pi/agent",
+	});
+	check(
+		none !== null && none.filter((a) => a === "--bind").length === 1,
+		`without tempDirs only cwd is a rw bind, got ${JSON.stringify(none)}`,
+	);
 	console.log("✓ temp dirs bound rw, ordered after --tmpfs /tmp (R2)");
 }
 
@@ -324,9 +441,14 @@ function testNetworkIsolate(errors: string[]): void {
 	});
 	check(args !== null, "enabled sandbox must return args");
 	if (args === null) return;
-	check(args.includes("--unshare-net"), `network "isolate" must append --unshare-net, got ${JSON.stringify(args)}`);
-	check(args[args.length - 1] === "--unshare-net",
-		`--unshare-net must be appended last, got ${JSON.stringify(args.slice(-3))}`);
+	check(
+		args.includes("--unshare-net"),
+		`network "isolate" must append --unshare-net, got ${JSON.stringify(args)}`,
+	);
+	check(
+		args[args.length - 1] === "--unshare-net",
+		`--unshare-net must be appended last, got ${JSON.stringify(args.slice(-3))}`,
+	);
 	console.log('✓ network "isolate" appends --unshare-net (R1)');
 }
 
@@ -351,20 +473,37 @@ function testExtraBinds(errors: string[]): void {
 	const cwdBind = findTriple(args, "--bind", "/proj", "/proj");
 	for (const p of ["/data/models", "/opt/cache"]) {
 		const ro = findTriple(args, "--ro-bind", p, p);
-		check(ro !== -1, `extra_ro_binds entry ${p} must be a --ro-bind, got ${JSON.stringify(args)}`);
+		check(
+			ro !== -1,
+			`extra_ro_binds entry ${p} must be a --ro-bind, got ${JSON.stringify(args)}`,
+		);
 	}
-	const extraRw = findTriple(args, "--bind", "/scratch/build", "/scratch/build");
-	check(extraRw !== -1, `extra_rw_binds entry must be a --bind, got ${JSON.stringify(args)}`);
-	check(extraRw > cwdBind, `extra_rw_binds must come after the cwd bind, got ${JSON.stringify(args)}`);
+	const extraRw = findTriple(
+		args,
+		"--bind",
+		"/scratch/build",
+		"/scratch/build",
+	);
+	check(
+		extraRw !== -1,
+		`extra_rw_binds entry must be a --bind, got ${JSON.stringify(args)}`,
+	);
+	check(
+		extraRw > cwdBind,
+		`extra_rw_binds must come after the cwd bind, got ${JSON.stringify(args)}`,
+	);
 	// The ro root stays the FIRST ro bind at the head; the agent-dir ro
 	// bind and extras never shadow it.
-	check(args[0] === "--ro-bind" && args[1] === "/", "ro root must remain first");
+	check(
+		args[0] === "--ro-bind" && args[1] === "/",
+		"ro root must remain first",
+	);
 	console.log("✓ extra_ro_binds as ro binds, extra_rw_binds as rw binds (R1)");
 }
 
 // ─── Section 7: real bwrap probe (R5, guarded) ──────────────────────
 
-async function testRealBwrap(errors: string[]): Promise<void> {
+function testRealBwrap(errors: string[]): void {
 	const check = (cond: boolean, msg: string): void => {
 		if (!cond) errors.push(msg);
 	};
@@ -418,23 +557,54 @@ async function testRealBwrap(errors: string[]): Promise<void> {
 			});
 		} catch (err) {
 			const e = err as Error & { stdout?: string; stderr?: string };
-			errors.push(`bwrap probe run failed: ${e.message}\nstdout: ${e.stdout}\nstderr: ${e.stderr}`);
+			errors.push(
+				`bwrap probe run failed: ${e.message}\nstdout: ${e.stdout}\nstderr: ${e.stderr}`,
+			);
 			return;
 		}
 
-		const lines = stdout.split("\n").map((l) => l.trim()).filter((l) => l.length > 0);
-		check(lines.includes("cwd-rw"), `rw-bound cwd must be writable inside the sandbox, got: ${JSON.stringify(lines)}`);
-		check(lines.includes("agent-ro"), `agent dir must be READ-ONLY inside the sandbox when it differs from cwd (issue #83), got: ${JSON.stringify(lines)}`);
-		check(!lines.includes("agent-rw"), `agent dir write must not succeed, got: ${JSON.stringify(lines)}`);
-		check(lines.includes("settings-rw"), `settings.json (pi runtime state) must be writable inside the sandbox (todo #89), got: ${JSON.stringify(lines)}`);
-		check(lines.includes("config-ro"), `repo content (config/) must stay READ-ONLY inside the sandbox, got: ${JSON.stringify(lines)}`);
-		check(lines.includes("tmp-rw"), `/tmp (tmpfs) must be writable inside the sandbox, got: ${JSON.stringify(lines)}`);
-		check(lines.includes("ssh-ro"), `$HOME/.ssh must NOT be writable (strict policy: only cwd is rw), got: ${JSON.stringify(lines)}`);
-		check(!lines.includes("ssh-rw"), `$HOME/.ssh write must not succeed, got: ${JSON.stringify(lines)}`);
+		const lines = stdout
+			.split("\n")
+			.map((l) => l.trim())
+			.filter((l) => l.length > 0);
+		check(
+			lines.includes("cwd-rw"),
+			`rw-bound cwd must be writable inside the sandbox, got: ${JSON.stringify(lines)}`,
+		);
+		check(
+			lines.includes("agent-ro"),
+			`agent dir must be READ-ONLY inside the sandbox when it differs from cwd (issue #83), got: ${JSON.stringify(lines)}`,
+		);
+		check(
+			!lines.includes("agent-rw"),
+			`agent dir write must not succeed, got: ${JSON.stringify(lines)}`,
+		);
+		check(
+			lines.includes("settings-rw"),
+			`settings.json (pi runtime state) must be writable inside the sandbox (todo #89), got: ${JSON.stringify(lines)}`,
+		);
+		check(
+			lines.includes("config-ro"),
+			`repo content (config/) must stay READ-ONLY inside the sandbox, got: ${JSON.stringify(lines)}`,
+		);
+		check(
+			lines.includes("tmp-rw"),
+			`/tmp (tmpfs) must be writable inside the sandbox, got: ${JSON.stringify(lines)}`,
+		);
+		check(
+			lines.includes("ssh-ro"),
+			`$HOME/.ssh must NOT be writable (strict policy: only cwd is rw), got: ${JSON.stringify(lines)}`,
+		);
+		check(
+			!lines.includes("ssh-rw"),
+			`$HOME/.ssh write must not succeed, got: ${JSON.stringify(lines)}`,
+		);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
-	console.log("✓ real-bwrap probe: cwd rw, agent dir ro, $HOME/.ssh ro, /tmp writable (R5)");
+	console.log(
+		"✓ real-bwrap probe: cwd rw, agent dir ro, $HOME/.ssh ro, /tmp writable (R5)",
+	);
 }
 
 // ─── Section 7.5: real-bwrap parallel workspace commit (todo #89) ────
@@ -448,13 +618,15 @@ async function testRealBwrap(errors: string[]): Promise<void> {
  * the commit work while the repo's tracked files stay read-only and pi's
  * runtime state (settings.json) stays writable.
  */
-async function testRealWorkspaceCommit(errors: string[]): Promise<void> {
+function testRealWorkspaceCommit(errors: string[]): void {
 	const check = (cond: boolean, msg: string): void => {
 		if (!cond) errors.push(msg);
 	};
 
 	if (!bwrapAvailable()) {
-		console.log("○ real-bwrap workspace-commit probe skipped (bwrap not on PATH)");
+		console.log(
+			"○ real-bwrap workspace-commit probe skipped (bwrap not on PATH)",
+		);
 		return;
 	}
 
@@ -499,23 +671,45 @@ async function testRealWorkspaceCommit(errors: string[]): Promise<void> {
 			});
 		} catch (err) {
 			const e = err as Error & { stdout?: string; stderr?: string };
-			errors.push(`bwrap commit probe failed: ${e.message}\nstdout: ${e.stdout}\nstderr: ${e.stderr}`);
+			errors.push(
+				`bwrap commit probe failed: ${e.message}\nstdout: ${e.stdout}\nstderr: ${e.stderr}`,
+			);
 			return;
 		}
 
-		const lines = stdout.split("\n").map((l) => l.trim()).filter((l) => l.length > 0);
-		check(lines.includes("commit-ok"), `parallel workspace commit must succeed (shared store rw), got: ${JSON.stringify(lines)}`);
-		check(lines.includes("tracked-ro"), `tracked repo content must stay READ-ONLY, got: ${JSON.stringify(lines)}`);
-		check(lines.includes("settings-rw"), `settings.json (pi runtime state) must be writable, got: ${JSON.stringify(lines)}`);
+		const lines = stdout
+			.split("\n")
+			.map((l) => l.trim())
+			.filter((l) => l.length > 0);
+		check(
+			lines.includes("commit-ok"),
+			`parallel workspace commit must succeed (shared store rw), got: ${JSON.stringify(lines)}`,
+		);
+		check(
+			lines.includes("tracked-ro"),
+			`tracked repo content must stay READ-ONLY, got: ${JSON.stringify(lines)}`,
+		);
+		check(
+			lines.includes("settings-rw"),
+			`settings.json (pi runtime state) must be writable, got: ${JSON.stringify(lines)}`,
+		);
 
 		// The commit must actually exist in the shared store (not just exit 0)
 		// — the orchestrator's merge resolves it host-side afterwards.
-		const log = jj(["log", "--no-graph", "-T", 'description.first_line() ++ "\n"'], projectDir);
-		check(log.includes("worker work"), `worker commit must land in the shared store, got: ${JSON.stringify(log)}`);
+		const log = jj(
+			["log", "--no-graph", "-T", 'description.first_line() ++ "\n"'],
+			projectDir,
+		);
+		check(
+			log.includes("worker work"),
+			`worker commit must land in the shared store, got: ${JSON.stringify(log)}`,
+		);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
-	console.log("✓ real-bwrap parallel workspace commit: store rw, tracked content ro, settings.json rw (todo #89)");
+	console.log(
+		"✓ real-bwrap parallel workspace commit: store rw, tracked content ro, settings.json rw (todo #89)",
+	);
 }
 
 // ─── Section 8: sandbox resolution (R1, hermetic) ───────────────────
@@ -532,29 +726,51 @@ function testResolveSandbox(errors: string[]): void {
 		return true;
 	};
 	const omitted = resolveSandbox(undefined, probe);
-	check(omitted.config.enabled === true, `omitted sandbox → built-in defaults (enabled), got ${JSON.stringify(omitted.config)}`);
-	check(omitted.active === true && probeCalls === 1, `enabled default probes exactly once, got active=${omitted.active} calls=${probeCalls}`);
-	check(omitted.config.extraRoBinds.length === 0 && omitted.config.extraRwBinds.length === 0,
-		"omitted sandbox → default bind lists are empty");
+	check(
+		omitted.config.enabled === true,
+		`omitted sandbox → built-in defaults (enabled), got ${JSON.stringify(omitted.config)}`,
+	);
+	check(
+		omitted.active === true && probeCalls === 1,
+		`enabled default probes exactly once, got active=${omitted.active} calls=${probeCalls}`,
+	);
+	check(
+		omitted.config.extraRoBinds.length === 0 &&
+			omitted.config.extraRwBinds.length === 0,
+		"omitted sandbox → default bind lists are empty",
+	);
 
 	// Disabled → never probes, never active.
 	probeCalls = 0;
 	const disabled = resolveSandbox(sandboxConfig({ enabled: false }), probe);
-	check(disabled.active === false && probeCalls === 0, `disabled sandbox never probes, got active=${disabled.active} calls=${probeCalls}`);
+	check(
+		disabled.active === false && probeCalls === 0,
+		`disabled sandbox never probes, got active=${disabled.active} calls=${probeCalls}`,
+	);
 
 	// Enabled + failed probe → inactive (the graceful-fallback path).
 	const failed = resolveSandbox(sandboxConfig({}), () => false);
-	check(failed.config.enabled === true && failed.active === false,
-		"enabled sandbox with a failed probe → inactive (fallback)");
+	check(
+		failed.config.enabled === true && failed.active === false,
+		"enabled sandbox with a failed probe → inactive (fallback)",
+	);
 
 	// Defensive copy: mutating the resolved config never touches the built-in
 	// defaults or the caller's object.
 	const callerCfg = sandboxConfig({ extraRoBinds: ["/x"] });
 	const resolved = resolveSandbox(callerCfg, () => true);
 	resolved.config.extraRoBinds.push("/y");
-	check(DEFAULT_SANDBOX_CONFIG.extraRoBinds.length === 0, "mutating the resolved config must not touch DEFAULT_SANDBOX_CONFIG");
-	check(callerCfg.extraRoBinds.length === 1, "mutating the resolved config must not touch the caller's config");
-	console.log("✓ sandbox resolution: omitted → defaults + one probe; disabled → no probe; failed probe → inactive (R1)");
+	check(
+		DEFAULT_SANDBOX_CONFIG.extraRoBinds.length === 0,
+		"mutating the resolved config must not touch DEFAULT_SANDBOX_CONFIG",
+	);
+	check(
+		callerCfg.extraRoBinds.length === 1,
+		"mutating the resolved config must not touch the caller's config",
+	);
+	console.log(
+		"✓ sandbox resolution: omitted → defaults + one probe; disabled → no probe; failed probe → inactive (R1)",
+	);
 }
 
 // ─── Section 9: spawn wrapping decision (R2, hermetic) ──────────────
@@ -576,17 +792,36 @@ function testWrapInvocation(errors: string[]): void {
 		tempDirs: ["/tmp/pi-task-worker-abc", "/tmp/pi-task-session-def"],
 		invocation,
 	});
-	check(wrapped.command === "bwrap", `wrapped command must be bwrap, got ${wrapped.command}`);
+	check(
+		wrapped.command === "bwrap",
+		`wrapped command must be bwrap, got ${wrapped.command}`,
+	);
 	const sep = wrapped.args.indexOf("--");
 	check(sep !== -1, "wrapped args must contain the `--` separator");
-	check(JSON.stringify(wrapped.args.slice(sep + 1)) === JSON.stringify([invocation.command, ...invocation.args]),
-		`the original invocation must follow the separator verbatim, got ${JSON.stringify(wrapped.args.slice(sep + 1))}`);
+	check(
+		JSON.stringify(wrapped.args.slice(sep + 1)) ===
+			JSON.stringify([invocation.command, ...invocation.args]),
+		`the original invocation must follow the separator verbatim, got ${JSON.stringify(wrapped.args.slice(sep + 1))}`,
+	);
 	// The bwrap arg vector is exactly buildBwrapArgs(...) ++ ["--", ...].
-	const expected = buildBwrapArgs({ sandbox: sandboxConfig({}), cwd, agentDir, tempDirs: ["/tmp/pi-task-worker-abc", "/tmp/pi-task-session-def"] });
-	check(expected !== null && JSON.stringify(wrapped.args.slice(0, sep)) === JSON.stringify(expected),
-		`bwrap args must be exactly buildBwrapArgs output, got ${JSON.stringify(wrapped.args.slice(0, sep))}`);
+	const expected = buildBwrapArgs({
+		sandbox: sandboxConfig({}),
+		cwd,
+		agentDir,
+		tempDirs: ["/tmp/pi-task-worker-abc", "/tmp/pi-task-session-def"],
+	});
+	check(
+		expected !== null &&
+			JSON.stringify(wrapped.args.slice(0, sep)) === JSON.stringify(expected),
+		`bwrap args must be exactly buildBwrapArgs output, got ${JSON.stringify(wrapped.args.slice(0, sep))}`,
+	);
 	// The cwd/agent/temp-dir rw binds are present.
-	const findTriple = (args: string[], a: string, b: string, c: string): number => {
+	const findTriple = (
+		args: string[],
+		a: string,
+		b: string,
+		c: string,
+	): number => {
 		for (let i = 0; i < args.length; i++) {
 			if (args[i] === a && args[i + 1] === b && args[i + 2] === c) return i;
 		}
@@ -598,12 +833,24 @@ function testWrapInvocation(errors: string[]): void {
 	// The agent dir is ro-bound (before the cwd rw bind); cwd + temp dirs
 	// are rw-bound after the ro root and after --tmpfs /tmp.
 	const agentRo = findTriple(wrapped.args, "--ro-bind", agentDir, agentDir);
-	check(agentRo !== -1 && agentRo > roRoot, `agent dir ro bind present after the ro root, got ${JSON.stringify(wrapped.args)}`);
-	check(findTriple(wrapped.args, "--bind", agentDir, agentDir) === -1,
-		`agent dir must never be rw-bound, got ${JSON.stringify(wrapped.args)}`);
+	check(
+		agentRo !== -1 && agentRo > roRoot,
+		`agent dir ro bind present after the ro root, got ${JSON.stringify(wrapped.args)}`,
+	);
+	check(
+		findTriple(wrapped.args, "--bind", agentDir, agentDir) === -1,
+		`agent dir must never be rw-bound, got ${JSON.stringify(wrapped.args)}`,
+	);
 	const cwdBind = findTriple(wrapped.args, "--bind", cwd, cwd);
-	check(cwdBind !== -1 && cwdBind > agentRo, `cwd rw bind must come after the agent-dir ro bind, got ${JSON.stringify(wrapped.args)}`);
-	for (const dir of [cwd, "/tmp/pi-task-worker-abc", "/tmp/pi-task-session-def"]) {
+	check(
+		cwdBind !== -1 && cwdBind > agentRo,
+		`cwd rw bind must come after the agent-dir ro bind, got ${JSON.stringify(wrapped.args)}`,
+	);
+	for (const dir of [
+		cwd,
+		"/tmp/pi-task-worker-abc",
+		"/tmp/pi-task-session-def",
+	]) {
 		const bind = findTriple(wrapped.args, "--bind", dir, dir);
 		check(bind !== -1 && bind > roRoot, `rw bind for ${dir} after the ro root`);
 		check(bind > tmp, `rw bind for ${dir} after --tmpfs /tmp (mount order)`);
@@ -613,31 +860,60 @@ function testWrapInvocation(errors: string[]): void {
 	// unchanged spawn path).
 	const disabled = wrapWorkerInvocation({
 		sandbox: { config: sandboxConfig({ enabled: false }), active: false },
-		cwd, agentDir, invocation,
+		cwd,
+		agentDir,
+		invocation,
 	});
-	check(disabled === invocation, "disabled sandbox must return the SAME invocation object");
+	check(
+		disabled === invocation,
+		"disabled sandbox must return the SAME invocation object",
+	);
 	const inactive = wrapWorkerInvocation({
 		sandbox: { config: sandboxConfig({}), active: false },
-		cwd, agentDir, invocation,
+		cwd,
+		agentDir,
+		invocation,
 	});
-	check(inactive === invocation, "unavailable sandbox (probe failed) must return the SAME invocation object");
-	const absent = wrapWorkerInvocation({ sandbox: undefined, cwd, agentDir, invocation });
-	check(absent === invocation, "no sandbox option must return the SAME invocation object");
+	check(
+		inactive === invocation,
+		"unavailable sandbox (probe failed) must return the SAME invocation object",
+	);
+	const absent = wrapWorkerInvocation({
+		sandbox: undefined,
+		cwd,
+		agentDir,
+		invocation,
+	});
+	check(
+		absent === invocation,
+		"no sandbox option must return the SAME invocation object",
+	);
 
 	// Custom bwrap binary is respected.
 	const custom = wrapWorkerInvocation({
 		sandbox: { config: sandboxConfig({}), active: true },
-		cwd, agentDir, invocation, bwrapBinary: "/usr/local/bin/bwrap",
+		cwd,
+		agentDir,
+		invocation,
+		bwrapBinary: "/usr/local/bin/bwrap",
 	});
-	check(custom.command === "/usr/local/bin/bwrap", `custom bwrap binary respected, got ${custom.command}`);
+	check(
+		custom.command === "/usr/local/bin/bwrap",
+		`custom bwrap binary respected, got ${custom.command}`,
+	);
 
-	console.log("✓ spawn wrapping: active → bwrap <args> -- <invocation> with binds; disabled/unavailable → unchanged (R2)");
+	console.log(
+		"✓ spawn wrapping: active → bwrap <args> -- <invocation> with binds; disabled/unavailable → unchanged (R2)",
+	);
 }
 
 // ─── Section 10: real-bwrap kill propagation (R4b, guarded) ─────────
 
 /** Wait for the child's exit; resolves its duration in ms. */
-function waitForExit(child: ReturnType<typeof spawn>, timeoutMs: number): Promise<number> {
+function waitForExit(
+	child: ReturnType<typeof spawn>,
+	timeoutMs: number,
+): Promise<number> {
 	return new Promise((resolveP) => {
 		const started = Date.now();
 		const timer = setTimeout(() => {
@@ -657,7 +933,9 @@ async function testKillPropagation(errors: string[]): Promise<void> {
 	};
 
 	if (!probeBwrapAvailability()) {
-		console.log("○ kill-propagation test skipped (bwrap or user namespaces unavailable)");
+		console.log(
+			"○ kill-propagation test skipped (bwrap or user namespaces unavailable)",
+		);
 		return;
 	}
 
@@ -688,24 +966,34 @@ async function testKillPropagation(errors: string[]): Promise<void> {
 		);
 		// Give the namespace + child a moment to start.
 		await new Promise((r) => setTimeout(r, 300));
-		check(child.exitCode === null, "sandboxed child must still be running before SIGTERM");
+		check(
+			child.exitCode === null,
+			"sandboxed child must still be running before SIGTERM",
+		);
 
 		// SIGTERM the bwrap process — the same signal worker.ts's abort() sends
 		// (watchdogs, wall timeout). The sandboxed child must exit promptly.
 		child.kill("SIGTERM");
 		const elapsed = await waitForExit(child, 5_000);
-		check(elapsed < 5_000, `SIGTERM to bwrap must terminate the sandboxed child promptly, took ${elapsed}ms`);
+		check(
+			elapsed < 5_000,
+			`SIGTERM to bwrap must terminate the sandboxed child promptly, took ${elapsed}ms`,
+		);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
-	console.log("✓ real-bwrap kill propagation: SIGTERM to bwrap terminates the sandboxed child promptly (R4b)");
+	console.log(
+		"✓ real-bwrap kill propagation: SIGTERM to bwrap terminates the sandboxed child promptly (R4b)",
+	);
 }
 
 // ─── Runner ──────────────────────────────────────────────────────────
 
 export async function runTests(): Promise<void> {
 	const errors: string[] = [];
-	console.log("── test-sandbox: builder policy (pure) + guarded real-bwrap probe ──");
+	console.log(
+		"── test-sandbox: builder policy (pure) + guarded real-bwrap probe ──",
+	);
 	testDisabled(errors);
 	testStrictPolicy(errors);
 	testRwBinds(errors);
@@ -717,8 +1005,8 @@ export async function runTests(): Promise<void> {
 	testExtraBinds(errors);
 	testResolveSandbox(errors);
 	testWrapInvocation(errors);
-	await testRealBwrap(errors);
-	await testRealWorkspaceCommit(errors);
+	testRealBwrap(errors);
+	testRealWorkspaceCommit(errors);
 	await testKillPropagation(errors);
 
 	if (errors.length > 0) {
@@ -728,11 +1016,14 @@ export async function runTests(): Promise<void> {
 }
 
 // Direct execution support: `npx tsx extensions/task/test-sandbox.ts`
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (
+	process.argv[1] &&
+	import.meta.url === pathToFileURL(process.argv[1]).href
+) {
 	runTests()
 		.then(() => process.exit(0))
 		.catch((err) => {
-			console.error(err.message ?? err);
+			console.error((err as Error).message ?? err);
 			process.exit(1);
 		});
 }

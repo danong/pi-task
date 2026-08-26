@@ -109,15 +109,23 @@ export class WatchdogDriver {
 	readonly #inFlight = new Map<string, InFlightTool>();
 	#terminal: WatchdogEnd | undefined;
 	#lastEvent: SessionHostEvent | undefined;
+	// The timers seam is deliberately opaque (its handle type is unknown);
+	// `| undefined` distinguishes "no scheduled tick" from a live handle.
+	// eslint-disable-next-line @typescript-eslint/no-redundant-type-constituents
 	#timerHandle: WatchdogTimerHandle | undefined;
 	#cleanups: Array<() => void> = [];
 
 	constructor(options: WatchdogDriverOptions = {}) {
 		this.limits = {
-			wallTimeoutMs: options.limits?.wallTimeoutMs ?? DEFAULT_WATCHDOG_WALL_TIMEOUT_MS,
-			noProgressTimeoutMs: options.limits?.noProgressTimeoutMs ?? DEFAULT_WATCHDOG_NO_PROGRESS_TIMEOUT_MS,
-			toolTimeoutMs: options.limits?.toolTimeoutMs ?? DEFAULT_WATCHDOG_TOOL_TIMEOUT_MS,
-			tickIntervalMs: options.limits?.tickIntervalMs ?? DEFAULT_WATCHDOG_TICK_INTERVAL_MS,
+			wallTimeoutMs:
+				options.limits?.wallTimeoutMs ?? DEFAULT_WATCHDOG_WALL_TIMEOUT_MS,
+			noProgressTimeoutMs:
+				options.limits?.noProgressTimeoutMs ??
+				DEFAULT_WATCHDOG_NO_PROGRESS_TIMEOUT_MS,
+			toolTimeoutMs:
+				options.limits?.toolTimeoutMs ?? DEFAULT_WATCHDOG_TOOL_TIMEOUT_MS,
+			tickIntervalMs:
+				options.limits?.tickIntervalMs ?? DEFAULT_WATCHDOG_TICK_INTERVAL_MS,
 		};
 		this.#timers = options.timers ?? systemTimerSource;
 		this.#onAction = options.onAction;
@@ -156,7 +164,10 @@ export class WatchdogDriver {
 		this.#running = true;
 		this.#startedAtMs = this.#timers.now();
 		this.#lastActivityMs = this.#startedAtMs;
-		this.#timerHandle = this.#timers.setInterval(() => this.tick(), this.limits.tickIntervalMs);
+		this.#timerHandle = this.#timers.setInterval(
+			() => this.tick(),
+			this.limits.tickIntervalMs,
+		);
 	}
 
 	/** Feed one session-host event.
@@ -171,7 +182,10 @@ export class WatchdogDriver {
 		this.#lastActivityMs = this.#timers.now();
 		switch (event.type) {
 			case "toolStart":
-				this.#inFlight.set(event.toolCallId, { toolName: event.toolName, startedAtMs: this.#lastActivityMs });
+				this.#inFlight.set(event.toolCallId, {
+					toolName: event.toolName,
+					startedAtMs: this.#lastActivityMs,
+				});
 				break;
 			case "toolEnd":
 				this.#inFlight.delete(event.toolCallId);
@@ -179,8 +193,16 @@ export class WatchdogDriver {
 			case "yielded":
 				this.#hasYielded = true;
 				break;
+			case "turnStart":
+			case "error":
+				// Activity-only events: lastEvent/activity updated above.
+				break;
 			case "settled": {
-				const action = decideSettleAction(event.type, this.#hasYielded, this.#nudged);
+				const action = decideSettleAction(
+					event.type,
+					this.#hasYielded,
+					this.#nudged,
+				);
 				if (action.kind === "nudge") {
 					this.#nudged = true;
 					this.#emit({ kind: "nudge", text: this.#nudgeText });
@@ -201,7 +223,11 @@ export class WatchdogDriver {
 		if (this.#terminal || !this.#running) return;
 		const nowMs = this.#timers.now();
 
-		const wall = decideWallAction({ nowMs, startedAtMs: this.#startedAtMs, wallTimeoutMs: this.limits.wallTimeoutMs });
+		const wall = decideWallAction({
+			nowMs,
+			startedAtMs: this.#startedAtMs,
+			wallTimeoutMs: this.limits.wallTimeoutMs,
+		});
 		if (wall.kind === "abort") return this.#latch(wall);
 
 		const progress = decideNoProgressAction({
@@ -228,7 +254,11 @@ export class WatchdogDriver {
 
 	/** Stop the timer and run registered cleanups. Idempotent. */
 	dispose(): void {
-		if (!this.#running && this.#timerHandle === undefined && this.#cleanups.length === 0) {
+		if (
+			!this.#running &&
+			this.#timerHandle === undefined &&
+			this.#cleanups.length === 0
+		) {
 			return;
 		}
 		this.#running = false;
@@ -290,11 +320,11 @@ export function attachWatchdogs(
 		onAction: (action) => {
 			if (action.kind === "nudge") {
 				void handle.prompt(action.text).catch(() => {
-	/* A rejected nudge prompt already surfaces as a host error event. */
+					/* A rejected nudge prompt already surfaces as a host error event. */
 				});
 			} else if (action.kind === "abort") {
 				void handle.abort().catch(() => {
-	/* Abort races a session shutdown; the host emits its own error. */
+					/* Abort races a session shutdown; the host emits its own error. */
 				});
 			}
 			userOnAction?.(action);

@@ -22,12 +22,17 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
-export const TOOL_GUARD_BASH_TIMEOUT_CAP_ENV_VAR = "PI_TASK_BASH_TIMEOUT_CAP_MS";
+export const TOOL_GUARD_BASH_TIMEOUT_CAP_ENV_VAR =
+	"PI_TASK_BASH_TIMEOUT_CAP_MS";
 export const TOOL_GUARD_BASH_TIMEOUT_CAP_MS = 300_000;
 
 /** Pure: clamp a requested bash timeout to the cap (absent → the cap). */
-export function capBashTimeout(requested: number | undefined, cap: number): number {
-	if (requested === undefined || !Number.isFinite(requested) || requested <= 0) return cap;
+export function capBashTimeout(
+	requested: number | undefined,
+	cap: number,
+): number {
+	if (requested === undefined || !Number.isFinite(requested) || requested <= 0)
+		return cap;
 	return Math.min(requested, cap);
 }
 
@@ -52,7 +57,9 @@ export function isRootScopedSearch(command: string): boolean {
 	if (!head) return false;
 	// A standalone `.` path token anywhere in the arguments (before a pipe
 	// or redirection boundary counts too: `grep x . | head`).
-	return /(?:^|\s)\.(?:\s|$|\||;|>)/.test(stripped.replace(/^grep\b|^rg\b|^fgrep\b|^egrep\b|^find\b/, ""));
+	return /(?:^|\s)\.(?:\s|$|\||;|>)/.test(
+		stripped.replace(/^grep\b|^rg\b|^fgrep\b|^egrep\b|^find\b/, ""),
+	);
 }
 
 /** The block reason fed back to the model (teaches inside the loop). */
@@ -67,12 +74,20 @@ export function rootScopedSearchReason(command: string): string {
 export default function (pi: ExtensionAPI) {
 	const capRaw = Number(process.env[TOOL_GUARD_BASH_TIMEOUT_CAP_ENV_VAR]);
 	const cap =
-		Number.isFinite(capRaw) && capRaw > 0 ? capRaw : TOOL_GUARD_BASH_TIMEOUT_CAP_MS;
+		Number.isFinite(capRaw) && capRaw > 0
+			? capRaw
+			: TOOL_GUARD_BASH_TIMEOUT_CAP_MS;
 
-	pi.on("tool_call", async (event) => {
-		const ev = event as { toolName?: string; input?: { command?: string; timeout?: number } };
+	pi.on("tool_call", (event) => {
+		const ev = event as {
+			toolName?: string;
+			input?: { command?: string; timeout?: number };
+		};
 		if (ev.toolName !== "bash" || !ev.input) return;
-		if (typeof ev.input.command === "string" && isRootScopedSearch(ev.input.command)) {
+		if (
+			typeof ev.input.command === "string" &&
+			isRootScopedSearch(ev.input.command)
+		) {
 			return { block: true, reason: rootScopedSearchReason(ev.input.command) };
 		}
 		ev.input.timeout = capBashTimeout(ev.input.timeout, cap);

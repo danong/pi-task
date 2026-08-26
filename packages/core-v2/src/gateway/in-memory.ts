@@ -18,8 +18,16 @@
  * and later subscribers still receive the event.
  */
 
-import type { TaskGateway, TaskLedgerRow, RunManifest } from "../contracts/task-plugin.ts";
-import type { EventPattern, TaskLifecycleEvent, Unsubscribe } from "../contracts/gateway-events.ts";
+import type {
+	TaskGateway,
+	TaskLedgerRow,
+	RunManifest,
+} from "../contracts/task-plugin.ts";
+import type {
+	EventPattern,
+	TaskLifecycleEvent,
+	Unsubscribe,
+} from "../contracts/gateway-events.ts";
 import {
 	eventMatchesPattern,
 	eventTypeOf,
@@ -50,7 +58,10 @@ export class InMemoryTaskGateway implements TaskGateway {
 
 	constructor(private readonly options: InMemoryTaskGatewayOptions = {}) {
 		if (options.rows !== undefined && options.store !== undefined) {
-			throw new GatewayError("unknown_task", "InMemoryTaskGateway: supply either rows or store, not both");
+			throw new GatewayError(
+				"unknown_task",
+				"InMemoryTaskGateway: supply either rows or store, not both",
+			);
 		}
 	}
 
@@ -66,13 +77,18 @@ export class InMemoryTaskGateway implements TaskGateway {
 			try {
 				sub.handler(event);
 			} catch (err) {
-				const sink = this.options.onHandlerError ?? ((e: unknown) => console.error("gateway: handler failed", e));
+				const sink =
+					this.options.onHandlerError ??
+					((e: unknown) => console.error("gateway: handler failed", e));
 				sink(err);
 			}
 		}
 	}
 
-	on(pattern: EventPattern, handler: (event: TaskLifecycleEvent) => void): Unsubscribe {
+	on(
+		pattern: EventPattern,
+		handler: (event: TaskLifecycleEvent) => void,
+	): Unsubscribe {
 		const sub: Subscription = { pattern, handler };
 		this.subscriptions.add(sub);
 		let active = true;
@@ -90,40 +106,53 @@ export class InMemoryTaskGateway implements TaskGateway {
 
 	// ─── narrow ledger-only reads (never transcripts) ──────────────────
 
-	async getTaskState(taskId: string): Promise<TaskLedgerRow> {
+	getTaskState(taskId: string): Promise<TaskLedgerRow> {
 		if (this.options.rows !== undefined) {
 			const row = this.options.rows.tasks.get(taskId);
 			if (row === undefined) {
-				throw new GatewayError("unknown_task", `getTaskState: unknown taskId "${taskId}"`);
+				throw new GatewayError(
+					"unknown_task",
+					`getTaskState: unknown taskId "${taskId}"`,
+				);
 			}
-			return structuredClone(row);
+			return Promise.resolve(structuredClone(row));
 		}
 		const task = this.requireStore().getTask(taskId);
 		if (task === null) {
-			throw new GatewayError("unknown_task", `getTaskState: unknown taskId "${taskId}"`);
+			throw new GatewayError(
+				"unknown_task",
+				`getTaskState: unknown taskId "${taskId}"`,
+			);
 		}
-		return structuredClone(task);
+		return Promise.resolve(structuredClone(task));
 	}
 
-	async getManifest(taskId: string): Promise<RunManifest> {
+	getManifest(taskId: string): Promise<RunManifest> {
 		const store = this.requireStore();
 		const task = store.getTask(taskId);
 		if (task === null) {
-			throw new GatewayError("unknown_task", `getManifest: unknown taskId "${taskId}"`);
+			throw new GatewayError(
+				"unknown_task",
+				`getManifest: unknown taskId "${taskId}"`,
+			);
 		}
 		// Manifest assembly reads micro_sessions metadata only (status/
 		// turnCount) — the yield_payload transcript column is deliberately
 		// never selected.
 		const sessions = store.listSessions(taskId);
-		return {
+		return Promise.resolve({
 			taskId: task.id,
 			runId: task.id,
 			totals: { costUsd: 0, durationMs: 0, inputTokens: 0, outputTokens: 0 },
 			verifyPassed: task.status === "completed",
 			detail: {
-				sessions: sessions.map((s) => ({ id: s.id, role: s.role, status: s.status })),
+				sessions: sessions.map((s) => ({
+					id: s.id,
+					role: s.role,
+					status: s.status,
+				})),
 			},
-		};
+		});
 	}
 
 	private requireStore(): LedgerStore {

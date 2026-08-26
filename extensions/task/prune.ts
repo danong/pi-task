@@ -48,6 +48,13 @@ interface ContentBlock {
  *  step-by-step edit calls. */
 export const DEFAULT_DROP_TOOLS = ["edit", "write", "checklist", "yield"];
 
+/** Structural view of one content block, or undefined for non-objects
+ *  (primitives pass through the filter untouched, as before). */
+function asBlock(value: unknown): ContentBlock | undefined {
+	if (typeof value !== "object" || value === null) return undefined;
+	return value as ContentBlock;
+}
+
 export interface PruneOptions {
 	/** Tool names to drop (calls + results). Defaults to DEFAULT_DROP_TOOLS. */
 	dropTools?: string[];
@@ -58,7 +65,10 @@ export interface PruneOptions {
  * detached reviewer needs. Pure: returns a new array; a kept message is
  * shallow-copied only when its content is rewritten (assistant blocks).
  */
-export function pruneReviewContext<T extends { role: string }>(messages: T[], opts: PruneOptions = {}): T[] {
+export function pruneReviewContext<T extends { role: string }>(
+	messages: T[],
+	opts: PruneOptions = {},
+): T[] {
 	const dropTools = new Set(opts.dropTools ?? DEFAULT_DROP_TOOLS);
 	const out: T[] = [];
 
@@ -79,13 +89,14 @@ export function pruneReviewContext<T extends { role: string }>(messages: T[], op
 		// factual tool calls (so kept tool results stay paired with their call).
 		// Drop the whole message if nothing remains.
 		if (msg.role === "assistant") {
-			const blocks = Array.isArray(msg.content) ? (msg.content as ContentBlock[]) : [];
-			const kept = blocks.filter((b) => {
-				if (b?.type === "text" || b?.type === "thinking") return false;
-				if (b?.type === "toolCall") return !dropTools.has(b?.name ?? "");
+			const raw: unknown[] = Array.isArray(msg.content) ? msg.content : [];
+			const kept = raw.filter((b) => {
+				const block = asBlock(b);
+				if (block?.type === "text" || block?.type === "thinking") return false;
+				if (block?.type === "toolCall") return !dropTools.has(block.name ?? "");
 				return true; // keep unknown block types
 			});
-			if (kept.length > 0) out.push({ ...m, content: kept } as T);
+			if (kept.length > 0) out.push({ ...m, content: kept });
 			continue;
 		}
 

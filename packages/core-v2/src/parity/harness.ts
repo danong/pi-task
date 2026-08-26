@@ -21,9 +21,18 @@
 import { synthesizeDag } from "../workflow/dag.ts";
 import type { LedgerStore } from "../ledger/store.ts";
 import { validateCanonicalDag } from "./canonical-dag.ts";
-import { dryV1Executor, runV1Surface, type V1NodeExecutor } from "./v1-surface.ts";
+import {
+	dryV1Executor,
+	runV1Surface,
+	type V1NodeExecutor,
+} from "./v1-surface.ts";
 import { runV2Build, type V2NodeExecutor } from "./v2-build.ts";
-import { buildParityReport, parityExitCode, PARITY_EXIT_MISMATCH, PARITY_EXIT_OK } from "./report.ts";
+import {
+	buildParityReport,
+	parityExitCode,
+	PARITY_EXIT_MISMATCH,
+	PARITY_EXIT_OK,
+} from "./report.ts";
 import type { CanonicalDag, NormalizedV2Node, ParityReport } from "./types.ts";
 
 export interface RunParityOptions {
@@ -50,7 +59,9 @@ export interface ParityRunResult {
  * synthesis — deterministic Kahn order), so node execution order can
  * never be the source of a parity mismatch.
  */
-export async function runParity(options: RunParityOptions): Promise<ParityRunResult> {
+export async function runParity(
+	options: RunParityOptions,
+): Promise<ParityRunResult> {
 	validateCanonicalDag(options.dag);
 
 	const order = synthesizeDag(
@@ -66,7 +77,8 @@ export async function runParity(options: RunParityOptions): Promise<ParityRunRes
 	).order;
 
 	const mode = options.mode ?? "dry";
-	const v1Exec = options.v1Executor ?? (mode === "dry" ? dryV1Executor : undefined);
+	const v1Exec =
+		options.v1Executor ?? (mode === "dry" ? dryV1Executor : undefined);
 	if (v1Exec === undefined) {
 		throw new Error("runParity: real mode requires v1Executor");
 	}

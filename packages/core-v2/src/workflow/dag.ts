@@ -35,10 +35,7 @@ export interface SynthesizedDag {
 
 /** Typed synthesis failure with a stable machine-readable code. */
 export type DagSynthesisCode =
-	| "cycle"
-	| "unknown_dependency"
-	| "fan_out_exceeded"
-	| "duplicate_id";
+	"cycle" | "unknown_dependency" | "fan_out_exceeded" | "duplicate_id";
 
 export class DagSynthesisError extends Error {
 	constructor(
@@ -63,13 +60,19 @@ export class DagCycleError extends DagSynthesisError {
  * insertion order so equal-priority roots keep their input order across
  * runs — the same node list always yields the same order.
  */
-export function synthesizeDag(nodes: readonly DagNode[], options?: { maxFanOut?: number }): SynthesizedDag {
+export function synthesizeDag(
+	nodes: readonly DagNode[],
+	options?: { maxFanOut?: number },
+): SynthesizedDag {
 	const maxFanOut = options?.maxFanOut ?? DEFAULT_MAX_FAN_OUT;
 
 	const byId = new Map<string, DagNode>();
 	for (const node of nodes) {
 		if (byId.has(node.id)) {
-			throw new DagSynthesisError("duplicate_id", `duplicate spec node id: ${node.id}`);
+			throw new DagSynthesisError(
+				"duplicate_id",
+				`duplicate spec node id: ${node.id}`,
+			);
 		}
 		byId.set(node.id, node);
 	}
@@ -78,7 +81,10 @@ export function synthesizeDag(nodes: readonly DagNode[], options?: { maxFanOut?:
 	for (const node of nodes) {
 		for (const dep of node.spec.dependsOn) {
 			if (!byId.has(dep)) {
-				throw new DagSynthesisError("unknown_dependency", `node "${node.id}" depends on unknown spec "${dep}"`);
+				throw new DagSynthesisError(
+					"unknown_dependency",
+					`node "${node.id}" depends on unknown spec "${dep}"`,
+				);
 			}
 		}
 		if (node.spec.dependsOn.length > maxFanOut) {
@@ -127,8 +133,13 @@ export function synthesizeDag(nodes: readonly DagNode[], options?: { maxFanOut?:
  * Walk remaining unresolved edges to recover ONE concrete cycle path for
  * the typed error (deterministic: first edge in insertion order). Pure.
  */
-function findCyclePath(nodes: readonly DagNode[], byId: ReadonlyMap<string, DagNode>): string[] {
-	const start = nodes.find((n) => (byId.get(n.id)?.spec.dependsOn.length ?? -1) > 0) ?? nodes[0];
+function findCyclePath(
+	nodes: readonly DagNode[],
+	byId: ReadonlyMap<string, DagNode>,
+): string[] {
+	const start =
+		nodes.find((n) => (byId.get(n.id)?.spec.dependsOn.length ?? -1) > 0) ??
+		nodes[0];
 	if (!start) return [];
 	const path: string[] = [start.id];
 	let current: string | undefined = start.spec.dependsOn[0];

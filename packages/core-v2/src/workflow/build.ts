@@ -57,7 +57,9 @@ export interface RunBuildOptions {
  * fan-out-limited, dependent-short-circuiting scheduling. The gate is
  * read-only; nothing mutates approval state.
  */
-export async function runBuild(options: RunBuildOptions): Promise<ScheduleResult> {
+export async function runBuild(
+	options: RunBuildOptions,
+): Promise<ScheduleResult> {
 	try {
 		requirePlanApproved(options.store, options.dagId);
 	} catch (err) {

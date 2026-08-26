@@ -91,11 +91,18 @@ function parsePluginPaths(source: string, tomlPath: string): string[] {
 	for (;;) {
 		skipWsAndComments();
 		if (i >= n) return []; // no [plugins] section at all → no plugins
-		if (source[i] !== "[") fail(`expected a table header at offset ${i}, got "${source[i]}"`);
+		if (source[i] !== "[")
+			fail(`expected a table header at offset ${i}, got "${source[i]}"`);
 		// A table header cannot span lines or swallow a '=' — scan only to
 		// the closing bracket ON THIS LINE.
 		let close = i + 1;
-		while (close < n && source[close] !== "]" && source[close] !== "\n" && source[close] !== "=") close += 1;
+		while (
+			close < n &&
+			source[close] !== "]" &&
+			source[close] !== "\n" &&
+			source[close] !== "="
+		)
+			close += 1;
 		if (close >= n || source[close] !== "]") fail("unterminated table header");
 		const header = source.slice(i + 1, close).trim();
 		i = close + 1;
@@ -130,16 +137,21 @@ function parsePluginPaths(source: string, tomlPath: string): string[] {
 				while (i < n) {
 					const c = source[i]!;
 					if (c === '"' || c === "'") scanString();
-					else if (c === "[") { depth += 1; i += 1; }
-					else if (c === "]") { depth -= 1; i += 1; if (depth === 0) break; }
-					else i += 1;
+					else if (c === "[") {
+						depth += 1;
+						i += 1;
+					} else if (c === "]") {
+						depth -= 1;
+						i += 1;
+						if (depth === 0) break;
+					} else i += 1;
 				}
 			} else {
 				while (i < n && !/[\n[]/.test(source[i]!)) i += 1;
 			}
 			continue;
 		}
-		if (source[i] !== "[") fail('paths must be an array of quoted strings');
+		if (source[i] !== "[") fail("paths must be an array of quoted strings");
 		i += 1; // consume '['
 		const paths: string[] = [];
 		for (;;) {
@@ -153,7 +165,8 @@ function parsePluginPaths(source: string, tomlPath: string): string[] {
 				i += 1; // tolerate trailing commas between entries
 				continue;
 			}
-			if (source[i] !== '"' && source[i] !== "'") fail(`expected a quoted path entry at offset ${i}`);
+			if (source[i] !== '"' && source[i] !== "'")
+				fail(`expected a quoted path entry at offset ${i}`);
 			paths.push(scanString());
 		}
 	}
@@ -166,7 +179,10 @@ function parsePluginPaths(source: string, tomlPath: string): string[] {
 	);
 }
 
-export function readPluginPathsFromToml(tomlPath: string, cwd: string): string[] {
+export function readPluginPathsFromToml(
+	tomlPath: string,
+	cwd: string,
+): string[] {
 	if (!existsSync(tomlPath)) return [];
 	let source: string;
 	try {
@@ -191,7 +207,9 @@ export function readPluginPathsFromToml(tomlPath: string, cwd: string): string[]
 		);
 	}
 	const paths = parsePluginPaths(source, tomlPath);
-	return paths.map((entry) => (isAbsolute(entry) ? entry : resolve(cwd, entry)));
+	return paths.map((entry) =>
+		isAbsolute(entry) ? entry : resolve(cwd, entry),
+	);
 }
 
 /**
@@ -199,7 +217,9 @@ export function readPluginPathsFromToml(tomlPath: string, cwd: string): string[]
  * export against the TaskPlugin shape (name: string required; hooks
  * optional). Fails typed with recoverable guidance on every outcome.
  */
-export async function importPluginAt(absolutePath: string): Promise<TaskPlugin> {
+export async function importPluginAt(
+	absolutePath: string,
+): Promise<TaskPlugin> {
 	if (!existsSync(absolutePath)) {
 		throw new PluginLoadError(
 			"not_found",
@@ -210,7 +230,10 @@ export async function importPluginAt(absolutePath: string): Promise<TaskPlugin> 
 	}
 	let mod: Record<string, unknown>;
 	try {
-		mod = (await import(pathToFileURL(absolutePath).href)) as Record<string, unknown>;
+		mod = (await import(pathToFileURL(absolutePath).href)) as Record<
+			string,
+			unknown
+		>;
 	} catch (err) {
 		throw new PluginLoadError(
 			"import_failed",
@@ -242,7 +265,10 @@ export async function importPluginAt(absolutePath: string): Promise<TaskPlugin> 
  * against `cwd`, in declaration order. First bad path fails typed
  * (PluginLoadError) — a misconfigured plugin never silently vanishes.
  */
-export async function loadPluginsFromToml(tomlPath: string, cwd: string): Promise<TaskPlugin[]> {
+export async function loadPluginsFromToml(
+	tomlPath: string,
+	cwd: string,
+): Promise<TaskPlugin[]> {
 	const paths = readPluginPathsFromToml(tomlPath, cwd);
 	const plugins: TaskPlugin[] = [];
 	for (const p of paths) {

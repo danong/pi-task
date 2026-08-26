@@ -13,15 +13,30 @@
 
 import { pathToFileURL } from "node:url";
 
-import { attachWatchdogs, WatchdogDriver } from "../src/guards/watchdog-driver.ts";
-import type { WatchdogTimerSource, WatchdogTimerHandle, WatchdogLimits } from "../src/guards/watchdog-driver.ts";
+import {
+	attachWatchdogs,
+	WatchdogDriver,
+} from "../src/guards/watchdog-driver.ts";
+import type {
+	WatchdogTimerSource,
+	WatchdogTimerHandle,
+} from "../src/guards/watchdog-driver.ts";
 import type { WatchdogAction } from "../src/guards/watchdogs.ts";
-import type { SessionHandle, SessionHostEvent, SessionHostEventListener } from "../src/sessions/host.ts";
+import type {
+	SessionHandle,
+	SessionHostEvent,
+	SessionHostEventListener,
+} from "../src/sessions/host.ts";
 import type { Yield } from "../src/contracts/index.ts";
 
 const YIELDED_EVENT: SessionHostEvent = {
 	type: "yielded",
-	payload: { files_changed: [], summary: "done", commit_ids: [], deviations: [] } satisfies Yield,
+	payload: {
+		files_changed: [],
+		summary: "done",
+		commit_ids: [],
+		deviations: [],
+	} satisfies Yield,
 };
 
 /**
@@ -56,16 +71,6 @@ class FakeTimers implements WatchdogTimerSource {
 }
 
 /** Bulk driver limits with a long tool bound, so only the probe under test trips. */
-function limitsWith(overrides: Partial<WatchdogLimits> = {}): Partial<WatchdogLimits> {
-	return {
-		wallTimeoutMs: 3_600_000,
-		noProgressTimeoutMs: 3_600_000,
-		toolTimeoutMs: 3_600_000,
-		tickIntervalMs: 1_000,
-		...overrides,
-	};
-}
-
 interface FakeRig {
 	handle: SessionHandle;
 	prompts: string[];
@@ -88,15 +93,17 @@ function makeFakeHandle(): FakeRig {
 		setModel: () => {
 			throw new Error("setModel not expected in watchdog tests");
 		},
-		prompt: async (text: string) => {
+		prompt: (text: string) => {
 			prompts.push(text);
+			return Promise.resolve();
 		},
 		subscribe: (listener) => {
 			listeners.add(listener);
 			return () => listeners.delete(listener);
 		},
-		abort: async () => {
+		abort: () => {
 			aborts.count += 1;
+			return Promise.resolve();
 		},
 		close: () => {},
 	};
@@ -111,7 +118,7 @@ function makeFakeHandle(): FakeRig {
 	};
 }
 
-export async function runTests(): Promise<void> {
+export function runTests(): Promise<void> {
 	const errors: string[] = [];
 	const check = (cond: boolean, msg: string): void => {
 		if (!cond) errors.push(msg);
@@ -121,27 +128,42 @@ export async function runTests(): Promise<void> {
 	{
 		const timers = new FakeTimers();
 		const actions: WatchdogAction[] = [];
-		const driver = new WatchdogDriver({ timers, onAction: (a) => actions.push(a) });
+		const driver = new WatchdogDriver({
+			timers,
+			onAction: (a) => actions.push(a),
+		});
 		driver.start();
 
 		driver.onEvent({ type: "turnStart" });
 		driver.onEvent({ type: "settled" });
-		check(actions.length === 1 && actions[0]?.kind === "nudge",
-			`first settle → one nudge, got ${JSON.stringify(actions)}`);
+		check(
+			actions.length === 1 && actions[0]?.kind === "nudge",
+			`first settle → one nudge, got ${JSON.stringify(actions)}`,
+		);
 
 		driver.onEvent({ type: "turnStart" });
 		driver.onEvent({ type: "settled" });
-		check(actions.length === 2 && actions[1]?.kind === "abort"
-			&& actions[1].kind === "abort" && actions[1].reason === "settled_without_yield",
-			`second settle → abort(settled_without_yield), got ${JSON.stringify(actions[1])}`);
-		check(driver.terminal?.kind === "abort" && driver.terminal.reason === "settled_without_yield",
-			"driver latches the terminal abort");
+		check(
+			actions.length === 2 &&
+				actions[1]?.kind === "abort" &&
+				actions[1].kind === "abort" &&
+				actions[1].reason === "settled_without_yield",
+			`second settle → abort(settled_without_yield), got ${JSON.stringify(actions[1])}`,
+		);
+		check(
+			driver.terminal?.kind === "abort" &&
+				driver.terminal.reason === "settled_without_yield",
+			"driver latches the terminal abort",
+		);
 
 		// Latched: further events and ticks act no more.
 		driver.onEvent({ type: "turnStart" });
 		driver.onEvent({ type: "settled" });
 		timers.advance(100_000);
-		check(actions.length === 2, "after streaming becomes 2 actions, not resettled");
+		check(
+			actions.length === 2,
+			"after streaming becomes 2 actions, not resettled",
+		);
 		driver.dispose();
 	}
 
@@ -149,14 +171,23 @@ export async function runTests(): Promise<void> {
 	{
 		const timers = new FakeTimers();
 		const actions: WatchdogAction[] = [];
-		const driver = new WatchdogDriver({ timers, onAction: (a) => actions.push(a) });
+		const driver = new WatchdogDriver({
+			timers,
+			onAction: (a) => actions.push(a),
+		});
 		driver.start();
 
 		driver.onEvent({ type: "settled" });
-		check(actions.length === 1 && actions[0]?.kind === "nudge", "first settle nudges");
+		check(
+			actions.length === 1 && actions[0]?.kind === "nudge",
+			"first settle nudges",
+		);
 		driver.onEvent(YIELDED_EVENT);
 		driver.onEvent({ type: "settled" });
-		check(actions.length === 1, `yielded run → no second nudge/abort, got ${actions.length}`);
+		check(
+			actions.length === 1,
+			`yielded run → no second nudge/abort, got ${actions.length}`,
+		);
 		check(driver.hasYielded === true, "driver records the captured yield");
 		driver.dispose();
 	}
@@ -165,7 +196,11 @@ export async function runTests(): Promise<void> {
 	{
 		const timers = new FakeTimers();
 		const actions: WatchdogAction[] = [];
-		const driver = new WatchdogDriver({ timers, onAction: (a) => actions.push(a), limits: { noProgressTimeoutMs: 300 } });
+		const driver = new WatchdogDriver({
+			timers,
+			onAction: (a) => actions.push(a),
+			limits: { noProgressTimeoutMs: 300 },
+		});
 		driver.start();
 
 		// Activity every 200ms within the 300ms window → stays alive.
@@ -173,13 +208,20 @@ export async function runTests(): Promise<void> {
 			timers.advance(200);
 			driver.onEvent({ type: "turnStart" });
 		}
-		check(driver.running && actions.every((a) => a.kind !== "abort"),
-			"repeated activity inside the window never trips no-progress");
+		check(
+			driver.running && actions.every((a) => a.kind !== "abort"),
+			"repeated activity inside the window never trips no-progress",
+		);
 
 		// Go quiet past the window → abort.
 		timers.advance(400);
-		check(actions.length === 1 && actions[0]?.kind === "abort" && actions[0].kind === "abort" && actions[0].reason === "no_progress",
-			`silence past the window aborts no_progress, got ${JSON.stringify(actions[0])}`);
+		check(
+			actions.length === 1 &&
+				actions[0]?.kind === "abort" &&
+				actions[0].kind === "abort" &&
+				actions[0].reason === "no_progress",
+			`silence past the window aborts no_progress, got ${JSON.stringify(actions[0])}`,
+		);
 		driver.dispose();
 	}
 
@@ -190,20 +232,33 @@ export async function runTests(): Promise<void> {
 		const driver = new WatchdogDriver({
 			timers,
 			onAction: (a) => actions.push(a),
-			limits: { noProgressTimeoutMs: 100, toolTimeoutMs: 500, wallTimeoutMs: 3_600_000, tickIntervalMs: 1_000 },
+			limits: {
+				noProgressTimeoutMs: 100,
+				toolTimeoutMs: 500,
+				wallTimeoutMs: 3_600_000,
+				tickIntervalMs: 1_000,
+			},
 		});
 		driver.start();
 
 		driver.onEvent({ type: "toolStart", toolName: "bash", toolCallId: "c1" });
 		timers.advance(200); // past no-progress (100), inside tool bound (500)
-		check(driver.running && actions.length === 0,
-			`in-flight tool suppresses the no-progress abort, got ${JSON.stringify(actions)}`);
+		check(
+			driver.running && actions.length === 0,
+			`in-flight tool suppresses the no-progress abort, got ${JSON.stringify(actions)}`,
+		);
 
 		// Past the per-tool bound → abort naming the tool.
 		timers.advance(400); // cumulative 600 > tool bound 500
-		check(actions.length === 1 && actions[0]?.kind === "abort" && actions[0].kind === "abort" && actions[0].reason === "tool_timeout"
-			&& actions[0].kind === "abort" && actions[0].message.includes("bash"),
-			`hung in-flight tool aborts tool_timeout naming the tool, got ${JSON.stringify(actions[0])}`);
+		check(
+			actions.length === 1 &&
+				actions[0]?.kind === "abort" &&
+				actions[0].kind === "abort" &&
+				actions[0].reason === "tool_timeout" &&
+				actions[0].kind === "abort" &&
+				actions[0].message.includes("bash"),
+			`hung in-flight tool aborts tool_timeout naming the tool, got ${JSON.stringify(actions[0])}`,
+		);
 		check(driver.terminal?.kind === "abort", "driver terminal latched");
 		driver.dispose();
 	}
@@ -215,15 +270,30 @@ export async function runTests(): Promise<void> {
 		const driver = new WatchdogDriver({
 			timers,
 			onAction: (a) => actions.push(a),
-			limits: { noProgressTimeoutMs: 100, toolTimeoutMs: 500, wallTimeoutMs: 3_600_000, tickIntervalMs: 1_000 },
+			limits: {
+				noProgressTimeoutMs: 100,
+				toolTimeoutMs: 500,
+				wallTimeoutMs: 3_600_000,
+				tickIntervalMs: 1_000,
+			},
 		});
 		driver.start();
 
 		driver.onEvent({ type: "toolStart", toolName: "bash", toolCallId: "c1" });
-		driver.onEvent({ type: "toolEnd", toolName: "bash", toolCallId: "c1", isError: false });
+		driver.onEvent({
+			type: "toolEnd",
+			toolName: "bash",
+			toolCallId: "c1",
+			isError: false,
+		});
 		timers.advance(90_000);
-		check(actions.length === 1 && actions[0]?.kind === "abort" && actions[0].kind === "abort" && actions[0].reason === "no_progress",
-			`a returned tool stops masking the no-progress watchdog, got ${JSON.stringify(actions[0])}`);
+		check(
+			actions.length === 1 &&
+				actions[0]?.kind === "abort" &&
+				actions[0].kind === "abort" &&
+				actions[0].reason === "no_progress",
+			`a returned tool stops masking the no-progress watchdog, got ${JSON.stringify(actions[0])}`,
+		);
 		driver.dispose();
 	}
 
@@ -234,13 +304,23 @@ export async function runTests(): Promise<void> {
 		const driver = new WatchdogDriver({
 			timers,
 			onAction: (a) => actions.push(a),
-			limits: { noProgressTimeoutMs: 3_600_000, toolTimeoutMs: 3_600_000, wallTimeoutMs: 500, tickIntervalMs: 1_000 },
+			limits: {
+				noProgressTimeoutMs: 3_600_000,
+				toolTimeoutMs: 3_600_000,
+				wallTimeoutMs: 500,
+				tickIntervalMs: 1_000,
+			},
 		});
 		driver.start();
 		driver.onEvent({ type: "toolStart", toolName: "bash", toolCallId: "c1" });
 		timers.advance(600);
-		check(actions.length === 1 && actions[0]?.kind === "abort" && actions[0].kind === "abort" && actions[0].reason === "wall_timeout",
-			`wall expiry aborts wall_timeout even with the tool in flight, got ${JSON.stringify(actions[0])}`);
+		check(
+			actions.length === 1 &&
+				actions[0]?.kind === "abort" &&
+				actions[0].kind === "abort" &&
+				actions[0].reason === "wall_timeout",
+			`wall expiry aborts wall_timeout even with the tool in flight, got ${JSON.stringify(actions[0])}`,
+		);
 		driver.dispose();
 	}
 
@@ -250,26 +330,45 @@ export async function runTests(): Promise<void> {
 		const rig = makeFakeHandle();
 		const attached = attachWatchdogs(rig.handle, {
 			timers,
-			limits: { noProgressTimeoutMs: 3_600_000, toolTimeoutMs: 3_600_000, wallTimeoutMs: 500, tickIntervalMs: 1_000 },
+			limits: {
+				noProgressTimeoutMs: 3_600_000,
+				toolTimeoutMs: 3_600_000,
+				wallTimeoutMs: 500,
+				tickIntervalMs: 1_000,
+			},
 			onAction: (a) => rig.actions.push(a),
 		});
 
 		rig.emit({ type: "settled" });
-		check(rig.prompts.length === 1 && rig.actions.some((a) => a.kind === "nudge"),
-			"settle nudge reaches the handle as a reminder prompt");
+		check(
+			rig.prompts.length === 1 && rig.actions.some((a) => a.kind === "nudge"),
+			"settle nudge reaches the handle as a reminder prompt",
+		);
 		rig.emit({ type: "settled" });
-		check(rig.aborts.count === 1, "second settle propagates a handle.abort() to the session handle");
-		check(rig.actions.filter((a) => a.kind === "abort").length === 1, "abort action observable to the caller");
+		check(
+			rig.aborts.count === 1,
+			"second settle propagates a handle.abort() to the session handle",
+		);
+		check(
+			rig.actions.filter((a) => a.kind === "abort").length === 1,
+			"abort action observable to the caller",
+		);
 
 		// Latched: nothing further reaches the handle.
 		rig.emit({ type: "turnStart" });
 		timers.advance(100_000);
-		check(rig.aborts.count === 1 && rig.prompts.length === 1, "post-abort events/timers no longer reach the handle");
+		check(
+			rig.aborts.count === 1 && rig.prompts.length === 1,
+			"post-abort events/timers no longer reach the handle",
+		);
 
 		attached.dispose();
 		rig.emit({ type: "settled" });
 		timers.advance(10_000);
-		check(rig.prompts.length === 1 && rig.aborts.count === 1, "dispose unsubscribes and stops the timer");
+		check(
+			rig.prompts.length === 1 && rig.aborts.count === 1,
+			"dispose unsubscribes and stops the timer",
+		);
 	}
 
 	// ─── Deterministic purity at the driver seam ──────────────────────
@@ -279,25 +378,44 @@ export async function runTests(): Promise<void> {
 	{
 		const timers = new FakeTimers();
 		const actions: WatchdogAction[] = [];
-		const driver = new WatchdogDriver({ timers, onAction: (a) => actions.push(a) });
+		const driver = new WatchdogDriver({
+			timers,
+			onAction: (a) => actions.push(a),
+		});
 		driver.start();
 		driver.onEvent({ type: "error", message: "boom", code: "prompt_failed" });
-		driver.onEvent({ type: "toolEnd", toolName: "write", toolCallId: "x", isError: true });
-		check(actions.length === 0 && driver.running, "errors/unknown toolEnd idempotent from a cold state");
+		driver.onEvent({
+			type: "toolEnd",
+			toolName: "write",
+			toolCallId: "x",
+			isError: true,
+		});
+		check(
+			actions.length === 0 && driver.running,
+			"errors/unknown toolEnd idempotent from a cold state",
+		);
 		driver.dispose();
 	}
 
 	if (errors.length > 0) {
-		throw new Error("test-watchdog-driver failed:\n  ✗ " + errors.join("\n  ✗ "));
+		return Promise.reject(
+			new Error("test-watchdog-driver failed:\n  ✗ " + errors.join("\n  ✗ ")),
+		);
 	}
-	console.log("✓ watchdog-driver: settle/nudge, no-progress, per-tool, wall, abort propagation, dispose");
+	console.log(
+		"✓ watchdog-driver: settle/nudge, no-progress, per-tool, wall, abort propagation, dispose",
+	);
+	return Promise.resolve();
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (
+	process.argv[1] &&
+	import.meta.url === pathToFileURL(process.argv[1]).href
+) {
 	runTests()
 		.then(() => process.exit(0))
-		.catch((err) => {
-			console.error(err.message ?? err);
+		.catch((err: unknown) => {
+			console.error(err instanceof Error ? err.message : err);
 			process.exit(1);
 		});
 }

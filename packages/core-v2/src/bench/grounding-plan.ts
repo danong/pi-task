@@ -21,11 +21,16 @@ export interface GroundingBaselineEntry {
 export interface PlanSpecInput {
 	id: string;
 	description: string;
-	baseline: Record<string, GroundingBaselineEntry> & { default: GroundingBaselineEntry };
+	baseline: Record<string, GroundingBaselineEntry> & {
+		default: GroundingBaselineEntry;
+	};
 }
 
 /** Resolve a spec's baseline for a tier (unknown tiers → default entry). */
-export function baselineForSpec(spec: PlanSpecInput, tier: string): GroundingBaselineEntry {
+export function baselineForSpec(
+	spec: PlanSpecInput,
+	tier: string,
+): GroundingBaselineEntry {
 	return spec.baseline[tier] ?? spec.baseline.default;
 }
 
@@ -84,7 +89,10 @@ export function formatEvalDuration(ms: number): string {
 }
 
 /** Render the dry-run plan (no spawns, no LLM). Pure. */
-export function renderGroundingPlan(plan: GroundingPlan, opts: { gatedIncluded: boolean }): string[] {
+export function renderGroundingPlan(
+	plan: GroundingPlan,
+	opts: { gatedIncluded: boolean },
+): string[] {
 	const lines = [
 		"grounding evaluation — dry run (no runs spawned, no LLM calls)",
 		opts.gatedIncluded

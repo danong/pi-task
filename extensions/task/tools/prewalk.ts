@@ -59,12 +59,18 @@ export default function (pi: ExtensionAPI) {
 }
 
 function stripPlanningSuffix(payload: Record<string, unknown>): void {
-	const messages = Array.isArray(payload.messages) ? payload.messages : [];
-	const sysMsg = messages.find((m) => (m as { role?: string }).role === "system");
+	const rawMessages: unknown = payload.messages;
+	const messages: unknown[] = Array.isArray(rawMessages) ? rawMessages : [];
+	const sysMsg = messages.find(
+		(m) => (m as { role?: string }).role === "system",
+	);
 	if (!sysMsg) return;
 
 	const content = (sysMsg as { content?: unknown }).content;
 	if (typeof content === "string" && content.endsWith(PLANNING_SUFFIX)) {
-		(sysMsg as { content: string }).content = content.slice(0, -PLANNING_SUFFIX.length);
+		(sysMsg as { content: string }).content = content.slice(
+			0,
+			-PLANNING_SUFFIX.length,
+		);
 	}
 }

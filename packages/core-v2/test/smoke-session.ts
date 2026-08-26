@@ -22,7 +22,13 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
@@ -67,9 +73,13 @@ function jj(args: string[], cwd: string): string {
 function initRepo(dir: string): void {
 	jj(
 		[
-			"--config", 'user.name="V2 Test"',
-			"--config", 'user.email="v2@test.dev"',
-			"git", "init", "--colocate",
+			"--config",
+			'user.name="V2 Test"',
+			"--config",
+			'user.email="v2@test.dev"',
+			"git",
+			"init",
+			"--colocate",
 		],
 		dir,
 	);
@@ -93,7 +103,9 @@ function hasOpenRouterAuth(): boolean {
 
 async function main(): Promise<void> {
 	if (!hasOpenRouterAuth()) {
-		console.log("SKIPPED: no OPENROUTER credential present — real session spawn is guarded (network + cost).");
+		console.log(
+			"SKIPPED: no OPENROUTER credential present — real session spawn is guarded (network + cost).",
+		);
 		return;
 	}
 
@@ -115,7 +127,9 @@ async function main(): Promise<void> {
 		const unsubscribe = handle.subscribe((event) => {
 			events.push(event.type);
 		});
-		console.log(`spawned session: ${handle.model.provider}/${handle.model.modelId} role=${handle.role} cwd=${dir}`);
+		console.log(
+			`spawned session: ${handle.model.provider}/${handle.model.modelId} role=${handle.role} cwd=${dir}`,
+		);
 
 		await handle.prompt(PROMPT);
 		unsubscribe();
@@ -128,11 +142,18 @@ async function main(): Promise<void> {
 		// The yield payload must round-trip the canonical zod contract.
 		const parsed = YieldSchema.safeParse(result);
 		if (!parsed.success) {
-			fail(`yield payload failed the canonical YieldSchema: ${JSON.stringify(parsed.error)}`);
+			fail(
+				`yield payload failed the canonical YieldSchema: ${JSON.stringify(parsed.error)}`,
+			);
 		}
 
-		if (result.files_changed.length !== 1 || result.files_changed[0] !== "hello.txt") {
-			fail(`expected files_changed=['hello.txt'], got ${JSON.stringify(result.files_changed)}`);
+		if (
+			result.files_changed.length !== 1 ||
+			result.files_changed[0] !== "hello.txt"
+		) {
+			fail(
+				`expected files_changed=['hello.txt'], got ${JSON.stringify(result.files_changed)}`,
+			);
 		}
 
 		const helloPath = join(dir, "hello.txt");
@@ -141,22 +162,30 @@ async function main(): Promise<void> {
 		}
 		const content = readFileSync(helloPath, "utf-8").trim();
 		if (content !== "v2") {
-			fail(`expected hello.txt to contain exactly 'v2', got ${JSON.stringify(content)}`);
+			fail(
+				`expected hello.txt to contain exactly 'v2', got ${JSON.stringify(content)}`,
+			);
 		}
 
 		const observed = new Set(events);
 		for (const expected of ["turnStart", "toolEnd", "settled", "yielded"]) {
 			if (!observed.has(expected)) {
-				fail(`event stream missing '${expected}' (observed: ${[...observed].join(",")})`);
+				fail(
+					`event stream missing '${expected}' (observed: ${[...observed].join(",")})`,
+				);
 			}
 		}
 
-		console.log(`✓ session smoke: ${result.commit_ids.length} commit(s), ` +
-			`files_changed=${JSON.stringify(result.files_changed)}, events=${[...observed].join(",")}`);
+		console.log(
+			`✓ session smoke: ${result.commit_ids.length} commit(s), ` +
+				`files_changed=${JSON.stringify(result.files_changed)}, events=${[...observed].join(",")}`,
+		);
 		handle.close();
 	} catch (err) {
 		if (err && typeof err === "object" && "code" in err) {
-			fail(`SessionHostError(${String((err as { code: unknown }).code)}): ${err instanceof Error ? err.message : String(err)}`);
+			fail(
+				`SessionHostError(${JSON.stringify(err.code)}): ${err instanceof Error ? err.message : JSON.stringify(err)}`,
+			);
 		}
 		fail(err instanceof Error ? err.message : String(err));
 	} finally {
@@ -164,7 +193,10 @@ async function main(): Promise<void> {
 	}
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (
+	process.argv[1] &&
+	import.meta.url === pathToFileURL(process.argv[1]).href
+) {
 	main().catch((err) => {
 		console.error(err instanceof Error ? err.message : err);
 		process.exit(1);
