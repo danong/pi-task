@@ -39,8 +39,7 @@ the strict gate.
   handle), and `artifacts.ts` (capped `.failure.json` diagnostics).
 - `src/daemon/` — the M1.4 assembly: `task-runner.ts` runs the full pipeline
   (validate → route → host → guard → yield → verify → ledger → receipt),
-  `start.ts` opens the ledger and reconciles stale in-flight tasks at boot.
-- `src/verify/run.ts` — the M1.3 verification runner: per-command timeout,
+  `start.ts` opens the ledger and reconciles stale in-flight tasks at boot.- `src/verify/run.ts` — the M1.3 verification runner: per-command timeout,
   suite wall with bounded grace, typed per-command results with capped
   output tails.
 - `src/environments/` — the M2.b environment ladder's first rungs:
@@ -56,7 +55,15 @@ the strict gate.
   WorkspaceDriver seam on top with two integration modes: `task-base`
   (AI-authored base + atomic combine + checkoutMerged) and
   `feature-branch` (per-worker bookmarks; integration is the operator's
-  act). The driver NEVER pushes.
+  act). The driver NEVER pushes. Failure-artifact contract
+  (docs/pi-task-design.md): `failure-hygiene.ts` ports v1's rescue /
+  post-mortem machinery — one goal-named rescue commit per affected tree,
+  only provably engine-authored empty stubs abandoned, undescribed
+  snapshots folded into the rescue, workspace chains stacked by stable
+  change id (idempotent re-runs), machine-grep-able recovery lines — and
+  `reconcileRepoArtifacts` gives boot (`startDaemon(projectDir)`) and the
+  driver (`recoverFailedRun`) their engine-side reconciliation entry
+  points; user-authored content is never destroyed.
 - `src/daemon/` — the M1.4 assembly: `task-runner.ts` (`runTask`: validate
   → route → guarded session → yield → verify → ledger → receipt;
   deterministic worker prompt; injectable host for tests),

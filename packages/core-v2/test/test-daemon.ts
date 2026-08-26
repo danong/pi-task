@@ -382,7 +382,7 @@ export async function runTests(): Promise<void> {
 			seed.setTaskStatus("done-1", "completed");
 			seed.close();
 
-			const daemon = startDaemon(dbPath);
+			const daemon = await startDaemon(dbPath);
 			check(
 				daemon.reconciled.requeued.includes("stale-1"),
 				"stale in-flight requeued",

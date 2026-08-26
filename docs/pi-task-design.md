@@ -677,19 +677,26 @@ matches a language-agnostic comment prefix or is whitespace) → the
 deterministic union path (R4); substantive overlaps (any code line or
 binary file) → flagged in the merge report before merging.
 
-**Merge-failure artifact (R2).** On any merge-path failure the worker
-workspaces are NEVER forgotten: a `.failure.json` (the metrics.ts
-writeFailureArtifact pattern) records the workspace names, their
-working-copy commit ids (dangling when the merge did not land), the
-dangling commit ids, and the conflicted files (+ bounded hunks), and the
-workspaces are left in place so recovery is scripted from the artifact
-rather than LLM-discovered (`jj workspace list` names survive; each
-dangling id can be squashed into the base manually).
+**Merge-failure artifact (R2).** On any failure the engine performs its
+own hygiene first (see "Engine-side hygiene" under Failure-artifact
+contract): the flat worker-failure path runs `parallelRunPostMortem`
+(rescues + stack + stub sweep + workspace forgets) and the artifact
+carries its machine-readable `ParallelRecoveryInfo`. On a merge-PATH
+failure — where workers already succeeded and no post-mortem runs — a
+`.failure.json` (the metrics.ts writeFailureArtifact pattern) records
+the workspace names, their working-copy commit ids (dangling when the
+merge did not land), the dangling commit ids, and the conflicted files
+(+ bounded hunks); those workspaces stay preserved so recovery is
+scripted from the artifact rather than LLM-discovered.
 
-**Recovery guide (R4).** The artifact carries a scripted recovery guide
-(`recovery` field): the commands to stack the preserved workspaces onto
-the task base (rebase in dependency order, re-resolving ids after every
-command, then squash), to abandon the AI base/stubs BEFORE pushing
+**Recovery block (R4).** The artifact carries a machine-readable
+recovery field: on the flat worker-failure path it is the post-mortem's
+result (`base_change`/`stack_tip`/`stacked=` key=value lines plus the
+exact jj commands to inspect or continue the stacked work); on a
+merge-path failure it degrades to the scripted fallback guide
+(`buildRecoveryGuide`): the commands to stack the preserved workspaces
+onto the task base (rebase in dependency order, re-resolving ids after
+every command, then squash), to abandon the AI base/stubs BEFORE pushing
 (description-less commits refuse push), and the add-vs-delete conflict
 warning (resolve via `:ours`/`:theirs`, never mid-stack abandon — that
 drops the other side's changes).
@@ -726,14 +733,16 @@ jj log -r '<ws-@>..<base-commit-id>' --no-graph        # must be EMPTY (reachabi
 jj diff --from <base-commit-id> --to <ws-@> --summary  # must be empty
 jj file list -r <base-commit-id>                       # non-empty, holds every worker file
 
-# On merge failure the workspaces are PRESERVED (never forgotten) and a
-# .failure.json records names + dangling commit ids + conflicted files +
-# the recovery guide (stacking commands, stub-abandon, add-vs-delete
-# :ours/:theirs). On worker failure WITHOUT a merge, each workspace's
-# uncommitted state is rescue-committed inside the preserved workspace
-# ("rescue: aborted task run (<cause>)", R3) and the artifact names the
-# rescue commits. On success, cleanup: forget the (now-empty) workspace
-# @s, delete the dirs
+# On ANY failure the engine cleans up itself before writing the
+# .failure.json: the flat worker-failure path rescues each workspace's
+# uncommitted state ("rescue: aborted task run (<cause>)", R3), STACKS
+# every workspace onto the dispatch base, abandons engine-authored empty
+# stubs, forgets the workspaces, and records the result as a
+# machine-readable recovery block. A merge-PATH failure preserves the
+# workspaces and records names + dangling ids + conflicted files + the
+# scripted fallback guide (stacking commands, stub-abandon,
+# add-vs-delete :ours/:theirs). On success, cleanup: forget the
+# (now-empty) workspace @s, delete the dirs
 jj workspace forget pi-task-1
 jj workspace forget pi-task-2
 ```
@@ -1947,3 +1956,201 @@ counts the worker's turns from its events: at 70% it injects a
 convergence prompt (RPC `prompt`); at 100% it aborts the session with a
 typed turn-budget error. Fix workers are exempt (already bounded by
 `max_fix_iterations`).
+
+## Failure-artifact contract
+
+A terminated pi-task run leaves jj artifacts behind — and the engine
+CLEANS THEM UP ITSELF. This section is the CONTRACT for those artifacts:
+what classes exist, which code path produces each, and the end-state the
+engine ENFORCES on every termination kind. Enforcement is shipped, not
+aspirational: the single-run lane runs `singleRunFailureHygiene`
+(extensions/task/orchestrator.ts; the v2 port lives in
+packages/core-v2/src/workspaces/failure-hygiene.ts), the parallel lane
+runs `parallelRunPostMortem` on its flat worker-failure path, and the
+pre-dispatch/boot sweep (`classifyLegacyStrays` /
+`reconcileRepoArtifacts`) cleans strays left behind by CRASHED past runs.
+The hermetic suites pin these end-states as PASSING CONTRACT assertions —
+`extensions/task/test-failure-hygiene.ts` and
+`packages/core-v2/test/test-failure-hygiene.ts` drive the real engine
+steps against real jj on temp repos, covering single-run AND parallel
+termination kinds.
+
+### Artifact taxonomy
+
+Every termination path leaves a characteristic mix of these jj artifact
+classes (verified empirically on jj 0.43):
+
+1. **Empty stub commit** — a description-less, tree-empty working-copy
+   commit. Produced by `jj workspace add` (one per worker workspace,
+   `createWorkspace` in `workspace.ts`), by `jj new` identity restores
+   (`restoreParallelWorkingCopy`, the single-path finally), and by `jj
+   commit` opening a fresh @ on top of a rescue commit.
+2. **Full-tree snapshot commit** — when a worker dies mid-edit, its
+   workspace's dirty working copy auto-snapshots into a description-less
+   commit whose diff vs its parent is the FULL file content (every added
+   file shows as all-new). Not created by any command; it exists as the
+   recorded @ of any wedged workspace.
+3. **Rescue-commit sibling** — "rescue: aborted task run (<cause>)"
+   commits capturing uncommitted state: `rescueAbortedWorkBestEffort`
+   (single-worker failure path) and `rescueWorkspaceStateBestEffort`
+   (parallel flat worker-failure path, inside each preserved workspace).
+4. **Divergent duplicate / dangling commit** — commits outside the merged
+   result: pre-squash workspace commits abandoned by the atomic combine,
+   stale-target squash victims (a whole hidden base chain), and
+   change-id-divergent duplicates after op-log forks.
+5. **Forgotten vs live workspace** — `jj workspace forget`
+   (`removeWorkspace`) once a workspace's content is provably detached
+   from it (the success-path squash, or the post-mortem's stack-or-consume
+   step); kept live ONLY when its commits could not be moved (a failed
+   rebase) — and such survivors are NAMED in the recovery commands.
+
+### Code paths per termination kind
+
+- **Wall-timeout abort** — `spawnWorkerSession`'s wall timer +
+  verification grace (`decideWallGraceAction`, `wallTimeoutErrorMessage`)
+  → `failWorker("wall_timeout", …)` → close handler rejects via
+  `buildAbortError` with structured `diagnostics.code`.
+- **Idle/no-progress watchdog aborts** — settle-based idle watchdog
+  (`decideIdleAction`: nudge once, then `no_yield`), event-based
+  no-progress watchdog (`decideNoProgressAction` → `no_progress`), and
+  per-tool-call timeout (`decideToolTimeoutAction` → `tool_timeout`).
+  All funnel through `failWorker` → `buildAbortError`.
+- **User/signal-driven abort** — the caller's `AbortSignal`
+  (`WorkerOptions.signal`, orchestrator `ExecuteTaskOptions.signal`);
+  `onSignalAbort` → `abort()` → the close handler rejects with a NULL-code
+  diagnostics error ("Worker was aborted" cause). A user manually
+  aborting a run is a FIRST-CLASS termination kind, not an error corner:
+  partial work must be preserved exactly as in watchdog aborts.
+- **Parallel-run failures** — worker timeouts surface through
+  `Promise.allSettled`; classification (`classifyWorkerFailures`) routes
+  to the merge attempt (all failed workers finalization-incomplete) or
+  the flat failure path, which runs the full `parallelRunPostMortem`
+  (rescues + stack + stub sweep + workspace forgets) before writing the
+  merge-failure artifact. Merge failures/escalations write the artifact
+  via `writeMergeFailureArtifact` (workspaces, dangling ids, conflicted
+  files + hunks, scripted fallback recovery guide).
+- **Spawn failures** — `proc.on("error")` ("Failed to spawn worker"),
+  EPIPE on the initial prompt write, and capacity-backoff exhaustion in
+  `spawnWorkerSessionResilient`. No repo artifacts are created (the
+  failure precedes any commit), but the AI task base may already exist
+  (single path) or workspaces may already be created (parallel path).
+
+Failure state lands in `<metricsDir>/<project>/<run_id>.failure.json`
+(`writeFailureArtifactBestEffort`, metrics.ts `buildFailureArtifact`)
+carrying the structured diagnostics; parallel paths additionally carry
+the `merge` record and the `recovery` guide.
+
+### Engine-side hygiene (what the engine actually does)
+
+Three shipped entry points uphold the contract. Every step is BEST-EFFORT
+and bounded (`FAILURE_PATH_JJ_TIMEOUT_MS`, 30s per jj call) — a wedged
+repo degrades toward preservation, never masks the original failure, and
+never throws:
+
+- **`singleRunFailureHygiene`** — runs on EVERY single-worker termination
+  (watchdog aborts, user-abort, turn-budget exhaustion, model-swap
+  failure): rescues the dirty working copy into ONE goal-named commit
+  (`rescue: <goal> (<cause>)`), then abandons only PROVABLY
+  engine-authored empties. Returns `SingleRunRecoveryInfo`.
+- **`parallelRunPostMortem`** — runs on the parallel flat worker-failure
+  path: describes each workspace's dirty-tail snapshot IN PLACE as the
+  rescue commit, stacks every workspace's commits onto the DISPATCH BASE
+  in dependency order (`jj rebase -s roots(<chain>) -o <tip>` per
+  workspace with the tip advancing — ONE linear chain, no sibling
+  litter), abandons engine-authored empties, and forgets every workspace
+  whose leftovers were detached from their content. Returns
+  `ParallelRecoveryInfo`.
+- **Pre-dispatch / boot reconciliation** (`classifyLegacyStrays`,
+  `reconcileRepoArtifacts`) — sweeps the DEFAULT working-copy lineage
+  (`::@`; off-lineage leftovers belong to live/preserved workspaces and
+  are never judged) for strays left by CRASHED past runs that skipped
+  their own hygiene: engine-authored empty stubs and undescribed
+  AI-authored snapshots are abandoned (content stays recoverable in the
+  hidden commit); described history, past rescue commits, doubtful
+  authorship, and the resting empty `@` are untouched.
+
+The PROVENANCE TEST shared by all three: a commit qualifies for removal
+only when it is EMPTY, DESCRIPTION-LESS, AND authored by the AI identity
+configured for the run. Anything doubtful survives and is listed under
+`preserved_stubs` — a user-abort mid-work must never destroy user
+content. With no AI identity configured, nothing is ever deleted.
+
+IDEMPOTENCE (rule 4): chains move BY CHANGE ID (`jj rebase` keeps change
+ids stable across rewrites), a consumed workspace contributes no chain,
+an already-hidden id skips its abandon, and a second pass finds nothing
+left to move. Re-running any hygiene step after a partial first pass
+moves nothing that already moved and cannot fork divergent copies.
+
+### The recovery block
+
+Every failure artifact carries a `recovery` string: machine-grep-able
+`key=value` lines followed by verbatim jj commands —
+
+    rescued_commit=<change-id>        # single-run: where the WIP was saved
+    base_change=<change-id>           # parallel: the dispatch base
+    stack_tip=<change-id>             # parallel: head of the combined stack
+    stacked=<workspace>:<change-id>   # parallel: per-workspace chain head
+    preserved_stub=<change-id>        # doubtful empties — listed, not deleted
+    jj show <tip>                     # …then the exact commands to continue
+
+Single-run artifacts serialize `SingleRunRecoveryInfo`
+(`serializeSingleRunRecovery`); parallel artifacts serialize the
+post-mortem's `ParallelRecoveryInfo` (`serializeParallelRecovery`). Only
+when the post-mortem was never reached — a merge-PATH failure after the
+workers themselves succeeded — does the artifact degrade to the scripted
+FALLBACK guide (`buildRecoveryGuide`) instead. The recovery block is the
+entry point for any post-failure repo interaction; read it before
+touching the repo (skills/jj/SKILL.md's pi-task cookbook is built around
+it).
+
+### REQUIRED end-state per termination kind
+
+For EVERY interactive termination kind (wall-timeout, no-progress,
+tool-timeout, no-yield idle, user-abort):
+
+1. Partial work preserved as AT MOST ONE described commit per affected
+   tree: a rescue-prefixed message naming the goal/cause ("rescue:
+   aborted task run (<cause>)"). No second rescue on a clean tree.
+2. NO empty stub commits left in the user's ancestry beyond what the
+   success path itself would leave (the identity-restore @); the
+   no-merge failure path must not create the description-less `jj new`
+   stub at all.
+3. NO full-tree snapshot commits left undescribed: any snapshot that
+   exists at termination time is folded into the described rescue commit.
+4. NO divergent duplicate copies of worker changes: every preserved
+   commit's content is reachable from exactly one named commit id in the
+   failure output.
+5. Workspaces forgotten on success; on failure, deliberately live AND
+   named in the failure artifact.
+6. Machine-readable recovery info present in the failure output/artifact:
+   leftover commit ids plus the exact jj commands to inspect/continue/
+   repair, in the recovery-block format below (rules 1–5 are performed BY
+   the engine before the artifact is written — the block reports where
+   everything landed, not a to-do list).
+
+Per-kind requirements:
+
+- **user-abort**: identical end-state contract to watchdog aborts —
+  rescue-preserved partial work, no stubs/snapshots/duplicates,
+  workspaces handled per rule 5, recovery info per rule 6. A null-code
+  diagnostics rejection classifies it; the artifact records the abort
+  cause.
+- **wall-timeout / no-progress / tool-timeout**: same rules, with the
+  structured `diagnostics.code` naming the watchdog in the artifact.
+- **no-yield idle**: the salvage gate may convert the run to
+  success-with-caveat (verification passed post-abort); otherwise the
+  standard failure end-state applies.
+- **parallel flat worker failure** (any worker aborted mid-work):
+  `parallelRunPostMortem` performs the recovery itself — dirty tails
+  described as rescues, every workspace stacked onto the dispatch base,
+  engine stubs abandoned, workspaces forgotten; the artifact carries the
+  machine-readable `ParallelRecoveryInfo`.
+- **parallel merge-path failure** (the atomic combine threw, the
+  union-ladder escalated conflicts, or the gate failed a
+  finalization-incomplete merge): workspaces preserved and named;
+  artifact carries workspaces + dangling ids + conflicted files (+
+  hunks) + the scripted fallback guide. The no-merge identity restore
+  creates no description-less stub (`mergeLanded` guard).
+- **spawn failure**: no repo artifacts created by the spawn itself;
+  already-created bases/workspaces follow the parallel/single failure
+  end-states above.

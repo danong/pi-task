@@ -41,10 +41,11 @@ export interface FailureArtifactWorkspace {
 	commitId?: string | undefined;
 }
 
-/** Scripted recovery payload (FR-8): what survived and how to stack it. */
+/** Scripted recovery payload (FR-8): what survived and how to stack it.
+ *  `workspaces` is absent for single-run lanes (no workspaces exist). */
 export interface FailureArtifactRecovery {
 	baseChangeId?: string | undefined;
-	workspaces: FailureArtifactWorkspace[];
+	workspaces?: FailureArtifactWorkspace[];
 	steps?: string[];
 }
 

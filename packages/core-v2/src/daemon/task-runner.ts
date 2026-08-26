@@ -75,6 +75,11 @@ import {
 	type SessionHostEvent,
 } from "../sessions/host.ts";
 import {
+	singleRunFailureHygiene,
+	serializeSingleRunRecovery,
+	type SingleRunRecoveryInfo,
+} from "../workspaces/failure-hygiene.ts";
+import {
 	attachPrewalk,
 	decidePrewalkSwap,
 	type PrewalkPricing,
@@ -90,6 +95,11 @@ import {
 	transformHandoffThrough,
 } from "../plugins/index.ts";
 import { InMemoryTaskGateway } from "../gateway/index.ts";
+
+/** Default AI identity email — the provenance test failure hygiene
+ *  applies before abandoning empty stubs (matches the workspace driver's
+ *  default so both engines sweep only their own empties). */
+const DEFAULT_AI_AUTHOR_EMAIL = "noreply@pi-task-v2.local";
 
 /**
  * Usage sentinel (FR-9/NFR-3): every usage field on a receipt carries
@@ -365,6 +375,40 @@ export interface RunTaskOptions {
 	gateway?: TaskGateway | undefined;
 	/** Wall-clock bound forwarded to the session host. */
 	sessionTimeoutMs?: number;
+
+	/** AI identity email configured for the run's jj commits (the
+	 *  provenance test failure hygiene applies before abandoning empty
+	 *  stubs). Default {@link DEFAULT_AUTHOR_EMAIL}. */
+	aiAuthorEmail?: string;
+	/** Opt-out of the engine-side repo reconciliation on termination. */
+	skipFailureHygiene?: boolean;
+}
+
+/**
+ * Single-run termination hygiene (failure-artifact contract rules 1–6,
+ * docs/pi-task-design.md "Failure-artifact contract"): rescue partial work
+ * as ONE goal-named commit, abandon ONLY provably engine-authored empty
+ * stubs, never destroy user content, and return the machine-readable
+ * recovery info for the artifact. Best-effort + bounded; never throws.
+ */
+async function runSingleRunHygiene(options: {
+	cwd: string;
+	cause: string;
+	goal: string;
+	aiAuthorEmail: string | undefined;
+}): Promise<SingleRunRecoveryInfo | undefined> {
+	try {
+		return await singleRunFailureHygiene({
+			cwd: options.cwd,
+			cause: options.cause,
+			goal: options.goal,
+			...(options.aiAuthorEmail === undefined
+				? {}
+				: { aiAuthorEmail: options.aiAuthorEmail }),
+		});
+	} catch {
+		return undefined;
+	}
 }
 
 /** Outcome of one run beyond the receipt itself. */
@@ -455,6 +499,20 @@ async function runWithStore(
 		watchdogAbort: undefined,
 		hostError: undefined,
 	};
+	// Failure-artifact contract rule 6: machine-readable recovery travels
+	// with the failure output. The hygiene runs INSIDE failRun so every
+	// termination path carries it.
+	const skipHygiene = options.skipFailureHygiene === true;
+	const hygiene = async (cause: string): Promise<void> => {
+		if (skipHygiene) return;
+		const recovery = await runSingleRunHygiene({
+			cwd: options.cwd,
+			cause,
+			goal: parsed.goal,
+			aiAuthorEmail: options.aiAuthorEmail ?? DEFAULT_AI_AUTHOR_EMAIL,
+		});
+		if (recovery !== undefined) singleRunRecoveryInfo = recovery;
+	};
 
 	// Bundle telemetry state (R2/R3): resolved after routing, read by every
 	// receipt-building path below. `bundleMissRecorded` marks an ATTEMPTED
@@ -464,20 +522,34 @@ async function runWithStore(
 	let bundleUsed = false;
 	let bundleMissRecorded = false;
 	let bundle: ExecutionBundle | undefined;
+	/** Recovery block captured by this run's own hygiene step. */
+	let singleRunRecoveryInfo: SingleRunRecoveryInfo | undefined;
 
 	// NFR-3: when usage was already measured before the failure, carry it
 	// into the failed receipt instead of discarding it (defaults to zeroes
 	// for failures that happen before any session activity).
-	const failRun = (
+	const failRun = async (
 		cause: string,
 		usage: UsageSnapshot = emptyUsage(),
-	): RunTaskResult => {
+	): Promise<RunTaskResult> => {
+		await hygiene(cause);
 		writeFailureArtifact({
 			artifactsDir: options.artifactsDir,
 			runId: taskId,
 			cause,
-			lastEvent: observation.lastEvent,
-			lastTool: observation.lastTool,
+			...(observation.lastEvent === undefined
+				? {}
+				: { lastEvent: observation.lastEvent }),
+			...(observation.lastTool === undefined
+				? {}
+				: { lastTool: observation.lastTool }),
+			...(singleRunRecoveryInfo === undefined
+				? {}
+				: {
+						recovery: {
+							steps: [serializeSingleRunRecovery(singleRunRecoveryInfo)],
+						},
+					}),
 		});
 		store.setSessionStatus(`${taskId}-worker`, "crashed");
 		store.setTaskStatus(taskId, "failed");
@@ -608,7 +680,7 @@ async function runWithStore(
 			err instanceof SessionHostError
 				? `session host error (${err.code}): ${err.message}`
 				: `session spawn failed: ${err instanceof Error ? err.message : String(err)}`;
-		return failRun(cause);
+		return await failRun(cause);
 	}
 
 	const unsubscribeEvents = handle.subscribe((event) => {
@@ -656,7 +728,7 @@ async function runWithStore(
 		handle.close();
 		watchdogs.dispose();
 		unsubscribeEvents();
-		return failRun(cause);
+		return await failRun(cause);
 	} finally {
 		watchdogs.dispose();
 		unsubscribeEvents();
@@ -678,7 +750,7 @@ async function runWithStore(
 			taskId,
 			sessionId: `${taskId}-worker`,
 		});
-		return failRun(cause, usage);
+		return await failRun(cause, usage);
 	}
 
 	// ── Verify on the working tree through the environment ladder (M6). ──
@@ -735,6 +807,13 @@ async function runWithStore(
 			runId: taskId,
 			cause: "verification failed",
 			stderrTail: firstFailure?.stderrTail,
+			...(singleRunRecoveryInfo === undefined
+				? {}
+				: {
+						recovery: {
+							steps: [serializeSingleRunRecovery(singleRunRecoveryInfo)],
+						},
+					}),
 		});
 		store.setTaskStatus(taskId, "failed");
 		// Same miss discipline as failRun (see above).

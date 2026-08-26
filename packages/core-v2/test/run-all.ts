@@ -13,6 +13,7 @@ import { runTests as runContractTests } from "./test-contracts.ts";
 import { runTests as runContinuationTests } from "./test-continuation.ts";
 import { runTests as runDaemonTests } from "./test-daemon.ts";
 import { runTests as runEnvironmentTests } from "./test-environments.ts";
+import { runTests as runFailureHygieneTests } from "./test-failure-hygiene.ts";
 import { runTests as runGatewayTests } from "./test-gateway.ts";
 import { runTests as runGatewayPluginsTests } from "./test-gateway-plugins.ts";
 import { runTests as runGroundingEvalTests } from "./test-grounding-eval.ts";
@@ -57,6 +58,7 @@ const SUITES: Array<{ name: string; run: () => Promise<void> }> = [
 	{ name: "plugin-lifecycle-collector", run: runLifecycleCollectorPluginTests },
 	{ name: "grounding-eval", run: runGroundingEvalTests },
 	{ name: "jj-driver", run: runJjDriverTests },
+	{ name: "failure-hygiene", run: runFailureHygieneTests },
 	{ name: "parallel", run: runParallelTests },
 	{ name: "prewalk", run: runPrewalkTests },
 	{ name: "review-fork", run: runReviewForkTests },

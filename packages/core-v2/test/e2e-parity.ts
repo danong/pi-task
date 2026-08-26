@@ -54,7 +54,7 @@ async function main(): Promise<number> {
 		writeInitialCommit(repo);
 
 		const dbPath = join(dir, "tasks.db");
-		const daemon = startDaemon(dbPath);
+		const daemon = await startDaemon(dbPath);
 		if (
 			daemon.reconciled.requeued.length + daemon.reconciled.failed.length !==
 			0

@@ -2,23 +2,71 @@
  * Daemon entry point — M1.4 / R2.
  *
  * Library-first daemon surface: start(dbPath) opens the ledger and applies
- * boot reconciliation (stale in-flight tasks → requeue or fail per the
- * pure policy) before any work is accepted. Long-running process hosting,
- * surface attachment, and scheduling arrive in later milestones; M1's
- * contract is the pipeline + durable state.
+ * boot reconciliation before any work is accepted:
+ *
+ *   - LEDGER: stale in-flight tasks → requeue or fail per the pure
+ *     reconcileCrashedTask policy;
+ *   - REPO: the default working-copy lineage is swept of artifacts left by
+ *     CRASHED past runs (failure-artifact contract rules 1–4): only
+ *     provably engine-authored strays are abandoned — undescribed AI
+ *     snapshots folded into @, empty description-less AI stubs — while the
+ *     user's described history, rescue commits, and any doubtful content
+ *     are preserved untouched (and reported under `repoHygiene.preserved`).
+ *
+ * Long-running process hosting, surface attachment, and scheduling arrive
+ * in later milestones; M1's contract is the pipeline + durable state.
  */
 
 import { LedgerStore } from "../ledger/store.ts";
+import {
+	reconcileRepoArtifacts,
+	type RepoHygieneReport,
+} from "../workspaces/failure-hygiene.ts";
+
+/** The repo whose default lineage boot hygiene sweeps. */
+export interface StartDaemonOptions {
+	/** Repo root to reconcile at boot. When absent, NO repo sweep runs —
+	 *  ledger-only boots stay side-effect free on the filesystem. */
+	projectDir?: string | undefined;
+	/** AI identity email — the provenance test for engine-authored strays.
+	 *  Default matches the workspace driver's DEFAULT_AUTHOR_EMAIL; with an
+	 *  explicit undefined override NOTHING is cleaned (report-only). */
+	aiAuthorEmail?: string | undefined;
+}
 
 export interface StartedDaemon {
 	store: LedgerStore;
 	/** Reconciliation outcome: task ids requeued vs failed at boot. */
 	reconciled: { requeued: string[]; failed: string[] };
+	/** Repo-artifact hygiene result (default-lineage strays). `undefined`
+	 *  when no projectDir was configured or the sweep was skipped. */
+	repoHygiene?: RepoHygieneReport | undefined;
 }
 
-/** Open the ledger at dbPath and reconcile stale in-flight tasks. */
-export function startDaemon(dbPath: string): StartedDaemon {
+const DEFAULT_AI_AUTHOR_EMAIL = "noreply@pi-task-v2.local";
+
+/** Open the ledger at dbPath and run both reconciliations. */
+export async function startDaemon(
+	dbPath: string,
+	options: StartDaemonOptions = {},
+): Promise<StartedDaemon> {
 	const store = new LedgerStore(dbPath);
 	const reconciled = store.reconcileOnBoot();
-	return { store, reconciled };
+	let repoHygiene: RepoHygieneReport | undefined;
+	if (options.projectDir !== undefined) {
+		try {
+			repoHygiene = await reconcileRepoArtifacts({
+				projectDir: options.projectDir,
+				aiAuthorEmail: options.aiAuthorEmail ?? DEFAULT_AI_AUTHOR_EMAIL,
+			});
+		} catch {
+			// Boot must proceed regardless of repo state (never throws).
+			repoHygiene = { cleaned: [], preserved: [] };
+		}
+	}
+	return {
+		store,
+		reconciled,
+		...(repoHygiene === undefined ? {} : { repoHygiene }),
+	};
 }

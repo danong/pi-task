@@ -221,19 +221,45 @@ the cheatsheet above applies everywhere).
 
 ## Reading a run's state
 
+- **Failed runs self-clean.** On ANY termination the engine performs its own
+  hygiene before failing: partial work is rescued into ONE goal-named commit
+  (`rescue: <goal> (<cause>)`), parallel workers' commits are stacked onto the
+  dispatch base into one linear chain, engine-authored empty stubs are
+  abandoned, and the worker workspaces are forgotten. You do NOT need to sweep
+  stubs or stack workspaces after a failed run — read the recovery block and
+  continue from where it points.
+- **The recovery block is the entry point.** Every `.failure.json` under
+  `<metricsDir>/<project>/` carries a machine-readable `recovery` string:
+  grep-able `key=value` lines (`rescued_commit=`, `base_change=`,
+  `stack_tip=`, `stacked=<ws>:<id>`, `preserved_stub=`) followed by verbatim
+  jj commands to inspect or continue the preserved work. Start there:
+  `jj new <stack_tip>` resumes on top of everything a parallel run produced;
+  `jj show <rescued_commit>` inspects a single run's saved WIP.
 - The run's merged result is `@-` (an empty `@` working copy sits on top). Its
   diff vs the pre-run base is the workers' work:
   `jj diff --from <base> --to @- --git`.
 - A completed run's manifest records the merged commit id (`config.shape`,
   phases, merge record) under `<agent-dir>/results/<project>/`.
-- A failed run leaves a `.failure.json` artifact carrying a **recovery guide**
-  (stacking commands, stub cleanup, conflict warnings) — read it before
-  touching the repo.
 
-## Merge-recovery playbook
+## Legacy messes: the manual fallback
 
-When a parallel run fails after merging (or a worker aborts), the workspaces
-are PRESERVED — their commits still live in the repo. Recover manually:
+The rebase-and-squash stacking dance below is the documented FALLBACK for repos littered by
+LEGACY failed runs — those that predate engine-side hygiene, or runs killed by
+a crash/power-loss before their hygiene could execute. For anything a SHIPPED
+engine terminated, the recovery block's commands are the whole story — do not
+re-stack what is already stacked.
+
+Pre-flight check — a compliant post-hygiene repo has NO visible empty +
+description-less commits and no undescribed content-bearing commits outside a
+live workspace:
+
+```sh
+jj log -r 'all() ~ root()' --no-graph -T \
+  'change_id ++ " " ++ if(empty, "(empty) ", "") ++ description.first_line() ++ "\n"'
+```
+
+If you find anonymous snapshots or stub chains hanging off old task bases
+(pre-hygiene litter), recover manually:
 
 1. **Find the workspaces and their commits**: `jj workspace list` +
    `jj log -r all()` (the worker commits carry the sub-spec descriptions).
@@ -248,8 +274,8 @@ are PRESERVED — their commits still live in the repo. Recover manually:
    `jj abandon <commit-id>` for every commit with an empty description, then
    verify `jj log -r all()` shows none.
 4. **A resolution commit ON TOP of a conflicted commit does NOT clear the
-   parent's conflict for `jj push`** — jj refuses to push any commit whose
-   tree carries conflict markers, even when a descendant resolves them.
+   parent's conflict for push** — jj refuses to push any commit whose tree
+   carries conflict markers, even when a descendant resolves them.
    Squash the resolution INTO the conflicted commit:
    `JJ_EDITOR=true jj squash -r <resolution-commit>` (it merges into its
    parent), then push.
@@ -258,8 +284,14 @@ are PRESERVED — their commits still live in the repo. Recover manually:
    commit mid-stack silently drops whichever side the abandoned commit held):
    `jj resolve --tool :ours -r <commit> <path>` (keep the modified side) /
    `jj resolve --tool :theirs -r <commit> <path>` (keep the deletion).
-6. **Run the full verification gate on the merged tree** before considering the
-   merge done.
+6. **Run the full verification gate on the merged tree** before considering
+   the merge done.
+
+Note: the next pi-task dispatch also self-heals such repos — its pre-dispatch/
+boot sweep abandons provably engine-authored strays in the default working-
+copy lineage (empty stubs and undescribed AI-authored snapshots; user content
+and doubtful authorship are always preserved). Manual cleanup only needs to
+reach the point where a dispatch can run.
 
 ## Footguns
 

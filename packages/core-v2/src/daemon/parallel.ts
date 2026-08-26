@@ -32,6 +32,10 @@ import {
 } from "../guards/watchdog-driver.ts";
 
 import { workspaceCommitId } from "../workspaces/jj.ts";
+import {
+	serializeParallelRecovery,
+	type ParallelRecoveryInfo,
+} from "../workspaces/failure-hygiene.ts";
 import { LedgerStore } from "../ledger/store.ts";
 import type { TaskGateway } from "../contracts/index.ts";
 import type { TaskPlugin } from "../contracts/task-plugin.ts";
@@ -437,6 +441,41 @@ async function runWithStore(
 		],
 	});
 
+	/**
+	 * Failure-artifact contract rules 1–6, engine-side reconciliation: run
+	 * the driver's post-mortem (describe dirty snapshots as rescue commits,
+	 * stack every workspace chain onto the dispatch base, abandon only
+	 * engine-authored empty stubs, forget consumed workspaces) and serialize
+	 * the machine-readable result into the artifact's recovery steps.
+	 * Best-effort — never masks the original failure.
+	 */
+	const reconcileFailedRun = async (
+		cause: string,
+	): Promise<ReturnType<typeof recoverySnapshot>> => {
+		const snapshot = await recoverySnapshot();
+		try {
+			const taskBaseDriver = options.workspaceDriver as Partial<{
+				recoverFailedRun: (o: {
+					workspaceNames: string[];
+					cause: string;
+					workspaceDirs?: Record<string, string>;
+				}) => Promise<ParallelRecoveryInfo>;
+			}>;
+			if (taskBaseDriver.recoverFailedRun === undefined) return snapshot;
+			const dirs: Record<string, string> = {};
+			for (const c of contexts) dirs[c.branchName] = c.hostPath;
+			const info = await taskBaseDriver.recoverFailedRun({
+				workspaceNames: contexts.map((c) => c.branchName),
+				cause,
+				workspaceDirs: dirs,
+			});
+			return { ...snapshot, steps: [serializeParallelRecovery(info)] };
+		} catch {
+			// Degrade toward the scripted snapshot — preservation > movement.
+			return snapshot;
+		}
+	};
+
 	// M3: hard ladder failures are CAPTURED — recovery artifact, terminal
 	// ledger rows, typed failed result — never a bare escape freezing
 	// 'executing'.
@@ -449,7 +488,7 @@ async function runWithStore(
 			artifactsDir: options.artifactsDir,
 			runId: aggregateId,
 			cause,
-			recovery: await recoverySnapshot(),
+			recovery: await reconcileFailedRun(cause),
 		});
 		store.setTaskStatus(aggregateId, "failed");
 		for (const ctx of contexts) store.setTaskStatus(ctx.taskId, "failed");
@@ -484,7 +523,9 @@ async function runWithStore(
 			runId: aggregateId,
 			cause: `residual merge conflicts after union resolution: ${combineOutcome.conflicts.join(", ")}`,
 			lastEvent: `preserved workspaces: ${healthyContexts.map((c) => `${c.branchName} @ ${c.hostPath}`).join("; ")}`,
-			recovery: await recoverySnapshot(),
+			recovery: await reconcileFailedRun(
+				`residual merge conflicts: ${combineOutcome.conflicts.join(", ")}`,
+			),
 		});
 		store.setTaskStatus(aggregateId, "escalated");
 		for (const ctx of healthyContexts)
@@ -565,16 +606,17 @@ async function runWithStore(
 	};
 
 	if (anyFailed || failures.length > 0) {
+		const cause =
+			failures.length > 0
+				? `verification failed: ${failures.join("; ")}`
+				: "one or more workers failed";
 		writeFailureArtifact({
 			artifactsDir: options.artifactsDir,
 			runId: aggregateId,
-			cause:
-				failures.length > 0
-					? `verification failed: ${failures.join("; ")}`
-					: "one or more workers failed",
+			cause,
 			stderrTail: verifyStderrTail,
 			lastEvent: `stranded/preserved workspaces: ${contexts.map((c) => `${c.branchName} @ ${c.hostPath}`).join("; ")}`,
-			recovery: await recoverySnapshot(),
+			recovery: await reconcileFailedRun(cause),
 		});
 		store.setTaskStatus(aggregateId, "failed");
 		const repoKey = options.projectDir.split("/").pop() ?? options.projectDir;

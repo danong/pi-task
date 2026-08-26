@@ -32,6 +32,7 @@ import { runTests as runChecklistTests } from "./test-checklist.ts";
 import { runTests as runChecklistRelayTests } from "./test-checklist-relay.ts";
 import { runTests as runOrchestratorTests } from "./test-orchestrator.ts";
 import { runTests as runWorkspaceTests } from "./test-workspace.ts";
+import { runTests as runFailureHygieneTests } from "./test-failure-hygiene.ts";
 import { runTests as runSandboxTests } from "./test-sandbox.ts";
 import { runTests as runRepoMapTests } from "./test-repo-map.ts";
 import { runTests as runIndexTests } from "./test-index.ts";
@@ -55,6 +56,7 @@ const SUITES: Array<{ name: string; run: () => Promise<void> }> = [
 	{ name: "checklist-relay", run: runChecklistRelayTests },
 	{ name: "orchestrator", run: runOrchestratorTests },
 	{ name: "workspace", run: runWorkspaceTests },
+	{ name: "failure-hygiene", run: runFailureHygieneTests },
 	{ name: "sandbox", run: runSandboxTests },
 	{ name: "repo-map", run: runRepoMapTests },
 	{ name: "index", run: runIndexTests },

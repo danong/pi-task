@@ -171,6 +171,10 @@ export interface MergeFailureInfo {
 	/** Optional AND nullable under exactOptionalPropertyTypes — call sites
 	 *  forward their own `T | undefined` locals verbatim (R4 discipline). */
 	conflictHunks?: Record<string, string> | undefined;
+	/** R4: the engine-side post-mortem result when the run already performed
+	 *  the recovery itself — serialized into the `recovery` field as
+	 *  machine-grep-able lines. Absent → the scripted manual guide is used. */
+	parallelRecovery?: ParallelRecoveryInfo | undefined;
 	metricsDir?: string | undefined;
 	project: string;
 	specMarkdown: string;
@@ -180,7 +184,9 @@ export interface MergeFailureInfo {
 
 /** Write a merge-failure artifact via the existing .failure.json pattern
  *  (metrics.ts writeFailureArtifact), extended with the R2 merge record
- *  and the R4 scripted recovery guide. */
+ *  and the R4 scripted recovery guide. `parallelRecovery` (the engine's
+ *  own post-mortem result, when the run already performed it) rides the
+ *  artifact's `recovery` field as machine-grep-able lines. */
 export function writeMergeFailureArtifact(opts: MergeFailureInfo): void {
 	if (!opts.metricsDir) return;
 	try {
@@ -198,9 +204,14 @@ export function writeMergeFailureArtifact(opts: MergeFailureInfo): void {
 					? {}
 					: { conflict_hunks: opts.conflictHunks }),
 			},
-			// R4: recovery happens on the USER's repo, scripted from the
-			// artifact — the guide travels with it.
-			recovery: buildRecoveryGuide(opts),
+			// R4: recovery travels with the artifact — either the ENGINE-side
+			// post-mortem result (machine-readable stack tip + per-workspace
+			// heads + preserved stubs + exact jj commands) or, absent one, the
+			// scripted guide for manual recovery.
+			recovery:
+				opts.parallelRecovery !== undefined
+					? serializeParallelRecovery(opts.parallelRecovery)
+					: buildRecoveryGuide(opts),
 		});
 		writeFailureArtifact(artifact, {
 			metricsDir: opts.metricsDir,
@@ -410,6 +421,437 @@ export async function restoreParallelWorkingCopy(
 }
 
 /**
+ * Machine-readable PARALLEL-run recovery info (the same contract rule 6
+ * channel single runs use): where each workspace's work was stacked plus
+ * the exact jj commands a user runs to inspect or continue it. Serialized
+ * into the merge-failure artifact's `recovery` field via
+ * serializeSingleRunRecovery's line format (`key=value` machine lines +
+ * verbatim commands).
+ */
+export interface ParallelRecoveryInfo {
+	/** The dispatch-base change id every stacked chain hangs off. */
+	base_change?: string | undefined;
+	/** Change id of the stack TIP after the post-mortem — `jj new <id>`
+	 *  continues from all workers' combined work. */
+	stack_tip?: string | undefined;
+	/** One entry per processed workspace, dependency order: the workspace
+	 *  name and the change id its stacked chain now ends at. */
+	stacked: Array<{ name: string; change_id: string }>;
+	/** Empty description-less commits PRESERVED by doubt (provenance not
+	 *  provably the engine's) — listed, never silently dropped. */
+	preserved_stubs?: string[] | undefined;
+	/** Exact jj commands to inspect/continue/repair the stacked work. */
+	commands: string[];
+}
+
+/** Serialize parallel recovery info into the artifact's `recovery`
+ *  string field (pure): machine-grep-able key=value lines + the exact jj
+ *  commands, matching serializeSingleRunRecovery's format contract. */
+export function serializeParallelRecovery(info: ParallelRecoveryInfo): string {
+	const lines: string[] = [];
+	if (info.base_change !== undefined)
+		lines.push(`base_change=${info.base_change}`);
+	if (info.stack_tip !== undefined)
+		lines.push(`stack_tip=${info.stack_tip}`);
+	for (const s of info.stacked)
+		lines.push(`stacked=${s.name}:${s.change_id}`);
+	for (const s of info.preserved_stubs ?? [])
+		lines.push(`preserved_stub=${s}`);
+	lines.push(...info.commands);
+	return lines.join("\n");
+}
+
+/**
+ * The parallel post-mortem (failure-artifact contract rules 1-6, flipped
+ * from "preserve everything for scripted recovery" to "the engine performs
+ * the recovery itself"): on ANY parallel termination the engine
+ *
+ *  1. describes every workspace working-copy commit that is NON-empty but
+ *     UNDESCRIBED (taxonomy class 2/3 — the dirty-tail snapshot jj wrote
+ *     when the worker died mid-edit) as `rescue: aborted task run (<cause>)`
+ *     — partial uncommitted work becomes a described commit instead of
+ *     littering history as an anonymous full-tree snapshot;
+ *  2. stacks every workspace's commits ONTO THE DISPATCH BASE in
+ *     dependency order: one `jj rebase -s roots(<chain>) -o <tip>` per
+ *     workspace, the tip advancing to the newly stacked head each time —
+ *     the result is ONE linear chain base → ws1-commits → ws2-commits …,
+ *     no sibling litter;
+ *  3. abandons ONLY engine-authored empty stubs (empty + description-less
+ *     + AI identity — the same conservative provenance test
+ *     singleRunFailureHygiene applies); anything doubtful survives and is
+ *     listed under preserved_stubs;
+ *  4. forgets every workspace (rule 5, post-mortem era: the stacked
+ *     commits are live in the main ancestry, so the workspace working
+ *     copies themselves are disposable on EVERY exit path).
+ *
+ * Every step is best-effort and bounded (FAILURE_PATH_JJ_TIMEOUT_MS) —
+ * a wedged repo degrades toward preservation, never masks the original
+ * failure, and never throws.
+ *
+ * IDEMPOTENCE / NO DIVERGENT COPIES (rule 4): chains move by CHANGE id
+ * (`jj rebase` keeps change ids stable across rewrites), and a workspace
+ * whose @ already sits on the current base-with-zero-diff contributes no
+ * chain (the consumed check) — so re-running the post-mortem after a
+ * partial first pass moves nothing that already moved, abandons nothing
+ * twice, and cannot produce two visible commits sharing one change id.
+ */
+async function listEngineStubsBestEffort(opts: {
+	projectDir: string;
+	aiAuthorEmail?: string | undefined;
+}): Promise<{ engine: string[]; preserved: string[] }> {
+	const result = { engine: [] as string[], preserved: [] as string[] };
+	try {
+		// Visible commits only (all() ~ root(): the immutable root is empty +
+		// undescribed by construction — never an engine artifact).
+		const log = await execJj(
+			[
+				"log",
+				"-r",
+				"all() ~ root()",
+				"--no-graph",
+				"-T",
+				'change_id ++ "|" ++ if(empty, if(description.first_line() == "", "STUB", "OK"), "OK") ++ "|" ++ author.email() ++ "\\n"',
+			],
+			opts.projectDir,
+			{ timeoutMs: FAILURE_PATH_JJ_TIMEOUT_MS },
+		);
+		if (log.code !== 0) return result;
+		for (const line of log.stdout.split("\n")) {
+			const m = /^([^|]+)\|STUB\|(.+)$/.exec(line.trim());
+			if (!m) continue; // described or non-empty → not a stub
+			const changeId = m[1]!;
+			const authorEmail = m[2]!.trim();
+			if (
+				opts.aiAuthorEmail !== undefined &&
+				authorEmail === opts.aiAuthorEmail
+			) {
+				result.engine.push(changeId);
+			} else {
+				result.preserved.push(changeId); // doubt → preserve + report
+			}
+		}
+	} catch {
+		// Best effort — degrade toward preservation.
+	}
+	return result;
+}
+
+/**
+ * The parallel post-mortem (failure-artifact contract rules 1-6, engine-side
+ * recovery): on ANY parallel termination the engine performs the recovery
+ * itself instead of leaving it scripted for the user —
+ *
+ *  1. DESCRIBES every workspace working-copy commit that is NON-empty but
+ *     UNDESCRIBED (taxonomy class 3 — the full-tree snapshot jj wrote when
+ *     the worker died mid-edit) as `rescue: aborted task run (<cause>)`;
+ *     partial uncommitted work becomes a described commit, never an
+ *     anonymous snapshot.
+ *  2. STACKS every workspace's commits ONTO THE DISPATCH BASE in dependency
+ *     order: one `jj rebase -s roots(<ws chain>) -o <tip>` per workspace
+ *     with the tip advancing to the newly stacked head — ONE linear chain
+ *     base → ws1-commits → ws2-commits ..., no sibling litter (rule 4:
+ *     every worker change reachable from exactly one named commit id —
+ *     the stack tip). Rebase moves whole chains BY CHANGE ID (stable
+ *     across rewrites), so re-running cannot fork divergent copies.
+ *  3. ABANDONS ONLY engine-authored empty stubs (empty + description-less
+ *     + the AI identity configured for this run — the same conservative
+ *     provenance test singleRunFailureHygiene applies); anything doubtful
+ *     survives and is listed under `preserved_stubs` (user-abort rule:
+ *     content-bearing commits keep their messages and are stacked; only
+ *     provable engine empties are removed).
+ *  4. FORGETS every workspace (rule 5, post-mortem era): the workspaces'
+ *     commits are live in the main ancestry, so the working copies are
+ *     disposable on EVERY exit path.
+ *
+ * IDEMPOTENCE / NO DIVERGENT COPIES (rule 4 / R2): a workspace whose
+ * recorded @ is diff-empty against its parent AND already parented on the
+ * current tip contributed no chain this pass (its commits were consumed by
+ * an earlier post-mortem pass or the success-path squash) — skipped. A
+ * second full pass therefore moves nothing that already moved, abandons
+ * nothing twice (the first pass's abandon hid those changes), and cannot
+ * produce two visible commits sharing one change id.
+ *
+ * Every step is best-effort and bounded (FAILURE_PATH_JJ_TIMEOUT_MS) —
+ * a wedged repo degrades toward preservation, never masks the original
+ * failure, and never throws.
+ *
+ * @returns the machine-readable ParallelRecoveryInfo for the failure
+ * artifact (stack tip, per-workspace stacked heads, preserved stubs,
+ * exact jj commands).
+ */
+/** Parsed `jj workspace list` entry: the workspace @'s stable ids. */
+interface WorkspaceEntry {
+	changeId: string;
+	commitId: string;
+}
+
+/** Parse `jj workspace list` output into name → entry ("name: <change-id>
+ *  <commit-id>" — this jj build prints no working-copy path). */
+function parseWorkspaceListLocal(
+	stdout: string,
+): Map<string, WorkspaceEntry> {
+	const result = new Map<string, WorkspaceEntry>();
+	for (const line of stdout.split("\n")) {
+		const match = /^(\S+):\s+(\S+)\s+(\S+)/.exec(line.trim());
+		if (match)
+			result.set(match[1] ?? "", {
+				changeId: match[2] ?? "",
+				commitId: match[3] ?? "",
+			});
+	}
+	return result;
+}
+
+export async function parallelRunPostMortem(opts: {
+	projectDir: string;
+	workspaceNames: string[];
+	/** The task base's change id (executeTask's baseChangeId). */
+	baseChangeId: string;
+	/** The DISPATCH base the workspaces branched from — the AI base's
+	 *  parent in identity mode (createWorkspace parents each workspace's @
+	 *  on the default workspace's @-, i.e. the pre-task head), or
+	 *  baseChangeId itself without an AI base. Defaults to baseChangeId. */
+	dispatchBaseChangeId?: string | undefined;
+	cause: string;
+	/** AI identity configured for the run — the provenance test for
+	 *  engine-authored empties. Absent → NOTHING is deleted. */
+	aiAuthorEmail?: string | undefined;
+	/** Working-copy directories by workspace name — REQUIRED for the
+	 *  content-bearing-@ detach step (`jj new` inside the workspace before
+	 *  the forget). This jj build's `workspace list` prints no paths, so
+	 *  they must come from the caller (executeTask's workspaces array).
+	 *  A workspace without a dir here is stacked but kept live. */
+	workspaceDirs?: Record<string, string> | undefined;
+}): Promise<ParallelRecoveryInfo> {	const timeout = { timeoutMs: FAILURE_PATH_JJ_TIMEOUT_MS };
+	const cause = (opts.cause || "worker failure").slice(0, 140);
+	// The base the workspaces branched from — the anchor for isolating each
+	// workspace's OWN chain out of the shared ancestry (see the rebase below).
+	const dispatchBase = opts.dispatchBaseChangeId ?? opts.baseChangeId;
+	const stacked: Array<{ name: string; change_id: string }> = [];
+	const preserved: string[] = [];
+	// Workspaces whose leftovers were provably detached from their content
+	// (stacked or consumed) — ONLY these are forgotten below. A workspace
+	// whose rebase failed keeps its @ attached to its (unstacked) chain:
+	// forgetting it would abandon content-bearing commits.
+	const forgotten: string[] = [];
+	// Tip of the linear stack so far — advances with every stacked chain.
+	let tipChangeId = opts.baseChangeId;
+	// Live-workspace snapshot, read ONCE up front: a workspace missing here
+	// was already forgotten (an earlier post-mortem pass or the success-path
+	// cleanup) — the natural idempotence boundary for a second pass.
+	const wsEntries = await (async () => {
+		try {
+			const list = await execJj(
+				["workspace", "list"],
+				opts.projectDir,
+				timeout,
+			);
+			return list.code === 0
+				? parseWorkspaceListLocal(list.stdout)
+				: new Map<string, WorkspaceEntry>();
+		} catch {
+			return new Map<string, WorkspaceEntry>();
+		}
+	})();
+	for (const name of opts.workspaceNames) {
+		try {
+			const entry = wsEntries.get(name);
+			if (!entry) continue; // already forgotten — nothing left to recover
+			const wsAt = entry.commitId;
+			const state = await execJj(
+				[
+					"log",
+					"-r",
+					wsAt,
+					"--no-graph",
+					"--ignore-working-copy",
+					"-T",
+					'if(empty, if(description.first_line() == "", "STUB", "DESCRIBED"), if(description.first_line() == "", "SNAPSHOT", "DESCRIBED"))',
+				],
+				opts.projectDir,
+				timeout,
+			);
+			let wsState = state.code === 0 ? state.stdout.trim() : "UNKNOWN";
+			if (wsState === "SNAPSHOT") {
+				// Taxonomy class 3: describe the dirty-tail snapshot IN PLACE —
+				// it becomes the rescue commit carrying the uncommitted work.
+				await execJj(
+					[
+						"describe",
+						"-r",
+						wsAt,
+						"-m",
+						`rescue: aborted task run (${cause})`,
+					],
+					opts.projectDir,
+					timeout,
+				);
+				wsState = "DESCRIBED";
+			}
+			// The workspace's OWN chain: the ANCESTORS of its @ that are not
+			// ancestors of the dispatch base (`::wsAt ~ ::dispatchBase` —
+			// workspaces branch from the dispatch base: createWorkspace parents
+			// each workspace's @ on the default workspace's @-, NOT on
+			// baseChangeId/the AI base). The workspace's own EMPTY undescribed @
+			// carries no work and is excluded (`~ wsAt`) — its content commits
+			// stay in the chain while the stub itself is cleaned up by the
+			// workspace forget below.
+			const chainRev =
+				wsState === "STUB"
+					? `::${wsAt} ~ ::${dispatchBase} ~ ${wsAt}`
+					: `::${wsAt} ~ ::${dispatchBase}`;
+			{
+				const probe = await execJj(
+					[
+						"log",
+						"-r",
+						chainRev,
+						"--no-graph",
+						"--ignore-working-copy",
+						"-T",
+						'change_id ++ "\\n"',
+					],
+					opts.projectDir,
+					timeout,
+				);
+				if (probe.code !== 0 || probe.stdout.trim().length === 0) {
+					// Nothing to stack — either the workspace never produced work
+					// or its commits were already stacked by an earlier pass (the
+					// consumed state: its content hangs off the base's descendants).
+					// The leftover empty working copy is cleaned up below.
+					forgotten.push(name);
+					continue;
+				}
+			}
+			// Tip of THIS workspace's chain (a linear worker chain → single
+			// head), captured BEFORE the rebase: jj rebase keeps CHANGE ids
+			// stable across rewrites, so the stacked chain's head keeps this
+			// exact change id at its new position — no post-rebase head query
+			// needed (one that would race sibling workspaces' own heads).
+			const tipQuery = await execJj(
+				[
+					"log",
+					"-r",
+					`heads(${chainRev})`,
+					"--no-graph",
+					"--ignore-working-copy",
+					"-T",
+					'change_id ++ "\\n"',
+				],
+				opts.projectDir,
+				timeout,
+			);
+			const chainTipChangeId = tipQuery.stdout
+				.split("\n")
+				.map((l) => l.trim())
+				.filter((l) => l.length > 0)[0] ?? "";
+			// STACK the chain onto the current tip: its roots move (with their
+			// descendants, by stable change ids — rebase never forks copies)
+			// onto <tip>, producing ONE linear chain base → ws1 → ws2 …
+			const rebase = await execJj(
+				[
+					"rebase",
+					"-s",
+					`roots(${chainRev})`,
+					"-o",
+					tipChangeId,
+				],
+				opts.projectDir,
+				timeout,
+			);
+			if (rebase.code !== 0 || chainTipChangeId.length === 0)
+				continue; // preserve > move: workspace stays live
+			if (wsState !== "STUB") {
+				// The workspace's @ IS content-bearing (e.g. the described
+				// rescue snapshot, just stacked into the main ancestry).
+				// `jj workspace forget` abandons the workspace's @, so detach it
+				// first: a fresh empty working-copy commit on top takes the
+				// abandonment instead. Requires the workspace's directory (this
+				// jj build prints no paths in `workspace list`, so the caller
+				// supplies them). Best effort — any failure here leaves the
+				// workspace live rather than risking the rescued content.
+				const wsDir = opts.workspaceDirs?.[name];
+				if (wsDir === undefined) continue;
+				try {
+					const fresh = await execJj(["new"], wsDir, timeout);
+					if (fresh.code !== 0) continue;
+				} catch {
+					continue;
+				}
+			}
+			forgotten.push(name);
+			stacked.push({ name, change_id: chainTipChangeId });
+			tipChangeId = chainTipChangeId;
+		} catch {
+			// Best effort — degrade toward preservation.
+		}
+	}
+
+	// Stub hygiene (rule 2 + user-abort R3): abandon ONLY provably
+	// engine-authored empties; doubtful ones survive and are listed. Runs
+	// AFTER stacking so a just-stacked workspace's leftover empty @ is
+	// classified on its final position.
+	if (opts.aiAuthorEmail !== undefined) {
+		const stubs = await listEngineStubsBestEffort({
+			projectDir: opts.projectDir,
+			aiAuthorEmail: opts.aiAuthorEmail,
+		});
+		for (const changeId of stubs.engine) {
+			try {
+				await execJj(["abandon", changeId], opts.projectDir, timeout);
+			} catch {
+				// Best effort.
+			}
+		}
+		// Doubtful survivors EXCLUDING workspace working-copy @s: those are
+		// removed by design via the forget below and are never recovery
+		// anchors — listing them would send the user hunting for commits the
+		// engine itself is about to hide.
+		const wsAtChangeIds = new Set(
+			opts.workspaceNames.map((n) => wsEntries.get(n)?.changeId ?? ""),
+		);
+		preserved.push(
+			...stubs.preserved.filter((id) => !wsAtChangeIds.has(id)),
+		);
+	}
+
+	// Workspace forget (rule 5): the stacked/consumed workspaces' commits
+	// are live in the main ancestry — their working copies are disposable.
+	// Workspaces whose rebase failed stay live for manual recovery (named in
+	// the commands below).
+	for (const name of forgotten) {
+		try {
+			await execJj(["workspace", "forget", name], opts.projectDir, timeout);
+		} catch {
+			// Best effort.
+		}
+	}
+	const keptLive = opts.workspaceNames.filter((n) => !forgotten.includes(n));
+
+	return {
+		base_change: opts.baseChangeId,
+		stack_tip: tipChangeId,
+		stacked,
+		...(preserved.length === 0 ? {} : { preserved_stubs: [...preserved] }),
+		commands: [
+			`jj log -r ${opts.baseChangeId}::   # inspect the stacked worker commits`,
+			`jj show ${tipChangeId}   # inspect the combined work`,
+			`jj new ${tipChangeId}   # continue work on top of the stack`,
+			...(keptLive.length > 0
+				? [
+						`jj workspace list   # ${keptLive.join(", ")} kept live — ` +
+							"their commits could not be stacked automatically; recover manually",
+					]
+				: []),
+			...preserved.map(
+				(s) =>
+					`jj abandon ${s}   # verified empty + undescribed — drop manually if unwanted`,
+			),
+		],
+	};
+}
+
+/**
  * R2: a zeroed WorkerResult standing in for an aborted worker that never
  * yielded — the finalization-incomplete success-with-caveat path has no
  * yield payload (the session died mid-finalization); the manifest's usage
@@ -505,22 +947,360 @@ export function classifyOverlapDiffs(diffsByWorker: string[]): OverlapKind {
  * commit so it survives in history and the next run starts from a clean
  * working copy. Only commits when the working copy is dirty (a clean
  * abort leaves nothing to save); swallows errors — never masks the
- * original failure. Exported for the hermetic test (real jj on a temp
- * repo).
+ * original failure. The message names the GOAL (the task description's
+ * first line) with the abort cause in parentheses; with no goal the
+ * legacy "aborted task run" summary is kept for compatibility. Returns
+ * the rescue CHANGE id (null when clean / best-effort failed) for the
+ * failure artifact's recovery block — change ids survive rebases that
+ * rewrite commit ids. Exported for the hermetic tests (real jj on temp
+ * repos); legacy callers may ignore the return value.
  */
 export async function rescueAbortedWorkBestEffort(
 	cwd: string,
 	err: unknown,
-): Promise<void> {
+	goal?: string,
+): Promise<string | null> {
 	try {
 		const status = await execJj(["status"], cwd);
-		if (status.code !== 0 || /has no changes/i.test(status.stdout)) return;
-		const cause =
-			err instanceof Error ? err.message.slice(0, 140) : "unknown cause";
-		await execJj(["commit", "-m", `rescue: aborted task run (${cause})`], cwd);
+		if (status.code !== 0 || /has no changes/i.test(status.stdout)) return null;
+		// Cause line: prefer the structured diagnostics (worker.ts
+		// buildAbortError) — err.message is the composed multi-part worker
+		// failure line and slices mid-clause; diagnostics.cause names the
+		// termination kind cleanly ("Worker was aborted", watchdog lines).
+		const diag = (
+			err as { diagnostics?: { cause?: unknown } } | undefined
+		)?.diagnostics;
+		const cause = (
+			typeof diag?.cause === "string"
+				? diag.cause
+				: err instanceof Error
+					? err.message
+					: "unknown cause"
+		).slice(0, 140);
+		const summary = (goal ?? "aborted task run").trim().split("\n")[0]!.slice(
+			0,
+			100,
+		);
+		await execJj(["commit", "-m", `rescue: ${summary} (${cause})`], cwd);
+		const id = await execJj(
+			[
+				"log",
+				"-r",
+				"@-",
+				"-T",
+				"change_id",
+				"--no-graph",
+				"--ignore-working-copy",
+			],
+			cwd,
+		);
+		return id.code === 0 ? id.stdout.trim() || null : null;
 	} catch {
 		// Best effort — the original failure propagates regardless.
+		return null;
 	}
+}
+
+/** Machine-readable single-run recovery info (contract rule 6): where the
+ *  rescued partial work lives plus the exact jj commands a user runs to
+ *  inspect or continue it. Serialized deterministically into the failure
+ *  artifact's `recovery` field — one fact per line, `key=value` for the
+ *  machine (`grep '^rescued_commit=' *.failure.json`) and the commands
+ *  verbatim for the human. */
+export interface SingleRunRecoveryInfo {
+	/** Change id of the goal-named rescue commit holding the WIP (absent
+	 *  when the tree was clean or the rescue failed best-effort). */
+	rescued_commit?: string | undefined;
+	/** Empty description-less commits PRESERVED by doubt (provenance not
+	 *  provably the engine's) — listed, never silently dropped. */
+	preserved_stubs?: string[] | undefined;
+	/** Exact jj commands to inspect/continue/repair the rescued work. */
+	commands?: string[] | undefined;
+}
+
+/** Assemble the recovery record + scripted command list (pure). */
+function buildSingleRunRecovery(
+	rescued: string | null,
+	preserved: string[],
+): SingleRunRecoveryInfo {
+	const commands = [
+		"jj log -r all()   # locate the rescue: commit and any leftover stubs",
+	];
+	if (rescued !== null) {
+		commands.push(
+			`jj show ${rescued}   # inspect the rescued partial work`,
+			`jj new ${rescued}   # continue work on top of the rescue`,
+		);
+	}
+	for (const stub of preserved) {
+		commands.push(
+			`jj abandon ${stub}   # verified empty + undescribed — drop manually if unwanted`,
+		);
+	}
+	return {
+		...(rescued === null ? {} : { rescued_commit: rescued }),
+		...(preserved.length === 0 ? {} : { preserved_stubs: [...preserved] }),
+		commands,
+	};
+}
+
+/** Serialize single-run recovery info into the artifact's `recovery`
+ *  string field (pure): machine-grep-able key=value lines + the exact jj
+ *  commands, so recovery is scripted rather than LLM-discovered. */
+export function serializeSingleRunRecovery(
+	info: SingleRunRecoveryInfo,
+): string {
+	const lines: string[] = [];
+	if (info.rescued_commit !== undefined)
+		lines.push(`rescued_commit=${info.rescued_commit}`);
+	for (const s of info.preserved_stubs ?? [])
+		lines.push(`preserved_stub=${s}`);
+	lines.push(...(info.commands ?? []));
+	return lines.join("\n");
+}
+
+/**
+ * Single-run termination hygiene (failure-artifact contract rules 1–6):
+ * rescue the dirty working copy into ONE goal-named commit directly on
+ * the dispatch base, remove ONLY engine-created empty stubs, and produce
+ * machine-readable recovery info. Stub removal is conservative: a commit
+ * qualifies only when it is empty, description-less, AND authored by the
+ * AI identity configured for this run — any doubt about provenance
+ * preserves it and lists it under `preserved_stubs` instead of deleting
+ * (a user abort mid-work must never destroy user content). Never
+ * throws — every step is best effort; the original failure propagates
+ * regardless.
+ *
+ * @returns the recovery record for the failure artifact, or undefined
+ * when there is nothing to report (clean tree, no stubs).
+ */
+export async function singleRunFailureHygiene(opts: {
+	cwd: string;
+	err: unknown;
+	/** Spec goal — its first line names the rescue commit. */
+	goal?: string;
+	/** AI identity configured for this run — the provenance test for
+	 *  engine-authored empties. Absent → nothing is deleted. */
+	aiAuthorName?: string | undefined;
+	aiAuthorEmail?: string | undefined;
+}): Promise<SingleRunRecoveryInfo | undefined> {
+	const rescued = await rescueAbortedWorkBestEffort(
+		opts.cwd,
+		opts.err,
+		opts.goal,
+	);
+	const preserved: string[] = [];
+	try {
+		// all() ~ root(): the immutable root is empty + undescribed by
+		// construction — never an engine artifact, never ours to abandon.
+		const log = await execJj([
+			"log",
+			"-r",
+			"all() ~ root()",
+			"--no-graph",
+			"-T",
+			'change_id ++ "|" ++ if(empty, if(description.first_line() == "", "STUB", "OK"), "OK") ++ "|" ++ author.email() ++ "\\n"',
+		], opts.cwd);
+		if (log.code === 0) {
+			for (const line of log.stdout.split("\n")) {
+				const m = /^([^|]+)\|STUB\|(.+)$/.exec(line.trim());
+				if (!m) continue; // described or non-empty → not ours to touch
+				const changeId = m[1]!;
+				const authorEmail = m[2]!.trim();
+				const engineAuthored =
+					opts.aiAuthorEmail !== undefined &&
+					authorEmail === opts.aiAuthorEmail;
+				if (!engineAuthored) {
+					preserved.push(changeId); // doubt → preserve + report
+					continue;
+				}
+				await execJj(["abandon", changeId], opts.cwd);
+			}
+		}
+	} catch {
+		// Best effort — stub hygiene must never mask the original failure.
+	}
+	if (rescued === null && preserved.length === 0) return undefined;
+	return buildSingleRunRecovery(rescued, preserved);
+}
+
+// ─── Pre-dispatch legacy-stray tolerance (R2/R4) ─────────────────────
+
+export type CleanedStrayKind = "engine_stub" | "legacy_snapshot";
+export type PreservedStrayKind = "stub" | "snapshot";
+
+/** What the pre-dispatch gate found in a repo littered by past failed
+ *  runs. `cleaned` entries were neutralized by the gate's single cleanup
+ *  pass; `preserved` entries were LEFT ALONE (provenance doubt — a user
+ *  abort mid-work must never destroy user content) and only reported. */
+export interface LegacyStrayReport {
+	cleaned: Array<{ kind: CleanedStrayKind; changeId: string }>;
+	preserved: Array<{ kind: PreservedStrayKind; changeId: string }>;
+}
+
+/**
+ * Classify legacy strays in the DEFAULT working-copy lineage (`::@`, the
+ * only lineage a dispatch builds on — off-lineage leftovers belong to
+ * live/preserved workspaces and are never ours to judge here).
+ *
+ * A commit in that lineage is a LEGACY STRAY when it carries content or
+ * is empty yet is UNDESCRIBED (taxonomy classes 1–3: engine stubs, dirty
+ * snapshots, rescue-opened stubs) — the compliant end-state after any
+ * run's hygiene has none of these. Ownership follows the same provenance
+ * doctrine as singleRunFailureHygiene: authored by the configured AI
+ * identity → engine junk the gate may clean; anything else is DOUBT →
+ * preserved and reported, never touched (R4). Described commits that are
+ * not rescue-prefixed ("rescue: ..." — a past run's deliberate
+ * preservation via rescueAbortedWorkBestEffort /
+ * rescueWorkspaceStateBestEffort) are the user's history — skipped
+ * outright; rescue-prefixed ones are ignorable base history for the same
+ * reason: named, self-describing, never swept as junk (R4).
+ * Bounded, never throws. The log deliberately does NOT use
+ * --ignore-working-copy: like assertCleanWorkingCopy, its subject is the
+ * LIVE working copy — the snapshot op folds any unsnapshotted tail into
+ * `@` so the wedged-run shape (an undescribed AI snapshot AT @) is
+ * actually visible. The live default-@ is then resolved BY CHANGE ID and
+ * exempt when empty + undescribed: that is jj's normal resting state
+ * after every command (abandon/jj new recreate it under whatever config
+ * ran), not a stray — only a CONTENT-BEARING undescribed @ is one.
+ */
+export async function classifyLegacyStrays(opts: {
+	cwd: string;
+	aiAuthorEmail?: string | undefined;
+}): Promise<LegacyStrayReport> {
+	const report: LegacyStrayReport = { cleaned: [], preserved: [] };
+	try {
+		// Snapshot-triggering read FIRST (folds unsnapshotted tails into @),
+		// then resolve the live @ against the now-current view.
+		const log = await execJj(
+			[
+				"log",
+				"-r",
+				"(::@) ~ root()",
+				"--no-graph",
+				"-T",
+				'change_id ++ "|" ++ if(empty, if(description.first_line() == "", "STUB", "OK"), "OK") ++ "|" ++ author.email() ++ "|" ++ description.first_line() ++ "\\n"',
+			],
+			opts.cwd,
+		);
+		if (log.code !== 0) return report;
+		const at = await execJj(
+			[
+				"log",
+				"-r",
+				"@",
+				"--no-graph",
+				"--ignore-working-copy",
+				"-T",
+				"change_id",
+			],
+			opts.cwd,
+		);
+		const liveAt = at.code === 0 ? at.stdout.trim() : null;
+		for (const line of log.stdout.split("\n")) {
+			// Split (not regex): the description is last and may contain "|".
+			const parts = line.trim().split("|");
+			if (parts.length < 4) continue;
+			const [changeId, emptyClass, authorEmail] = parts as [
+				string,
+				string,
+				string,
+			];
+			const description = parts.slice(3).join("|");
+			const isEmptyUndescribed = emptyClass === "STUB";
+			// 1. Any DESCRIBED commit: a rescue-prefix marks a past run's
+			// deliberate preservation (ignorable base history, never junk —
+			// R4); any other description is history. Neither is ours to touch.
+			if (description !== "") continue;
+			// 2. Undescribed from here on. An EMPTY live tip is the working
+			// copy itself (jj's resting state) — the strict check judges it.
+			// A CONTENT-BEARING live tip is the wedged-run shape itself (a
+			// dead worker's unsnapshotted tail folded into @) — it MUST fall
+			// through to the ownership rules below, or every future dispatch
+			// stays blocked forever.
+			if (isEmptyUndescribed && liveAt !== null && changeId === liveAt) {
+				continue;
+			}
+			const engineAuthored =
+				opts.aiAuthorEmail !== undefined &&
+				authorEmail === opts.aiAuthorEmail;
+			if (isEmptyUndescribed) {
+				// 3. Empty + undescribed, off-tip: a jj-mechanical artifact
+				// (every `jj commit` opens one; dead runs leak more) with ZERO
+				// content. Engine-authored → swept; anything else is not ours
+				// to delete — and it blocks nothing, so it is ignored.
+				if (engineAuthored) {
+					report.cleaned.push({ kind: "engine_stub", changeId });
+				}
+				continue;
+			}
+			// 4. Content-bearing + undescribed: engine junk when provably the
+			// engine's; REAL doubt (potential interrupted user work) otherwise
+			// → preserved untouched and reported (R4).
+			if (engineAuthored) {
+				report.cleaned.push({ kind: "legacy_snapshot", changeId });
+			} else {
+				report.preserved.push({ kind: "snapshot", changeId });
+			}
+		}
+	} catch {
+		// Best effort — classification problems fall through to the strict
+		// cleanness check, which reports the precise blocking state.
+	}
+	return report;
+}
+
+/**
+ * The gate's ONE cleanup action (R2): abandon the classified engine
+ * strays. Abandon (not describe-in-place) is deliberate for the tail:
+ * a legacy snapshot left at @ keeps its files on disk and would pollute
+ * the run's verification tree; abandoning drops them from the working
+ * copy while the content stays recoverable in the hidden commit.
+ * Mid-lineage abandons are content-safe: jj rebases descendants onto the
+ * abandoned commit's parents preserving each child's tree. Change ids of
+ * later items survive earlier abandons (rebase keeps change ids), and an
+ * already-hidden id simply fails its abandon — caught and skipped, so
+ * re-running moves nothing (idempotence, R3). Never throws.
+ */
+async function cleanLegacyStrays(opts: {
+	cwd: string;
+	classification: LegacyStrayReport;
+}): Promise<void> {
+	for (const item of opts.classification.cleaned) {
+		try {
+			await execJj(["abandon", item.changeId], opts.cwd);
+		} catch {
+			// Best effort — the strict check below still gates the dispatch.
+		}
+	}
+}
+
+/**
+ * The pre-dispatch cleanness gate (R2/R4): tolerate repos littered by
+ * PAST failed runs, block only genuine user work-in-progress.
+ *
+ * 1. Classify legacy strays in the dispatch lineage and clean the
+ *    provably-engine junk in ONE pass (empty stubs, undescribed AI
+ *    snapshots). Rescue commits are classified as ignorable base
+ *    history — dispatch neither refuses nor multiplies them.
+ * 2. Re-run the STRICT check (assertCleanWorkingCopy): the user's own
+ *    uncommitted work still blocks dispatch exactly as before — the
+ *    gate only ever removes what the engine itself authored undescribed.
+ *
+ * Assumption (unchanged from assertCleanWorkingCopy's design): dispatches
+ * to one repo's default working copy are sequential — the gate is the
+ * run's first jj writer, so it cannot race a live run's snapshot op.
+ */
+export async function ensureDispatchableTree(opts: {
+	cwd: string;
+	aiAuthorEmail?: string | undefined;
+}): Promise<LegacyStrayReport> {
+	const classification = await classifyLegacyStrays(opts);
+	if (classification.cleaned.length > 0) {
+		await cleanLegacyStrays({ cwd: opts.cwd, classification });
+	}
+	await assertCleanWorkingCopy(opts.cwd);
+	return classification;
 }
 
 /**
@@ -542,6 +1322,10 @@ function writeFailureArtifactBestEffort(opts: {
 	/** R4 recovery hint (batch lane): the job-state file path — the
 	 *  recovery handle for aborted/timed-out jobs and failed items. */
 	recovery?: string | undefined;
+	/** Contract rule 6: machine-readable single-run recovery block —
+	 *  serialized into the artifact's `recovery` field (rescue change id,
+	 *  preserved-by-doubt stubs, exact jj commands). */
+	singleRunRecovery?: SingleRunRecoveryInfo | undefined;
 }): void {
 	if (!opts.metricsDir) return;
 	try {
@@ -559,7 +1343,17 @@ function writeFailureArtifactBestEffort(opts: {
 			...(d?.idleMs === undefined ? {} : { idleMs: d.idleMs }),
 			lastTool: d?.lastTool ?? null,
 			...(d?.stderrTail === undefined ? {} : { stderrTail: d.stderrTail }),
-			...(opts.recovery === undefined ? {} : { recovery: opts.recovery }),
+			// Rule 6: the single-run recovery block rides the existing
+			// `recovery` guide field (serialized machine-grep-able), so it
+			// reaches <run_id>.failure.json without a metrics.ts schema change.
+			// A caller-supplied `recovery` (batch lane's job-state hint) wins.
+			...(opts.recovery === undefined && opts.singleRunRecovery === undefined
+				? {}
+				: {
+						recovery:
+							opts.recovery ??
+							serializeSingleRunRecovery(opts.singleRunRecovery!),
+					}),
 		});
 		writeFailureArtifact(artifact, {
 			metricsDir: opts.metricsDir,
@@ -594,6 +1388,11 @@ export interface ExecuteTaskOptions {
 	prewalkModel?: string;
 	/** Model the worker runs on after the prewalk swap. Defaults to model. */
 	executeModel?: string;
+	/** R2: called once per dispatch with what the pre-dispatch legacy-stray
+	 *  tolerance found and did in the repo — engine strays cleaned, doubtful
+	 *  undescribed commits preserved. Lets the caller surface the cleanup to
+	 *  the user instead of silently rewriting their history. */
+	onStrays?: ((report: LegacyStrayReport) => void) | undefined;
 	/** Called when a prewalk model swap fires. */
 	onSwap?: ((info: SwapInfo) => void) | undefined;
 	/** Number of parallel workers. Default: 1 (single-worker path).
@@ -1710,12 +2509,25 @@ export async function executeTask(
 	const subSpecs =
 		opts.subSpecs && opts.subSpecs.length > 0 ? opts.subSpecs : undefined;
 
-	// R1: the orchestrator commits task work into (single path) or squashes
+	// R1/R2: the orchestrator commits task work into (single path) or squashes
 	// workspace commits under (parallel path) the main working copy — user
 	// work-in-progress would be silently bundled into task commits. Fail fast
 	// FIRST, before spec parsing, map build, workspace creation, or worker
-	// spawn (both paths).
-	await assertCleanWorkingCopy(cwd);
+	// spawn (both paths). The gate is legacy-tolerant: strays from PAST
+	// failed runs (engine stubs, undescribed AI snapshots) are classified
+	// and cleaned in one pass; rescue commits are ignorable history; the
+	// user's OWN uncommitted work still blocks via the strict check inside.
+	const strayReport = await ensureDispatchableTree({
+		cwd,
+		// Same resolution the run's own identity block below uses — the
+		// provenance test for "authored by this engine" must match what the
+		// engine actually authors with.
+		aiAuthorEmail:
+			opts.aiAuthorEmail ?? DEFAULT_TASK_CONFIG.defaults.aiAuthorEmail,
+	});
+	if (strayReport.cleaned.length > 0 || strayReport.preserved.length > 0) {
+		opts.onStrays?.(strayReport);
+	}
 
 	if (!opts.spec && !subSpecs) {
 		throw new Error('executeTask: "spec" (or "subSpecs") is required');
@@ -1940,6 +2752,12 @@ export async function executeTask(
 	// covers every worker's commits in both identity modes (the AI base is
 	// empty and contributes nothing).
 	const taskBaseCommitId = await headCommitId(cwd, "@-");
+	// R2: the DISPATCH base the workspaces branch from — the AI task base's
+	// parent in identity mode (createWorkspace parents each workspace's @ on
+	// the default workspace's @-, the pre-task head), or the pre-task head
+	// itself without an AI base. Captured BEFORE any commit is created so
+	// the failure-path post-mortem can isolate each workspace's OWN chain.
+	const parallelDispatchBaseChangeId = await taskBaseChangeId(cwd);
 
 	// Worker count: sub_specs mode spawns exactly one worker per sub-spec
 	// (caller-controlled, no clamp — every sub-spec is validated to have at
@@ -2163,15 +2981,15 @@ export async function executeTask(
 					.map((r, i) => (r.status === "rejected" ? i : -1))
 					.filter((i) => i >= 0);
 			} else {
-				// Flat worker-failure path: R3 rescues each workspace's
-				// uncommitted state into a rescue commit inside the preserved
-				// workspace ("rescue: aborted task run (<cause>)" — the
-				// artifact names where the uncommitted state lives), the
-				// failure artifact records the workspaces + their @ commit ids
-				// (best-effort resolution — the workers may have died mid-tool,
-				// bounded by FAILURE_PATH_JJ_TIMEOUT_MS so a wedged workspace
-				// never stalls the abort), and the finally block below keeps
-				// the workspaces alive for scripted recovery.
+				// Flat worker-failure path: the engine performs the
+				// full post-mortem itself (parallelRunPostMortem): each workspace's
+				// dirty tail is rescued/described, every workspace's commits are
+				// stacked onto the dispatch base, engine-authored empty stubs are
+				// abandoned, and the workspaces are forgotten — the artifact then
+				// carries the machine-readable recovery result instead of leaving
+				// scripted manual recovery. Best effort + bounded
+				// (FAILURE_PATH_JJ_TIMEOUT_MS): a wedged repo degrades toward
+				// preservation and never masks the original failure.
 				mergeFailed = new Error(message);
 				const wsRecords: MergeFailureInfo["workspaces"] = [];
 				for (const ws of workspaces) {
@@ -2196,6 +3014,20 @@ export async function executeTask(
 						...(rescueId ? { rescue_commit_id: rescueId } : {}),
 					});
 				}
+				// The post-mortem needs the AI identity for the provenance test
+				// (ONLY provably engine-authored empties are abandoned); without
+				// it nothing is deleted — pure preservation.
+				const parallelRecovery = await parallelRunPostMortem({
+					projectDir: cwd,
+					workspaceNames: workspaces.map((w) => w.name),
+					baseChangeId,
+					dispatchBaseChangeId: parallelDispatchBaseChangeId,
+					cause: message,
+					...(aiEmail.trim().length === 0 ? {} : { aiAuthorEmail: aiEmail }),
+					workspaceDirs: Object.fromEntries(
+						workspaces.map((w) => [w.name, w.dir]),
+					),
+				});
 				writeMergeFailureArtifact({
 					cause: message,
 					workspaces: wsRecords,
@@ -2206,6 +3038,7 @@ export async function executeTask(
 					project,
 					specMarkdown,
 					tier: budget,
+					parallelRecovery,
 				});
 				throw new Error(message);
 			}
@@ -2730,6 +3563,9 @@ async function executeBatchLane(
 		// 2. Re-check the working copy is CLEAN before applying — the job may
 		// have polled for up to 24h, and user work-in-progress started during
 		// that window must never be swept into the batch commit (review P2).
+		// STRICT here by design: this rechecks the SAME tree the entry gate
+		// just made dispatchable — any dirt that appeared during the poll
+		// window is live user work-in-progress, not legacy residue.
 		await assertCleanWorkingCopy(cwd);
 		// Apply the validated file outputs to the working copy. The
 		// model's output is untrusted input — extractBatchFiles enforces
@@ -3266,6 +4102,26 @@ async function executeSingle(
 			worker = await session.result;
 		} catch (err) {
 			if (turnBudgetState.exhausted) {
+				// This throw IS an abort exit — termination hygiene applies:
+				// rescue the WIP + strip engine empties before failing.
+				await singleRunFailureHygiene({
+					cwd,
+					err: new Error(
+						"turn budget exhausted (worker aborted at 100% of the tier's turn budget)",
+					),
+					goal: spec.goal,
+					aiAuthorName,
+					aiAuthorEmail,
+				});
+				writeFailureArtifactBestEffort({
+					err,
+					kind: "worker",
+					runId,
+					metricsDir,
+					project: projectName,
+					specMarkdown,
+					tier: budget,
+				});
 				throw new Error(
 					`turn budget exhausted: the worker used the tier's full ${opts.turnBudget}-turn budget without yielding — ` +
 						`the run was aborted to stop the spend. Any commits the worker made remain in the tree.`,
@@ -3274,7 +4130,27 @@ async function executeSingle(
 			// swapError's null-narrowing does not survive into a catch block
 			// (the awaited call above can invalidate it), hence the explicit
 			// Error assertion for only-throw-error.
-			if (swapError !== null) throw swapError as Error;
+			if (swapError !== null) {
+				// Abort exit (the swap failure aborted the session): the same
+				// termination hygiene applies before the error propagates.
+				await singleRunFailureHygiene({
+					cwd,
+					err: swapError,
+					goal: spec.goal,
+					aiAuthorName,
+					aiAuthorEmail,
+				});
+				writeFailureArtifactBestEffort({
+					err,
+					kind: "worker",
+					runId,
+					metricsDir,
+					project: projectName,
+					specMarkdown,
+					tier: budget,
+				});
+				throw swapError as Error;
+			}
 			// R2 (third outcome): finalization-incomplete — the checklist relay
 			// showed ALL requirements done at abort, so the worker committed
 			// everything and was verifying/yielding when it was killed. Rescue
@@ -3290,7 +4166,7 @@ async function executeSingle(
 			// not the missing payload, decides via the same gate.
 			const noYieldFailure = isNoYieldFailure(err);
 			if (noYieldFailure || isFinalizationIncomplete(checklistCtrl.latest)) {
-				await rescueAbortedWorkBestEffort(cwd, err);
+				await rescueAbortedWorkBestEffort(cwd, err, spec.goal);
 				const verification = await runVerification(
 					spec.verification,
 					cwd,
@@ -3388,11 +4264,18 @@ async function executeSingle(
 					};
 				}
 			}
-			// The current failure path: keep the aborted worker's WIP —
-			// rescue-commit a dirty working copy ("rescue:" prefix) so the work
-			// survives in history and the next run starts from a clean copy.
-			// Best effort — never masks the original failure.
-			await rescueAbortedWorkBestEffort(cwd, err);
+			// The current failure path: contract rules 1–6 — rescue the dirty
+			// working copy into ONE goal-named commit, abandon ONLY provably
+			// engine-authored empty stubs (preserve-by-doubt otherwise), and
+			// attach machine-readable recovery info to the artifact. Best
+			// effort — never masks the original failure.
+			const recovery = await singleRunFailureHygiene({
+				cwd,
+				err,
+				goal: spec.goal,
+				aiAuthorName,
+				aiAuthorEmail,
+			});
 			writeFailureArtifactBestEffort({
 				err,
 				kind: "worker",
@@ -3401,6 +4284,7 @@ async function executeSingle(
 				project: projectName,
 				specMarkdown,
 				tier: budget,
+				singleRunRecovery: recovery,
 			});
 			throw err;
 		} finally {

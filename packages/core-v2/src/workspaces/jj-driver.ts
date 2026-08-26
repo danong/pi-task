@@ -18,6 +18,12 @@
 
 import { existsSync } from "node:fs";
 
+import {
+	dispatchBaseOf,
+	parallelRunPostMortem,
+	type ParallelRecoveryInfo,
+} from "./failure-hygiene.ts";
+
 import type {
 	CombineOutcome,
 	IntegrationMode,
@@ -227,6 +233,47 @@ export class JujutsuWorkspaceDriver implements WorkspaceDriver {
 			throw new Error(
 				`jj new <merged> failed (${result.code}): ${result.stderr.trim()}`,
 			);
+	}
+
+	/**
+	 * Failure-artifact contract rules 1–6 (engine-side post-mortem): on ANY
+	 * failed/aborted run the driver performs the repo reconciliation itself —
+	 * undescribed dirty snapshots become described rescue commits, each
+	 * workspace's commits are stacked onto the dispatch base in ONE linear
+	 * chain, engine-authored empty stubs are abandoned, consumed workspaces
+	 * are forgotten — and returns the machine-readable recovery info for the
+	 * failure artifact (stack tip, per-workspace heads, preserved-by-doubt
+	 * stubs, exact jj commands). Best-effort and bounded; never throws.
+	 */
+	async recoverFailedRun(opts: {
+		workspaceNames: string[];
+		cause: string;
+		/** Working-copy dirs by workspace name — enables the content-bearing-@
+		 *  detach before the forget; a name without a dir is stacked but kept
+		 *  live on any failure. */
+		workspaceDirs?: Record<string, string> | undefined;
+	}): Promise<ParallelRecoveryInfo> {
+		const base = this.#requireBase();
+		return parallelRunPostMortem({
+			projectDir: this.#opts.projectDir,
+			workspaceNames: opts.workspaceNames,
+			// The workspaces branched from the AI base's PARENT in identity
+			// mode (createAiTaskBase parents it on @-) — that is the dispatch
+			// base the chains hang off.
+			baseChangeId: base,
+			dispatchBaseChangeId: await dispatchBaseOf(this.#opts.projectDir, base),
+			cause: opts.cause,
+			aiAuthorEmail: this.#opts.authorEmail,
+			...(opts.workspaceDirs === undefined
+				? {}
+				: { workspaceDirs: opts.workspaceDirs }),
+		});
+	}
+
+	/** The configured AI identity email — the provenance test callers use
+	 *  when running single-run hygiene against this driver's repo. */
+	get authorEmail(): string {
+		return this.#opts.authorEmail;
 	}
 
 	async publishBookmarks(

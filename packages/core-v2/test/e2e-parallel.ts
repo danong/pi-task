@@ -68,7 +68,7 @@ async function main(): Promise<number> {
 			stdio: "pipe",
 		});
 
-		const daemon = startDaemon(join(dir, "tasks.db"));
+		const daemon = await startDaemon(join(dir, "tasks.db"));
 		const driver = new JujutsuWorkspaceDriver({ projectDir: repo });
 
 		const startedAt = Date.now();

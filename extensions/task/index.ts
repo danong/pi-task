@@ -1373,6 +1373,29 @@ export default function (pi: ExtensionAPI) {
 						// Todo #84: AI commit identity for worker commits.
 						aiAuthorName: taskConfig.defaults.aiAuthorName,
 						aiAuthorEmail: taskConfig.defaults.aiAuthorEmail,
+						// R2: surface the pre-dispatch legacy-stray cleanup as a progress
+						// line (the model + the user see the repo was made dispatchable —
+						// nothing is rewritten silently).
+						onStrays: (report) => {
+							const cleaned = report.cleaned.length;
+							const preserved = report.preserved.length;
+							if (cleaned === 0 && preserved === 0) return;
+							const parts: string[] = [];
+							if (cleaned > 0)
+								parts.push(
+									`cleaned ${cleaned} engine stray${cleaned === 1 ? "" : "s"} from past failed runs`,
+								);
+							if (preserved > 0)
+								parts.push(
+									`preserved ${preserved} undescribed non-engine commit${preserved === 1 ? "" : "s"} (inspect with jj log)`,
+								);
+							onUpdate?.({
+								content: [{ type: "text", text: `task: ${parts.join("; ")}` }],
+								details: {
+									progress: `task: ${parts.join("; ")}`,
+								} satisfies TaskToolProgress,
+							});
+						},
 						budget: tier,
 						sandbox: taskConfig.sandbox,
 						signal,
