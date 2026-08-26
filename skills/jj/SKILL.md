@@ -27,11 +27,46 @@ no `add`/stage step.
   pushed history can't be rewritten without `--ignore-immutable`. Verify:
   `jj config get revset-aliases.immutable_heads`.
 
+## Starting New Work & Syncing Upstream
+
+Always fetch remote changes before starting. Because jj continuously snapshots
+uncommitted work into `@`, rebase active work or start a fresh change according
+to the current working-copy state:
+
+```sh
+# Fetch latest remote changes.
+jj git fetch
+
+# Rebase active work, including uncommitted changes in @, onto updated main.
+jj rebase -d main@origin
+
+# Or, when @ is empty or its work is being discarded, start fresh.
+jj new main@origin
+```
+
+For empty, undescribed workspace leftovers, inspect and remove only the
+workspace associations you have confirmed are disposable:
+
+```sh
+# View empty, undescribed commits other than the current @.
+jj log -r 'all() & empty() & description(exact:"") & ~@'
+
+# List workspace names associated with those commits.
+jj log --no-graph -r 'all() & empty() & description(exact:"") & ~@' \
+  -T 'working_copies.map(|w| w.name()).join("\n") ++ "\n"' | grep -v '^$'
+
+# Forget those workspaces (review the list before running this).
+jj log --no-graph -r 'all() & empty() & description(exact:"") & ~@' \
+  -T 'working_copies.map(|w| w.name()).join("\n") ++ "\n"' | grep -v '^$' | xargs -r jj workspace forget
+```
+
+If `jj st` reports no working copy or `@` is missing, reattach with
+`jj edit <commit_id>`, or start a fresh working copy with `jj new main`.
+
 ## Default workflow
 
 ```sh
-# 0. Pick up remote work before starting (skip if no git remote).
-jj git fetch
+# 0. Follow "Starting New Work & Syncing Upstream" above.
 # 1. Edit files — @ accumulates the changes automatically.
 jj st                          # review what changed
 # 2. Finalize the change with a message; also starts a fresh empty @.
