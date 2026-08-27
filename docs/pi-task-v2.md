@@ -295,7 +295,7 @@ the report does not infer them.
 ## M4 context experiment complete; M5–M6 deferred
 
 M4 ships an opt-in context capability in the runnable v2 CLI. `raw` is the
-correct default no-injection baseline; `symbol-tree` scans and retrieves
+correct default no-injection baseline; `--context symbol-tree` scans and retrieves
 bounded progressive-disclosure handles before session spawn, and exposes a
 bounded query/resolve worker tool. Both retain ordinary read/search/bash
 escape hatches. Canonical `context.selected`, `context.injected`, and

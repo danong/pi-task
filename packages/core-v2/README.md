@@ -55,7 +55,7 @@ writes real-run evidence, when requested with `-- --run`, under the selected
 metrics directory as `eval-grounding/records.jsonl` and `summary.md`.
 
 M4 context is complete as an opt-in experiment. The CLI selects `raw` (default)
-or `symbol-tree`; the latter compiles bounded handles before spawn and provides
+or `symbol-tree` via `--context`; the latter compiles bounded handles before spawn and provides
 the bounded `context` query/resolve tool while preserving read/search/bash.
 Provider identity, tree identity, provenance, omissions, and estimated size are
 recorded in canonical trace events. Failures explicitly fall back to raw. Use

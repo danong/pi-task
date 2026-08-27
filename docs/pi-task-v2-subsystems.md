@@ -289,7 +289,7 @@ receipt delivery, success cleanup, and verification-failure recovery.
 
 M4 context conformance is shipped as an opt-in experiment. The typed context
 capability is implemented by the raw/no-injection provider and the deterministic
-symbol-tree provider. The kernel compiles one bounded initial artifact from the
+symbol-tree provider, selected by the CLI's `--context` option. The kernel compiles one bounded initial artifact from the
 validated goal and requirements before session spawn, injects handles only,
 and adds a bounded query/resolve tool without removing read/search/bash. The
 CLI records explicit `raw` or `symbol-tree` selection. Scan/retrieval failure

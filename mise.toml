@@ -31,6 +31,14 @@ run = "npx tsx packages/core-v2/src/cli.ts"
 description = "Render a trace benchmark report (pass --trace/--traces-dir/--records and --label)"
 run = "npx tsx packages/core-v2/src/bench/report.ts"
 
+[tasks.context-eval]
+description = "Print the hermetic provider-neutral context evaluation plan"
+run = "npx tsx packages/core-v2/src/bench/context-report.ts"
+
+[tasks.context-report]
+description = "Render a context evaluation report from canonical trace JSONL"
+run = "npx tsx packages/core-v2/src/bench/context-report.ts"
+
 [tasks.typecheck]
 description = "Type gate — strict tsc over both engines (core-v2 FR-11 + v1 extensions)"
 run = "npx tsc --noEmit -p packages/core-v2/tsconfig.json && npx tsc --noEmit -p tsconfig.json"

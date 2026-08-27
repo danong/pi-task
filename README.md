@@ -113,7 +113,7 @@ and network. Evidence is written under the selected metrics directory in
 `eval-grounding/records.jsonl` and `eval-grounding/summary.md`.
 
 M4 context is complete as an opt-in, evidence-producing experiment: the v2 CLI
-selects `raw` (the default) or `symbol-tree`, injects bounded progressive-
+selects `raw` (the default) or `symbol-tree` with `--context`, injects bounded progressive-
 disclosure handles, exposes the bounded `context` worker tool, and records
 provider, tree identity, selection, omission, and size evidence. Index or
 retrieval failure falls back explicitly to raw exploration. `mise run context-eval`

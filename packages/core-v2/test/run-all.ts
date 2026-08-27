@@ -13,6 +13,9 @@ import { runTests as runBenchmarkTests } from "./test-benchmark.ts";
 import { runTests as runBundleTests } from "./test-bundle.ts";
 import { runTests as runContractTests } from "./test-contracts.ts";
 import { runTests as runContextRetrievalTests } from "./test-context-retrieval.ts";
+import { runTests as runContextProviderTests } from "./test-context-provider.ts";
+import { runTests as runContextIntegrationTests } from "./test-context-integration.ts";
+import { runTests as runContextEvalTests } from "./test-context-eval.ts";
 import { runTests as runContinuationTests } from "./test-continuation.ts";
 import { runTests as runCliTests } from "./test-cli.ts";
 import { runTests as runDaemonTests } from "./test-daemon.ts";
@@ -45,6 +48,9 @@ import { runTests as runWorkerProtocolTests } from "./test-worker-protocol.ts";
 const SUITES: Array<{ name: string; run: () => Promise<void> }> = [
 	{ name: "contracts", run: runContractTests },
 	{ name: "context-retrieval", run: runContextRetrievalTests },
+	{ name: "context-provider", run: runContextProviderTests },
+	{ name: "context-integration", run: runContextIntegrationTests },
+	{ name: "context-eval", run: runContextEvalTests },
 	{ name: "bundle", run: runBundleTests },
 	{ name: "continuation", run: runContinuationTests },
 	{ name: "cli", run: runCliTests },
