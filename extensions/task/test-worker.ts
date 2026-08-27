@@ -566,13 +566,16 @@ export async function runTests(): Promise<void> {
 			const prev = process.env[ENABLE_REASONING_EXCLUDE_ENV_VAR];
 			if (enableVal === undefined) delete process.env[ENABLE_REASONING_EXCLUDE_ENV_VAR];
 			else process.env[ENABLE_REASONING_EXCLUDE_ENV_VAR] = enableVal;
-			let hook: ((event: { payload: unknown }) => unknown) | null = null;
+			const hookRef: {
+				current: ((event: { payload: unknown }) => unknown) | null;
+			} = { current: null };
 			const fakePi = {
 				on: (ev: string, fn: (event: { payload: unknown }) => unknown) => {
-					if (ev === "before_provider_request") hook = fn;
+					if (ev === "before_provider_request") hookRef.current = fn;
 				},
 			} as unknown as Parameters<typeof reasonExcludeDefault>[0];
 			reasonExcludeDefault(fakePi);
+			const hook = hookRef.current;
 			const ret = hook ? hook({ payload }) : undefined;
 			const out = ret === undefined ? payload : ret;
 			if (prev === undefined) delete process.env[ENABLE_REASONING_EXCLUDE_ENV_VAR];
@@ -702,13 +705,16 @@ export async function runTests(): Promise<void> {
 			if (envSessionId === undefined) delete process.env[SESSION_ID_ENV_VAR];
 			else process.env[SESSION_ID_ENV_VAR] = envSessionId;
 			let captured: unknown = Symbol("not-called");
-			let hook: ((event: HookEvent, ctx: unknown) => unknown) | null = null;
+			const hookRef: {
+				current: ((event: HookEvent, ctx: unknown) => unknown) | null;
+			} = { current: null };
 			const fakePi = {
 				on: (ev: string, fn: (event: HookEvent, ctx: unknown) => unknown) => {
-					if (ev === "before_provider_request") hook = fn;
+					if (ev === "before_provider_request") hookRef.current = fn;
 				},
 			} as unknown as Parameters<typeof sessionIdDefault>[0];
 			sessionIdDefault(fakePi);
+			const hook = hookRef.current;
 			if (hook) {
 					const ctx = {
 						sessionManager: {
