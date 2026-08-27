@@ -102,14 +102,22 @@ export async function scheduleDag(
 				options.gateway.emit({
 					type: "task.failed",
 					taskId: id,
-					detail: { cause: cause ?? "failed" },
+					detail: {
+						cause: cause ?? "failed",
+						stage: "workflow",
+						code: "worker_failed",
+					},
 				});
 			} else {
 				// skipped is a typed failed-dependent — surface as task.failed with a skipped cause so every node has a terminal event
 				options.gateway.emit({
 					type: "task.failed",
 					taskId: id,
-					detail: { cause: cause ?? "skipped: failed dependency" },
+					detail: {
+						cause: cause ?? "skipped: failed dependency",
+						stage: "workflow",
+						code: "dependency_failed",
+					},
 				});
 			}
 		} catch {

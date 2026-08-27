@@ -43,6 +43,10 @@ run = "npx tsx packages/core-v2/src/bench/context-report.ts"
 description = "Validate and render matched measured raw/context trace evidence"
 run = "npx tsx packages/core-v2/src/bench/m4-proof.ts"
 
+[tasks.trace-report]
+description = "Explain one canonical v2 trace with bounded structural evidence"
+run = "npx tsx packages/core-v2/src/bench/trace-report.ts"
+
 [tasks.typecheck]
 description = "Type gate — strict tsc over both engines (core-v2 FR-11 + v1 extensions)"
 run = "npx tsc --noEmit -p packages/core-v2/tsconfig.json && npx tsc --noEmit -p tsconfig.json"

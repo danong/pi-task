@@ -491,6 +491,19 @@ export async function runTests(): Promise<void> {
 							durationMs: 1,
 							timedOut: false,
 						})),
+						evidence: {
+							executedCount: commands.length,
+							expectedCount: commands.length,
+							omittedCount: 0,
+							capped: false,
+							commands: commands.map((_, index) => ({
+								index,
+								digest: "sha256:" + "0".repeat(64),
+								exitCode: 0,
+								timedOut: false,
+								durationMs: 1,
+							})),
+						},
 					}),
 			};
 		const vres = await verifyDriver.runVerification(ws, ["a", "FAIL-b"]);

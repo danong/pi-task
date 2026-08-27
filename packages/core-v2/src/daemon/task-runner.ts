@@ -93,6 +93,10 @@ import {
 import { verifyThroughEnvironment } from "../verify/adapter.ts";
 import { HostEnvironmentDriver } from "../environments/drivers.ts";
 import type { TaskGateway } from "../contracts/index.ts";
+import type {
+	TaskFailureCode,
+	TaskFailureStage,
+} from "../contracts/gateway-events.ts";
 import type { TaskPlugin } from "../contracts/task-plugin.ts";
 import {
 	emitLifecycleEventToPlugins,
@@ -583,6 +587,10 @@ async function runWithStore(
 	const failRun = async (
 		cause: string,
 		usage: UsageSnapshot = emptyUsage(),
+		classification: {
+			stage: TaskFailureStage;
+			code: TaskFailureCode;
+		} = { stage: "session", code: "session_failed" },
 	): Promise<RunTaskResult> => {
 		await hygiene(cause);
 		writeFailureArtifact({
@@ -611,7 +619,7 @@ async function runWithStore(
 			type: "task.failed",
 			taskId,
 			sessionId: `${taskId}-worker`,
-			detail: { cause },
+			detail: { cause, ...classification },
 		});
 		// R3: a bundled run that dies anywhere is a MISS. When the bundle was
 		// merely attempted (never grounded), the miss row was already written
@@ -781,7 +789,13 @@ async function runWithStore(
 		handle.close();
 		watchdogs.dispose();
 		unsubscribeEvents();
-		return await failRun(cause);
+		return await failRun(cause, emptyUsage(), {
+			stage: "session",
+			code:
+				err instanceof SessionHostError && err.code === "timed_out"
+					? "session_timed_out"
+					: "session_failed",
+		});
 	} finally {
 		watchdogs.dispose();
 		unsubscribeEvents();
@@ -803,7 +817,10 @@ async function runWithStore(
 			taskId,
 			sessionId: `${taskId}-worker`,
 		});
-		return await failRun(cause, usage);
+		return await failRun(cause, usage, {
+			stage: "session",
+			code: "worker_failed",
+		});
 	}
 
 	// ── Verify on the working tree through the environment ladder (M6). ──
@@ -825,7 +842,7 @@ async function runWithStore(
 	gateway.emit({
 		type: "verify.completed",
 		taskId,
-		detail: { passed: verification.passed },
+		detail: { passed: verification.passed, evidence: verification.evidence },
 	});
 
 	if (!verification.passed) {
@@ -876,7 +893,11 @@ async function runWithStore(
 			type: "task.failed",
 			taskId,
 			sessionId: `${taskId}-worker`,
-			detail: { cause: "verification failed" },
+			detail: {
+				cause: "verification failed",
+				stage: "verification",
+				code: "verification_failed",
+			},
 		});
 		return {
 			receipt: {

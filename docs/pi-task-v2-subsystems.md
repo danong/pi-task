@@ -216,17 +216,14 @@ not an observed performance result. Versioned baseline trace fixtures are
 stored with the core-v2 test evidence. They are evidence inputs for validating
 parsing, derivation, and reporting, not performance claims or model defaults.
 
-The provider-neutral report command consumes validated trace files or stored
-records:
+Two provider-neutral report commands consume validated trace artifacts:
 
 ```sh
+mise run trace-report -- <trace.json> [report.md]
 mise run bench-report -- --traces-dir <trace-directory> --label <label>
 ```
 
-It reports accepted outcomes, cost when measured, turns, tool activity,
-repeated reads, context and elapsed values when available, verification and
-acceptance failures, and unavailable metrics. It does not fill missing values
-from assumptions.
+`trace-report` explains one run (outcome, model/engine/specHash/family/attempt, elapsed, turns/tools/errors/repeated reads, context selected/omitted/cache, verification executed/expected with bounded digests and measured durations, failure stage/code, usage, sibling receipt/failure presence) without ever rendering command text, stdout/stderr, or transcripts. `bench-report` aggregates accepted outcomes, cost when measured, turns, tool activity, repeated reads, context and elapsed values when available, verification and acceptance failures, and unavailable metrics. Neither fills missing values from assumptions.
 
 ## 6. Plugins and ordered transforms
 
@@ -364,8 +361,20 @@ a default. A minimal matched measured smoke and its neutral report live under
 [`packages/core-v2/test/fixtures/m4-proof/`](../packages/core-v2/test/fixtures/m4-proof/);
 `mise run m4-proof -- <evidence.json> [report.md]` rejects unmatched, dry-only,
 or model/provider-mismatched proof input. Checkpoint persistence and epoch
-transitions are kernel primitives; M5 owns their parent/child continuation
-workflow and self-hosting proof.
+transitions are kernel primitives.
+
+### M4.1 status
+
+M4.1 is implementation-complete and hermetically verified. Verification now
+measures per-command `durationMs`, emits bounded `VerificationEvidence` (24 digests,
+`executed/expected/omitted/capped` with `executed ≤ expected` and `capped == omitted>0`),
+and never includes command text/output in traces. The CLI announces `run:` early and
+names `receipt/trace/failure artifact:` paths at termination; `model.assigned` carries
+`engineVersion/specHash/familyId/attemptId/attemptNumber`. Every `task.failed` carries
+stable `stage`/`code` across CLI, single-run, parallel, and scheduler paths. The first
+useful dogfood timeout fixture at `test/fixtures/dogfood/m41-verification-timeout.trace.json`
+remains a debugging input—not a baseline—that motivated independent execution caps
+for M5. M5 owns the parent/child continuation workflow and self-hosting proof.
 
 ### M5 status
 

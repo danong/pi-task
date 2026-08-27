@@ -37,18 +37,27 @@ model or `PI_TASK_V2_MODEL` is needed. A spec must include:
 
 ```markdown
 ## Artifact Policy
+
 - Required: reports/result.json
 - Change required
 ```
 
 Use `- Intentional no-change` for an explicitly verified no-diff task. Paths
 must be repository-relative. The CLI's user-state artifact directory contains
-receipt, trace, and failure/recovery artifacts; its returned trace path names a
-`<run-id>.trace.json` file. Render a provider-neutral report with:
+receipt, trace, and failure/recovery artifacts. It announces the run identity
+before execution and names the durable artifacts at termination. Explain one
+run or aggregate validated traces with:
 
 ```sh
+mise run trace-report -- <trace.json> [report.md]
 mise run bench-report -- --traces-dir <trace-directory> --label <label>
 ```
+
+Verification events carry bounded command digests, exit/timeout status, and
+measured durations without command text or output. Terminal failures carry a
+stable stage and code. The single-run report renders those facts alongside
+model/attempt identity, context/cache evidence, tool activity, usage, and
+sibling artifact availability.
 
 M3 grounding evaluation is dry by default (`mise run eval-grounding`) and
 writes real-run evidence, when requested with `-- --run`, under the selected
@@ -74,8 +83,11 @@ contract; old provider translation is localized in `context/provider-adapter.ts`
 A minimal matched measured smoke is retained under `test/fixtures/m4-proof/`;
 validate equivalent evidence with `mise run m4-proof -- <evidence.json>
 [report.md]`. The neutral result does not establish a general quality/cost
-advantage or adopt symbol-tree. M5 will build typed sequential continuation and
-self-hosting on these contracts; M6 scope remains intentionally open.
+advantage or adopt symbol-tree. The useful-dogfood timeout fixture under
+`test/fixtures/dogfood/` remains a debugging input, not a performance baseline;
+it established that subsequent real runs need independent execution caps. M5
+will build typed sequential continuation and self-hosting on these contracts;
+M6 scope remains intentionally open.
 
 ## Layout
 

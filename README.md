@@ -48,7 +48,7 @@ argument/input validation, progress rendering, and receipt delivery;
 and gateway remain the execution owners. Cancellation, multiple workers,
 parallel scheduling, and remote interfaces are not part of this slice.
 
-### v2 status: M1–M3 foundation and M4 acquisition prototype
+### v2 status: M1–M3 foundation and M4 context control plane
 
 M1–M3 are the completed evidence-backed MVP foundation. M1 provides a
 versioned, bounded, provider-neutral trace artifact with lifecycle, observed
@@ -78,6 +78,7 @@ A minimal spec policy is:
 
 ```markdown
 ## Artifact Policy
+
 - Required: reports/result.json
 - Change required
 ```
@@ -94,13 +95,21 @@ The model value is a placeholder, not a product default; use an explicit model
 or `PI_TASK_V2_MODEL`. The CLI returns the receipt and trace artifact paths.
 The default user-state artifact directory contains `<run-id>.trace.json`, the
 receipt, and failure/recovery evidence without requiring repository-local
-state. Render a provider-neutral report from trace artifacts with:
+state. Explain one run or aggregate validated traces with:
 
 ```sh
+mise run trace-report -- <trace.json> [report.md]
 mise run bench-report -- --traces-dir <trace-directory> --label <label>
 ```
 
-The report derives accepted outcome, cost when measured, turns, tool calls,
+The CLI announces the run identity before execution and names durable receipt,
+trace, and failure artifacts at termination. Verification events contain
+bounded command identities, exit/timeout status, and measured durations without
+command text or output. Terminal failures carry a provider-neutral stage and
+code. The single-run report makes those facts, context/cache evidence, tool
+activity, and sibling artifacts directly inspectable.
+
+The aggregate report derives accepted outcome, cost when measured, turns, tool calls,
 repeated reads, context, elapsed time, verification/acceptance failures, and
 unavailable metrics from validated traces. M3's grounding comparison is a
 separate dry-by-default command:
@@ -134,9 +143,13 @@ capabilities; legacy provider translation is confined to the CLI/provider edge.
 A minimal matched Luna smoke is retained under the core-v2 M4 proof fixtures
 and validated with `mise run m4-proof -- <evidence.json> [report.md]`. It records
 measured accepted runs without claiming a general quality or cost advantage or
-adopting symbol-tree as the default. M5 will use the checkpoint/epoch contracts
-for typed sequential children and a usable v2 self-hosting loop. M6 scope
-remains intentionally open.
+adopting symbol-tree as the default. The first useful implementation dogfood
+failure is retained under `packages/core-v2/test/fixtures/dogfood/`; it exposed
+that the CLI prompt wall was not paired with an independent turn/spend bound.
+Continued dogfood therefore requires explicit execution caps rather than
+relying on model discipline. M5 will use the checkpoint/epoch contracts for
+typed sequential children and a usable v2 self-hosting loop. M6 scope remains
+intentionally open.
 
 The repo ships `.pi/settings.json` registering itself as a project package
 (`"packages": [".."]`), so any trusted checkout auto-installs — the `task`

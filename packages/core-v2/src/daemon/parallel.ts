@@ -739,7 +739,11 @@ async function runWithStore(
 					type: "task.failed",
 					taskId: receipt.taskId,
 					sessionId: `${receipt.taskId}-worker`,
-					detail: { cause: "worker attempt failed" },
+					detail: {
+						cause: "worker attempt failed",
+						stage: "session",
+						code: "worker_failed",
+					},
 				});
 			}
 		}
@@ -762,7 +766,11 @@ async function runWithStore(
 				type: "task.failed",
 				taskId: aggregateId,
 				sessionId: `${aggregateId}-worker`,
-				detail: { cause: "one or more workers failed" },
+				detail: {
+					cause: "one or more workers failed",
+					stage: "session",
+					code: "worker_failed",
+				},
 			});
 		} else {
 			gateway.emit({
@@ -868,7 +876,7 @@ async function runWithStore(
 			type: "task.failed",
 			taskId: aggregateId,
 			sessionId: `${aggregateId}-worker`,
-			detail: { cause },
+			detail: { cause, stage: "workspace", code: "merge_failed" },
 		});
 		return {
 			aggregate: makeReceipt(
@@ -958,7 +966,7 @@ async function runWithStore(
 	gateway.emit({
 		type: "verify.completed",
 		taskId: aggregateId,
-		detail: { passed: verification.passed },
+		detail: { passed: verification.passed, evidence: verification.evidence },
 	});
 	for (const cmd of verification.commands) {
 		if (cmd.exitCode !== 0) {
@@ -1063,7 +1071,19 @@ async function runWithStore(
 			taskId: aggregateId,
 			sessionId: `${aggregateId}-worker`,
 			detail: {
-				cause: cause,
+				cause,
+				stage:
+					contentFailureCause !== undefined
+						? "acceptance"
+						: failures.length > 0
+							? "verification"
+							: "session",
+				code:
+					contentFailureCause !== undefined
+						? "artifact_rejected"
+						: failures.length > 0
+							? "verification_failed"
+							: "worker_failed",
 			},
 		});
 		return {

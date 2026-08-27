@@ -16,9 +16,10 @@
 
 import { execFile } from "node:child_process";
 
-import type {
-	VerificationCommandResult,
-	VerificationResult,
+import {
+	buildVerificationEvidence,
+	type VerificationCommandResult,
+	type VerificationResult,
 } from "../contracts/index.ts";
 import { capTail } from "../guards/artifacts.ts";
 
@@ -61,6 +62,8 @@ export interface VerifyOptions {
 	wallTimeoutMs?: number;
 	/** Bounded grace for the in-flight command when the wall expires. Default {@link DEFAULT_VERIFY_GRACE_MS}. */
 	graceMs?: number;
+	/** Injectable millisecond clock for deterministic duration and wall tests. */
+	now?: () => number;
 }
 
 /**
@@ -71,8 +74,9 @@ function runBash(
 	command: string,
 	cwd: string,
 	timeoutMs: number,
+	now: () => number,
 ): Promise<Omit<VerificationCommandResult, "command">> {
-	const startedAtMs = Date.now();
+	const startedAtMs = now();
 	return new Promise((resolve) => {
 		execFile(
 			"/bin/bash",
@@ -98,7 +102,7 @@ function runBash(
 					exitCode,
 					stdoutTail: capTail(stdout, VERIFY_OUTPUT_TAIL_CHARS),
 					stderrTail: capTail(stderr, VERIFY_OUTPUT_TAIL_CHARS),
-					durationMs: Date.now() - startedAtMs,
+					durationMs: Math.max(0, now() - startedAtMs),
 					timedOut,
 				});
 			},
@@ -124,17 +128,20 @@ export async function runVerification(
 		options.commandTimeoutMs ?? DEFAULT_VERIFY_COMMAND_TIMEOUT_MS;
 	const wallTimeoutMs = options.wallTimeoutMs ?? DEFAULT_VERIFY_WALL_TIMEOUT_MS;
 	const graceMs = options.graceMs ?? DEFAULT_VERIFY_GRACE_MS;
-	const startedAtMs = Date.now();
+	const now = options.now ?? (() => Date.now());
+	const startedAtMs = now();
 
 	const executed: VerificationCommandResult[] = [];
 	for (const command of commands) {
-		const remainingWallMs = wallTimeoutMs - (Date.now() - startedAtMs);
+		const remainingWallMs = wallTimeoutMs - (now() - startedAtMs);
 		if (remainingWallMs <= 0) break; // wall expired between commands — no new work starts
 		const timeoutMs = Math.min(commandTimeoutMs, remainingWallMs + graceMs);
+		const commandStartedAtMs = now();
 		let result: {
 			exitCode: number;
 			stdout: string;
 			stderr: string;
+			durationMs: number;
 			timedOut: boolean;
 		};
 		if (options.exec) {
@@ -146,14 +153,16 @@ export async function runVerification(
 				exitCode: r.exitCode,
 				stdout: r.stdout,
 				stderr: r.stderr,
+				durationMs: Math.max(0, now() - commandStartedAtMs),
 				timedOut: r.timedOut === true,
 			};
 		} else {
-			const r = await runBash(command, options.cwd, timeoutMs);
+			const r = await runBash(command, options.cwd, timeoutMs, now);
 			result = {
 				exitCode: r.exitCode,
 				stdout: r.stdoutTail,
 				stderr: r.stderrTail,
+				durationMs: r.durationMs,
 				timedOut: r.timedOut,
 			};
 		}
@@ -162,14 +171,18 @@ export async function runVerification(
 			exitCode: result.exitCode,
 			stdoutTail: capTail(result.stdout, VERIFY_OUTPUT_TAIL_CHARS),
 			stderrTail: capTail(result.stderr, VERIFY_OUTPUT_TAIL_CHARS),
-			durationMs: 0,
+			durationMs: Math.max(0, result.durationMs),
 			timedOut: result.timedOut,
 		});
 	}
 
 	const failures = executed.filter((c) => c.exitCode !== 0);
-	return {
+	const result = {
 		passed: executed.length === commands.length && failures.length === 0,
 		commands: executed,
+	};
+	return {
+		...result,
+		evidence: buildVerificationEvidence(result.commands, commands.length),
 	};
 }

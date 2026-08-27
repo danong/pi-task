@@ -21,6 +21,12 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import {
+	MAX_VERIFICATION_COMMAND_SUMMARIES,
+	TRACE_MAX_DETAIL_CHARS,
+	VerificationEvidenceSchema,
+	verificationCommandDigest,
+} from "../src/contracts/index.ts";
+import {
 	runVerification,
 	VERIFY_OUTPUT_TAIL_CHARS,
 	VERIFY_TIMEOUT_EXIT_CODE,
@@ -42,6 +48,20 @@ export async function runTests(): Promise<void> {
 					pass.commands[0]?.exitCode === 0,
 				`"true" passes with one recorded command, got ${JSON.stringify(pass)}`,
 			);
+			check(
+				(pass.commands[0]?.durationMs ?? -1) >= 0,
+				"passing command duration is nonnegative",
+			);
+			check(
+				pass.evidence.executedCount === 1 &&
+					pass.evidence.expectedCount === 1 &&
+					pass.evidence.omittedCount === 0 &&
+					!pass.evidence.capped &&
+					pass.evidence.commands[0]?.index === 0 &&
+					pass.evidence.commands[0]?.digest ===
+						verificationCommandDigest("true"),
+				"passing evidence has counts, index, and stable command digest",
+			);
 
 			const empty = await runVerification([], { cwd: dir });
 			check(
@@ -59,6 +79,12 @@ export async function runTests(): Promise<void> {
 			check(
 				result.commands.length === 3,
 				"every command runs — failures do not stop the suite",
+			);
+			check(
+				result.evidence.executedCount === 3 &&
+					result.evidence.expectedCount === 3 &&
+					result.evidence.commands.every((c) => c.durationMs >= 0),
+				"failing evidence reports all measured nonnegative durations",
 			);
 			const failed = result.commands.filter((c) => c.exitCode !== 0);
 			check(
@@ -116,6 +142,11 @@ export async function runTests(): Promise<void> {
 				`timeout exits ${VERIFY_TIMEOUT_EXIT_CODE}`,
 			);
 			check(!hung.passed, "timed-out command fails the suite");
+			check(
+				hung.evidence.commands[0]?.timedOut === true &&
+					hung.evidence.commands[0]?.durationMs >= 0,
+				"timeout evidence preserves timeout status and duration",
+			);
 		}
 
 		// ─── Wall clock: no new command starts after expiry ───────────
@@ -127,6 +158,12 @@ export async function runTests(): Promise<void> {
 			});
 			check(walled.commands.length === 0, "expired wall runs nothing");
 			check(!walled.passed, "an incomplete suite never passes");
+			check(
+				walled.evidence.executedCount === 0 &&
+					walled.evidence.expectedCount === 3 &&
+					walled.evidence.omittedCount === 0,
+				"partial execution evidence distinguishes expected from executed commands",
+			);
 		}
 
 		// ─── Bounded grace: in-flight command finishes past the wall ──
@@ -143,6 +180,62 @@ export async function runTests(): Promise<void> {
 				"in-flight command gets its grace window and finishes cleanly",
 			);
 			check(graced.passed, "suite completed within grace passes");
+		}
+
+		// ─── Deterministic measured duration + bounded evidence ─────────
+		{
+			const ticks = [100, 100, 100, 137];
+			const measured = await runVerification(["fake command"], {
+				cwd: dir,
+				now: () => ticks.shift() ?? 137,
+				exec: async () => ({
+					exitCode: 0,
+					stdout: "secret stdout",
+					stderr: "secret stderr",
+				}),
+			});
+			check(
+				measured.commands[0]?.durationMs === 37,
+				"injected clock measures command duration deterministically",
+			);
+			check(
+				!JSON.stringify(measured.evidence).includes("fake command"),
+				"structural evidence omits command text",
+			);
+
+			const many = await runVerification(
+				Array.from(
+					{ length: MAX_VERIFICATION_COMMAND_SUMMARIES + 3 },
+					(_, i) => `command-${i}`,
+				),
+				{
+					cwd: dir,
+					exec: async () => ({ exitCode: 0, stdout: "", stderr: "" }),
+				},
+			);
+			check(
+				many.evidence.commands.length === MAX_VERIFICATION_COMMAND_SUMMARIES &&
+					many.evidence.omittedCount === 3 &&
+					many.evidence.capped &&
+					many.evidence.executedCount === many.evidence.expectedCount,
+				"evidence explicitly counts summaries omitted by its bound",
+			);
+			check(
+				JSON.stringify({ passed: true, evidence: many.evidence }).length <=
+					TRACE_MAX_DETAIL_CHARS,
+				"bounded evidence fits canonical trace detail cap",
+			);
+			check(
+				!VerificationEvidenceSchema.safeParse({
+					...many.evidence,
+					executedCount: many.evidence.expectedCount + 1,
+				}).success &&
+					!VerificationEvidenceSchema.safeParse({
+						...measured.evidence,
+						capped: true,
+					}).success,
+				"evidence schema rejects impossible execution and omission claims",
+			);
 		}
 	} finally {
 		rmSync(dir, { recursive: true, force: true });

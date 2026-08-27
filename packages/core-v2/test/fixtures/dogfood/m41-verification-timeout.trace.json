@@ -1,0 +1,4659 @@
+{
+	"endedAt": "2026-08-27T21:58:33.207Z",
+	"events": [
+		{
+			"at": "2026-08-27T21:48:11.733Z",
+			"config": "openai-codex/gpt-5.6-luna",
+			"detail": { "modelId": "openai-codex/gpt-5.6-luna" },
+			"phase": "model",
+			"provider": "openai-codex",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 1,
+			"taskId": "3cd4fdba4dd1",
+			"type": "model.assigned",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:11.795Z",
+			"phase": "task",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 2,
+			"taskId": "3cd4fdba4dd1",
+			"type": "task.queued",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:11.949Z",
+			"config": "1",
+			"detail": {
+				"mode": "managed",
+				"omittedCount": 0,
+				"planId": "ctx-a69a493a762635dc64ceef6b",
+				"selectedCount": 23,
+				"storedContextArtifactId": "sha256:ce641556cb7cad6e33dd5a6818739490250fe501830d857f9bbb0b97ab500a42",
+				"storedPlanId": "sha256:1885ad9f60e74cbff031b21c4a9774df572e69ee3b37932c8a6f78d0bbd6269a"
+			},
+			"phase": "context",
+			"provider": "symbol-tree",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 3,
+			"taskId": "3cd4fdba4dd1",
+			"type": "context.planned",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:11.949Z",
+			"config": "1",
+			"detail": {
+				"attribution": "unavailable",
+				"compatible": true,
+				"localStore": "available",
+				"planId": "ctx-a69a493a762635dc64ceef6b",
+				"storedArtifactCount": 2,
+				"strategy": "none"
+			},
+			"phase": "context",
+			"provider": "symbol-tree",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 4,
+			"taskId": "3cd4fdba4dd1",
+			"type": "context.cache",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:11.949Z",
+			"config": "1",
+			"detail": {
+				"estimatedCharacters": 15656,
+				"estimatedTokens": 3925,
+				"omittedCount": 0,
+				"planId": "ctx-a69a493a762635dc64ceef6b",
+				"selectedCount": 23,
+				"sourceRevision": "sha256:e48b580f6f6ea797c41f1b2c371ffd79c5d773d2e2cef396877f7972c3073180",
+				"treeIdentity": "sha256:e48b580f6f6ea797c41f1b2c371ffd79c5d773d2e2cef396877f7972c3073180"
+			},
+			"phase": "context",
+			"provider": "symbol-tree",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 5,
+			"taskId": "3cd4fdba4dd1",
+			"type": "context.selected",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:11.949Z",
+			"config": "1",
+			"detail": {
+				"estimatedCharacters": 15656,
+				"estimatedTokens": 3925,
+				"omittedCount": 0,
+				"planId": "ctx-a69a493a762635dc64ceef6b",
+				"selectedCount": 23,
+				"treeIdentity": "sha256:e48b580f6f6ea797c41f1b2c371ffd79c5d773d2e2cef396877f7972c3073180"
+			},
+			"phase": "context",
+			"provider": "symbol-tree",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 6,
+			"taskId": "3cd4fdba4dd1",
+			"type": "context.injected",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:11.949Z",
+			"config": "1",
+			"detail": {
+				"estimatedCharacters": 15656,
+				"estimatedTokens": 3925,
+				"omittedCount": 0,
+				"planId": "ctx-a69a493a762635dc64ceef6b",
+				"reasons": [],
+				"selectedCount": 23,
+				"treeIdentity": "sha256:e48b580f6f6ea797c41f1b2c371ffd79c5d773d2e2cef396877f7972c3073180"
+			},
+			"phase": "context",
+			"provider": "symbol-tree",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 7,
+			"taskId": "3cd4fdba4dd1",
+			"type": "context.omitted",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:13.369Z",
+			"config": "1",
+			"detail": {
+				"epochId": "epoch-41a2502199c77c15c30c8b23",
+				"modelId": "openai-codex/gpt-5.6-luna",
+				"planId": "ctx-a69a493a762635dc64ceef6b",
+				"role": "worker-0",
+				"transition": "initial"
+			},
+			"phase": "recovery",
+			"provider": "symbol-tree",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 8,
+			"taskId": "3cd4fdba4dd1",
+			"type": "epoch.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:13.391Z",
+			"phase": "session",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 9,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "session.spawned",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:13.392Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 10,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:18.169Z",
+			"detail": {
+				"toolCallId": "call_2yweLOKi45N0HtA7FmrksP3s|fc_0c46f549b1619370016a90b0a0981487d086e3bb4971752e4d",
+				"toolName": "checklist"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 11,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:18.171Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_2yweLOKi45N0HtA7FmrksP3s|fc_0c46f549b1619370016a90b0a0981487d086e3bb4971752e4d",
+				"toolName": "checklist"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 12,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:18.172Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 13,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:18.172Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 14,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:24.132Z",
+			"detail": {
+				"toolCallId": "call_wDOKgC1xCN6QGt7Wmvfx1Lk4|fc_0c46f549b1619370016a90b0a850ac87d0942ff32a72487501",
+				"toolName": "context"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 15,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:24.133Z",
+			"detail": {
+				"toolCallId": "call_euChE6MRT31eMn5KedbwWVti|fc_0c46f549b1619370016a90b0a850c487d09dba514935ea33a7",
+				"toolName": "find"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 16,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:24.134Z",
+			"detail": {
+				"toolCallId": "call_9bXjL4sowkqCqwJCDvgLRFlc|fc_0c46f549b1619370016a90b0a850d487d0a1d03b441cb8ea19",
+				"toolName": "grep"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 17,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:24.136Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_wDOKgC1xCN6QGt7Wmvfx1Lk4|fc_0c46f549b1619370016a90b0a850ac87d0942ff32a72487501",
+				"toolName": "context"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 18,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:24.157Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_9bXjL4sowkqCqwJCDvgLRFlc|fc_0c46f549b1619370016a90b0a850d487d0a1d03b441cb8ea19",
+				"toolName": "grep"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 19,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:24.160Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_euChE6MRT31eMn5KedbwWVti|fc_0c46f549b1619370016a90b0a850c487d09dba514935ea33a7",
+				"toolName": "find"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 20,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:24.161Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 21,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:24.161Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 22,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:30.049Z",
+			"detail": {
+				"path": "packages/core-v2/src/verify/run.ts",
+				"toolCallId": "call_qVJxPtsyBb9pSv0Ivx2l3e1D|fc_0c46f549b1619370016a90b0ae349c87d083f08732d02bb939",
+				"toolName": "read"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 23,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:30.050Z",
+			"detail": {
+				"path": "packages/core-v2/src/contracts/trace.ts",
+				"toolCallId": "call_7nXLzstbcHDjxz92P0cFNrmV|fc_0c46f549b1619370016a90b0ae34b087d0a25d2e494ec03da9",
+				"toolName": "read"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 24,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:30.050Z",
+			"detail": {
+				"path": "packages/core-v2/src/contracts/verification-driver.ts",
+				"toolCallId": "call_PwivOyaRetmBMh4f7E5HYStF|fc_0c46f549b1619370016a90b0ae34bc87d08cc4bb7ce306d245",
+				"toolName": "read"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 25,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:30.050Z",
+			"detail": {
+				"path": "packages/core-v2/src/parity/canonical-dag.ts",
+				"toolCallId": "call_e6zWY95239CunqrugwunfROM|fc_0c46f549b1619370016a90b0ae34c487d0b80657dc651f4f6f",
+				"toolName": "read"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 26,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:30.050Z",
+			"detail": {
+				"path": "packages/core-v2/src/parity/v2-build.ts",
+				"toolCallId": "call_4bKGFmVAHA5yoXHQP03ZnL1Y|fc_0c46f549b1619370016a90b0ae34cc87d0b70499b59e996b09",
+				"toolName": "read"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 27,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:30.050Z",
+			"detail": {
+				"path": "packages/core-v2/src/parity/index.ts",
+				"toolCallId": "call_lMNHVNuXKysTjJsqT06DqJwX|fc_0c46f549b1619370016a90b0ae34d887d085eb848b6a428a5f",
+				"toolName": "read"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 28,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:30.050Z",
+			"detail": {
+				"path": "packages/core-v2/test/test-verify-run.ts",
+				"toolCallId": "call_n2fchxWrx07OuzEm5O7KpAge|fc_0c46f549b1619370016a90b0ae34e487d0aa4c9d36a679b3d1",
+				"toolName": "read"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 29,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:30.050Z",
+			"detail": {
+				"path": "packages/core-v2/test/test-trace.ts",
+				"toolCallId": "call_qRiJarRQukOf9n7eimqhhAs2|fc_0c46f549b1619370016a90b0ae34ec87d0aeef05a2e742c2d1",
+				"toolName": "read"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 30,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:30.050Z",
+			"detail": {
+				"path": "packages/core-v2/src/daemon/task-runner.ts",
+				"toolCallId": "call_4hUhJ0PSniyVa1Cv0nkeQ8fX|fc_0c46f549b1619370016a90b0ae34f487d09cef51956f76591a",
+				"toolName": "read"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 31,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:30.050Z",
+			"detail": {
+				"path": "packages/core-v2/src/daemon/parallel.ts",
+				"toolCallId": "call_6Bumdm62D403Ksy0WbPxc99z|fc_0c46f549b1619370016a90b0ae34f887d0a9c4127c802afa10",
+				"toolName": "read"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 32,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:30.052Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_PwivOyaRetmBMh4f7E5HYStF|fc_0c46f549b1619370016a90b0ae34bc87d08cc4bb7ce306d245",
+				"toolName": "read"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 33,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:30.052Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_qVJxPtsyBb9pSv0Ivx2l3e1D|fc_0c46f549b1619370016a90b0ae349c87d083f08732d02bb939",
+				"toolName": "read"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 34,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:30.052Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_4bKGFmVAHA5yoXHQP03ZnL1Y|fc_0c46f549b1619370016a90b0ae34cc87d0b70499b59e996b09",
+				"toolName": "read"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 35,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:30.052Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_e6zWY95239CunqrugwunfROM|fc_0c46f549b1619370016a90b0ae34c487d0b80657dc651f4f6f",
+				"toolName": "read"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 36,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:30.052Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_7nXLzstbcHDjxz92P0cFNrmV|fc_0c46f549b1619370016a90b0ae34b087d0a25d2e494ec03da9",
+				"toolName": "read"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 37,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:30.052Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_lMNHVNuXKysTjJsqT06DqJwX|fc_0c46f549b1619370016a90b0ae34d887d085eb848b6a428a5f",
+				"toolName": "read"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 38,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:30.052Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_qRiJarRQukOf9n7eimqhhAs2|fc_0c46f549b1619370016a90b0ae34ec87d0aeef05a2e742c2d1",
+				"toolName": "read"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 39,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:30.052Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_n2fchxWrx07OuzEm5O7KpAge|fc_0c46f549b1619370016a90b0ae34e487d0aa4c9d36a679b3d1",
+				"toolName": "read"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 40,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:30.052Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_6Bumdm62D403Ksy0WbPxc99z|fc_0c46f549b1619370016a90b0ae34f887d0a9c4127c802afa10",
+				"toolName": "read"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 41,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:30.052Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_4hUhJ0PSniyVa1Cv0nkeQ8fX|fc_0c46f549b1619370016a90b0ae34f487d09cef51956f76591a",
+				"toolName": "read"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 42,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:30.053Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 43,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:30.053Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 44,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:36.944Z",
+			"detail": {
+				"toolCallId": "call_LCUlOK2hMOQMYYJVQTmzqkwK|fc_0c46f549b1619370016a90b0b5122487d083e802c94495c38c",
+				"toolName": "grep"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 45,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:36.944Z",
+			"detail": {
+				"path": "packages/core-v2/src/contracts/gateway-events.ts",
+				"toolCallId": "call_p7gRCVkcV1KZ1fOxv0GS9Tn3|fc_0c46f549b1619370016a90b0b5123887d0b6488fbbed329a16",
+				"toolName": "read"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 46,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:36.944Z",
+			"detail": {
+				"path": "packages/core-v2/src/verify/adapter.ts",
+				"toolCallId": "call_AFa9RyDHUNAVd2MMA58vT3j7|fc_0c46f549b1619370016a90b0b5124887d0842033c8693a88ec",
+				"toolName": "read"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 47,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:36.945Z",
+			"detail": {
+				"path": "packages/core-v2/src/contracts/index.ts",
+				"toolCallId": "call_5QpADoy5aGFhQLPezKJzKv39|fc_0c46f549b1619370016a90b0b5125087d0b83ed99ba56cc1fa",
+				"toolName": "read"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 48,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:36.945Z",
+			"detail": {
+				"path": "packages/core-v2/src/bench/report.ts",
+				"toolCallId": "call_t46J5dDt4ZXWT2oTzHcb0AVP|fc_0c46f549b1619370016a90b0b5125c87d0b077f68d97464148",
+				"toolName": "read"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 49,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:36.945Z",
+			"detail": {
+				"path": "packages/core-v2/src/bench/context-report.ts",
+				"toolCallId": "call_AeCTtqa9JUWhbWCu8ygMnXGV|fc_0c46f549b1619370016a90b0b5126487d0a9a9739aa1c34d80",
+				"toolName": "read"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 50,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:36.945Z",
+			"detail": {
+				"toolCallId": "call_vQdjJ0tD66371wQIm2diEBkc|fc_0c46f549b1619370016a90b0b5126c87d093bfa9aac39015e8",
+				"toolName": "find"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 51,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:36.945Z",
+			"detail": {
+				"toolCallId": "call_7bo8yNyf8JfCDqFAbY7k78TK|fc_0c46f549b1619370016a90b0b5127487d09069c1cb158ed2e8",
+				"toolName": "find"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 52,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:36.954Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_p7gRCVkcV1KZ1fOxv0GS9Tn3|fc_0c46f549b1619370016a90b0b5123887d0b6488fbbed329a16",
+				"toolName": "read"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 53,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:36.954Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_AFa9RyDHUNAVd2MMA58vT3j7|fc_0c46f549b1619370016a90b0b5124887d0842033c8693a88ec",
+				"toolName": "read"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 54,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:36.954Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_t46J5dDt4ZXWT2oTzHcb0AVP|fc_0c46f549b1619370016a90b0b5125c87d0b077f68d97464148",
+				"toolName": "read"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 55,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:36.954Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_AeCTtqa9JUWhbWCu8ygMnXGV|fc_0c46f549b1619370016a90b0b5126487d0a9a9739aa1c34d80",
+				"toolName": "read"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 56,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:36.954Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_5QpADoy5aGFhQLPezKJzKv39|fc_0c46f549b1619370016a90b0b5125087d0b83ed99ba56cc1fa",
+				"toolName": "read"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 57,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:36.956Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_LCUlOK2hMOQMYYJVQTmzqkwK|fc_0c46f549b1619370016a90b0b5122487d083e802c94495c38c",
+				"toolName": "grep"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 58,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:36.956Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_7bo8yNyf8JfCDqFAbY7k78TK|fc_0c46f549b1619370016a90b0b5127487d09069c1cb158ed2e8",
+				"toolName": "find"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 59,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:36.958Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_vQdjJ0tD66371wQIm2diEBkc|fc_0c46f549b1619370016a90b0b5126c87d093bfa9aac39015e8",
+				"toolName": "find"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 60,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:36.958Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 61,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:36.958Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 62,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:43.911Z",
+			"detail": {
+				"path": "packages/core-v2/src/contracts/serialize.ts",
+				"toolCallId": "call_fJBUAvqMwMWKtM0J3MZkbH9O|fc_0c46f549b1619370016a90b0bbfebc87d0b5a7b19d8a779de5",
+				"toolName": "read"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 63,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:43.911Z",
+			"detail": {
+				"path": "packages/core-v2/src/contracts/environment-driver.ts",
+				"toolCallId": "call_WI6NRsB5W0a2msxNYo95t76b|fc_0c46f549b1619370016a90b0bbfed087d096268ece4c044789",
+				"toolName": "read"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 64,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:43.911Z",
+			"detail": {
+				"path": "packages/core-v2/src/cli.ts",
+				"toolCallId": "call_GrqbBNvRJhFm8D7iwAQNWwqg|fc_0c46f549b1619370016a90b0bbfee087d09db85eca34771d96",
+				"toolName": "read"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 65,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:43.912Z",
+			"detail": {
+				"path": "packages/core-v2/src/test/test-cli.ts",
+				"toolCallId": "call_keLW87Dkn0dkCaja5I3BX7bh|fc_0c46f549b1619370016a90b0bbfeec87d09b5ae75ba510e4b9",
+				"toolName": "read"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 66,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:43.912Z",
+			"detail": {
+				"toolCallId": "call_cDLGDfAHKs52TDyXmPpUuQUr|fc_0c46f549b1619370016a90b0bbfef887d0b42379f0b564e8a5",
+				"toolName": "grep"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 67,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:43.912Z",
+			"detail": {
+				"toolCallId": "call_d9RBP4BxinswNPdK3krPEvnw|fc_0c46f549b1619370016a90b0bbff0487d0aad7b0f69a2cd67a",
+				"toolName": "grep"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 68,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:43.919Z",
+			"detail": {
+				"isError": true,
+				"toolCallId": "call_keLW87Dkn0dkCaja5I3BX7bh|fc_0c46f549b1619370016a90b0bbfeec87d09b5ae75ba510e4b9",
+				"toolName": "read"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 69,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:43.919Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_fJBUAvqMwMWKtM0J3MZkbH9O|fc_0c46f549b1619370016a90b0bbfebc87d0b5a7b19d8a779de5",
+				"toolName": "read"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 70,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:43.919Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_WI6NRsB5W0a2msxNYo95t76b|fc_0c46f549b1619370016a90b0bbfed087d096268ece4c044789",
+				"toolName": "read"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 71,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:43.920Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_GrqbBNvRJhFm8D7iwAQNWwqg|fc_0c46f549b1619370016a90b0bbfee087d09db85eca34771d96",
+				"toolName": "read"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 72,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:43.922Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_d9RBP4BxinswNPdK3krPEvnw|fc_0c46f549b1619370016a90b0bbff0487d0aad7b0f69a2cd67a",
+				"toolName": "grep"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 73,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:43.922Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_cDLGDfAHKs52TDyXmPpUuQUr|fc_0c46f549b1619370016a90b0bbfef887d0b42379f0b564e8a5",
+				"toolName": "grep"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 74,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:43.923Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 75,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:43.923Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 76,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:47.812Z",
+			"detail": {
+				"toolCallId": "call_Tp2s96VzEbponArOibSxWwaO|fc_0c46f549b1619370016a90b0bff50887d0aaaff18214457b84",
+				"toolName": "ls"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 77,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:47.813Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_Tp2s96VzEbponArOibSxWwaO|fc_0c46f549b1619370016a90b0bff50887d0aaaff18214457b84",
+				"toolName": "ls"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 78,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:47.813Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 79,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:47.813Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 80,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:53.614Z",
+			"detail": {
+				"path": "packages/core-v2/test/test-contracts.ts",
+				"toolCallId": "call_Udp0GJyRIHKWb3hHDwPX8Pqm|fc_0c46f549b1619370016a90b0c5ca4487d0a514f4679522a22a",
+				"toolName": "read"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 81,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:53.615Z",
+			"detail": {
+				"toolCallId": "call_jtTvblToYDC6pbcDsNz128mH|fc_0c46f549b1619370016a90b0c5ca5c87d09aa2ed96166a0044",
+				"toolName": "find"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 82,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:53.615Z",
+			"detail": {
+				"toolCallId": "call_nltGuSu9wBbaR0AxamijAK6x|fc_0c46f549b1619370016a90b0c5ca6c87d0adffe7bfee4ebdb2",
+				"toolName": "grep"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 83,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:53.615Z",
+			"detail": {
+				"toolCallId": "call_eSa8uX0IKQQpgsyCsz7slYYg|fc_0c46f549b1619370016a90b0c5ca7887d0a055f975cb7e6f89",
+				"toolName": "grep"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 84,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:53.615Z",
+			"detail": {
+				"path": "packages/core-v2/src/cli.ts",
+				"toolCallId": "call_rgVbW0jatHtBxs3s2mymyIDg|fc_0c46f549b1619370016a90b0c5ca8487d084dd1f796ba2cef2",
+				"toolName": "read"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 85,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:53.615Z",
+			"detail": {
+				"path": "packages/core-v2/src/daemon/task-runner.ts",
+				"toolCallId": "call_7t1cLyOCxvHGWCbebfzYYxHN|fc_0c46f549b1619370016a90b0c5ca9087d09311017a4014592c",
+				"toolName": "read"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 86,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:53.623Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_Udp0GJyRIHKWb3hHDwPX8Pqm|fc_0c46f549b1619370016a90b0c5ca4487d0a514f4679522a22a",
+				"toolName": "read"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 87,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:53.624Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_rgVbW0jatHtBxs3s2mymyIDg|fc_0c46f549b1619370016a90b0c5ca8487d084dd1f796ba2cef2",
+				"toolName": "read"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 88,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:53.624Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_7t1cLyOCxvHGWCbebfzYYxHN|fc_0c46f549b1619370016a90b0c5ca9087d09311017a4014592c",
+				"toolName": "read"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 89,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:53.624Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_nltGuSu9wBbaR0AxamijAK6x|fc_0c46f549b1619370016a90b0c5ca6c87d0adffe7bfee4ebdb2",
+				"toolName": "grep"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 90,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:53.625Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_eSa8uX0IKQQpgsyCsz7slYYg|fc_0c46f549b1619370016a90b0c5ca7887d0a055f975cb7e6f89",
+				"toolName": "grep"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 91,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:53.626Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_jtTvblToYDC6pbcDsNz128mH|fc_0c46f549b1619370016a90b0c5ca5c87d09aa2ed96166a0044",
+				"toolName": "find"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 92,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:53.627Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 93,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:53.627Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 94,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:59.566Z",
+			"detail": {
+				"path": "packages/core-v2/test/fixtures/m4-proof/evidence.json",
+				"toolCallId": "call_bycXxMUtvkwWLGtGQpKY7TPo|fc_0c46f549b1619370016a90b0cbc10487d09266676bd0e852a5",
+				"toolName": "read"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 95,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:59.567Z",
+			"detail": {
+				"path": "packages/core-v2/test/fixtures/m4-proof/managed.trace.json",
+				"toolCallId": "call_Kp8yhkbxd4s5yUAJjwchbGIk|fc_0c46f549b1619370016a90b0cbc12087d095e4800326fca195",
+				"toolName": "read"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 96,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:59.567Z",
+			"detail": {
+				"path": "packages/core-v2/test/fixtures/m4-proof/raw.trace.json",
+				"toolCallId": "call_nOGpwBPCzqolJNflSQlSlMk7|fc_0c46f549b1619370016a90b0cbc12c87d0aedbc655442af632",
+				"toolName": "read"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 97,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:59.567Z",
+			"detail": {
+				"path": "packages/core-v2/src/bench/benchmark.ts",
+				"toolCallId": "call_mEZNSQ8pW6fMJhrHcI6uIOBs|fc_0c46f549b1619370016a90b0cbc13887d098b2735b686ee327",
+				"toolName": "read"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 98,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:59.567Z",
+			"detail": {
+				"path": "packages/core-v2/test/test-cli.ts",
+				"toolCallId": "call_yey6tOOF4XLiYkjbc7HzfGgB|fc_0c46f549b1619370016a90b0cbc14087d0a8a592cd158210ca",
+				"toolName": "read"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 99,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:59.567Z",
+			"detail": {
+				"toolCallId": "call_jkGsy3GwsUMAjY6DK5EzI69e|fc_0c46f549b1619370016a90b0cbc14887d08ab2128adefcf0a9",
+				"toolName": "grep"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 100,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:59.570Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_bycXxMUtvkwWLGtGQpKY7TPo|fc_0c46f549b1619370016a90b0cbc10487d09266676bd0e852a5",
+				"toolName": "read"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 101,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:59.570Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_Kp8yhkbxd4s5yUAJjwchbGIk|fc_0c46f549b1619370016a90b0cbc12087d095e4800326fca195",
+				"toolName": "read"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 102,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:59.570Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_nOGpwBPCzqolJNflSQlSlMk7|fc_0c46f549b1619370016a90b0cbc12c87d0aedbc655442af632",
+				"toolName": "read"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 103,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:59.570Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_yey6tOOF4XLiYkjbc7HzfGgB|fc_0c46f549b1619370016a90b0cbc14087d0a8a592cd158210ca",
+				"toolName": "read"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 104,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:59.570Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_mEZNSQ8pW6fMJhrHcI6uIOBs|fc_0c46f549b1619370016a90b0cbc13887d098b2735b686ee327",
+				"toolName": "read"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 105,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:59.571Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_jkGsy3GwsUMAjY6DK5EzI69e|fc_0c46f549b1619370016a90b0cbc14887d08ab2128adefcf0a9",
+				"toolName": "grep"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 106,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:59.571Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 107,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:48:59.571Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 108,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:49:03.388Z",
+			"detail": {
+				"toolCallId": "call_Mo8hL7Y87EKMotgdTafwnY5Q|fc_0c46f549b1619370016a90b0cf35fc87d0bb74a12648b93d0f",
+				"toolName": "grep"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 109,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:49:03.399Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_Mo8hL7Y87EKMotgdTafwnY5Q|fc_0c46f549b1619370016a90b0cf35fc87d0bb74a12648b93d0f",
+				"toolName": "grep"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 110,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:49:03.399Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 111,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:49:03.399Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 112,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:49:14.808Z",
+			"detail": {
+				"toolCallId": "call_m4b5tsg2NftL0QEZjS7cXS9N|fc_0c46f549b1619370016a90b0dabfe887d085e66e3b98e6fdc6",
+				"toolName": "grep"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 113,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:49:14.818Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_m4b5tsg2NftL0QEZjS7cXS9N|fc_0c46f549b1619370016a90b0dabfe887d085e66e3b98e6fdc6",
+				"toolName": "grep"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 114,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:49:14.818Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 115,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:49:14.818Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 116,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:49:34.313Z",
+			"detail": {
+				"toolCallId": "call_7qOVCFPcoOrtkbVn2X1hg2q5|fc_0c46f549b1619370016a90b0ee0f0887d08fab09531cc3b936",
+				"toolName": "grep"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 117,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:49:34.323Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_7qOVCFPcoOrtkbVn2X1hg2q5|fc_0c46f549b1619370016a90b0ee0f0887d08fab09531cc3b936",
+				"toolName": "grep"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 118,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:49:34.323Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 119,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:49:34.323Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 120,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:50:06.551Z",
+			"detail": {
+				"path": "packages/core-v2/tsconfig.json",
+				"toolCallId": "call_fnAFOuvw9stTZai5SX8JtJHE|fc_0c46f549b1619370016a90b10ea0ac87d0b988ee3fd8e47709",
+				"toolName": "read"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 121,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:50:06.552Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_fnAFOuvw9stTZai5SX8JtJHE|fc_0c46f549b1619370016a90b10ea0ac87d0b988ee3fd8e47709",
+				"toolName": "read"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 122,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:50:06.552Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 123,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:50:06.552Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 124,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:51:06.217Z",
+			"detail": {
+				"toolCallId": "call_yKXRCjS5mDj2wuXYv2v2LdQK|fc_0c46f549b1619370016a90b13851e087d09fb5473b4d6c0bfa",
+				"toolName": "edit"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 125,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:51:06.224Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_yKXRCjS5mDj2wuXYv2v2LdQK|fc_0c46f549b1619370016a90b13851e087d09fb5473b4d6c0bfa",
+				"toolName": "edit"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 126,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:51:06.224Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 127,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:51:06.224Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 128,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:51:12.346Z",
+			"detail": {
+				"toolCallId": "call_upjLWGlwhSN2jb3OtwgdBTAh|fc_0c46f549b1619370016a90b14dfa3087d09ff5c7331fe0cbd1",
+				"toolName": "edit"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 129,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:51:12.348Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_upjLWGlwhSN2jb3OtwgdBTAh|fc_0c46f549b1619370016a90b14dfa3087d09ff5c7331fe0cbd1",
+				"toolName": "edit"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 130,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:51:12.348Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 131,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:51:12.348Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 132,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:51:32.811Z",
+			"detail": {
+				"toolCallId": "call_toHaL2eM2WJrOy9iETQRPyHn|fc_0c46f549b1619370016a90b1539fd087d0b97f77bf3784c876",
+				"toolName": "edit"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 133,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:51:32.816Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_toHaL2eM2WJrOy9iETQRPyHn|fc_0c46f549b1619370016a90b1539fd087d0b97f77bf3784c876",
+				"toolName": "edit"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 134,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:51:32.816Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 135,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:51:32.816Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 136,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:51:35.372Z",
+			"detail": {
+				"path": "packages/core-v2/src/verify/run.ts",
+				"toolCallId": "call_aVaDmc9SVEgOtvHpRGDfcPex|fc_0c46f549b1619370016a90b167722487d0ac47d04a5a50a345",
+				"toolName": "read"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 137,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:51:35.373Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_aVaDmc9SVEgOtvHpRGDfcPex|fc_0c46f549b1619370016a90b167722487d0ac47d04a5a50a345",
+				"toolName": "read"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 138,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:51:35.373Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 139,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:51:35.373Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 140,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:51:39.414Z",
+			"detail": {
+				"toolCallId": "call_iPRFqTzPierIuqHUkEeuUBES|fc_0c46f549b1619370016a90b16a540487d084274f3d6420cf9c",
+				"toolName": "edit"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 141,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:51:39.419Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_iPRFqTzPierIuqHUkEeuUBES|fc_0c46f549b1619370016a90b16a540487d084274f3d6420cf9c",
+				"toolName": "edit"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 142,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:51:39.419Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 143,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:51:39.419Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 144,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:51:45.557Z",
+			"detail": {
+				"toolCallId": "call_KXrWRMjtYnDiZZgr2eXACNpy|fc_0c46f549b1619370016a90b16e8fd487d0b98561a9ca92c9e5",
+				"toolName": "edit"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 145,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:51:45.560Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_KXrWRMjtYnDiZZgr2eXACNpy|fc_0c46f549b1619370016a90b16e8fd487d0b98561a9ca92c9e5",
+				"toolName": "edit"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 146,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:51:45.560Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 147,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:51:45.560Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 148,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:51:53.628Z",
+			"detail": {
+				"toolCallId": "call_dIC5dJFwKCgiZdFfRRsWGSlb|fc_0c46f549b1619370016a90b174bc3487d085f69f6f8fa66f25",
+				"toolName": "edit"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 149,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:51:53.632Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_dIC5dJFwKCgiZdFfRRsWGSlb|fc_0c46f549b1619370016a90b174bc3487d085f69f6f8fa66f25",
+				"toolName": "edit"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 150,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:51:53.632Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 151,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:51:53.632Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 152,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:51:57.669Z",
+			"detail": {
+				"toolCallId": "call_6RTFTbx9ZKgH2Z5pV5XbyVn2|fc_0c46f549b1619370016a90b17c235c87d0a47ff21059f7190e",
+				"toolName": "edit"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 153,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:51:57.672Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_6RTFTbx9ZKgH2Z5pV5XbyVn2|fc_0c46f549b1619370016a90b17c235c87d0a47ff21059f7190e",
+				"toolName": "edit"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 154,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:51:57.672Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 155,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:51:57.672Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 156,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:52:03.488Z",
+			"detail": {
+				"toolCallId": "call_8MZwmt9cJG0wQCiien391EEC|fc_0c46f549b1619370016a90b1817f4087d0bbe615d20d2968dd",
+				"toolName": "edit"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 157,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:52:03.492Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_8MZwmt9cJG0wQCiien391EEC|fc_0c46f549b1619370016a90b1817f4087d0bbe615d20d2968dd",
+				"toolName": "edit"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 158,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:52:03.492Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 159,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:52:03.492Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 160,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:52:05.586Z",
+			"detail": {
+				"path": "packages/core-v2/test/test-contracts.ts",
+				"toolCallId": "call_uNYQk1iSxix0YJ9Mkk8RchAO|fc_0c46f549b1619370016a90b185ada887d0959c57155632bbe0",
+				"toolName": "read"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 161,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:52:05.587Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_uNYQk1iSxix0YJ9Mkk8RchAO|fc_0c46f549b1619370016a90b185ada887d0959c57155632bbe0",
+				"toolName": "read"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 162,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:52:05.587Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 163,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:52:05.587Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 164,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:52:13.804Z",
+			"detail": {
+				"toolCallId": "call_Z27Oa4VuKwg4imk4r328AbHE|fc_0c46f549b1619370016a90b1886c5887d09b0a07f71fb5689d",
+				"toolName": "edit"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 165,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:52:13.808Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_Z27Oa4VuKwg4imk4r328AbHE|fc_0c46f549b1619370016a90b1886c5887d09b0a07f71fb5689d",
+				"toolName": "edit"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 166,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:52:13.808Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 167,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:52:13.808Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 168,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:52:15.795Z",
+			"detail": {
+				"path": "packages/core-v2/test/test-contracts.ts",
+				"toolCallId": "call_mycHFj4XaqjrZGFJw81OY3WS|fc_0c46f549b1619370016a90b18fbd8887d084252ad2bf12da52",
+				"toolName": "read"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 169,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:52:15.796Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_mycHFj4XaqjrZGFJw81OY3WS|fc_0c46f549b1619370016a90b18fbd8887d084252ad2bf12da52",
+				"toolName": "read"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 170,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:52:15.796Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 171,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:52:15.796Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 172,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:52:41.187Z",
+			"detail": {
+				"toolCallId": "call_pXe8TzEjyfL06GDLIVqJX9el|fc_0c46f549b1619370016a90b1a26d6487d0b9857a5985396a88",
+				"toolName": "edit"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 173,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:52:41.189Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_pXe8TzEjyfL06GDLIVqJX9el|fc_0c46f549b1619370016a90b1a26d6487d0b9857a5985396a88",
+				"toolName": "edit"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 174,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:52:41.189Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 175,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:52:41.189Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 176,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:52:47.773Z",
+			"detail": {
+				"toolCallId": "call_gyDecjUQgB8senSib8194MQg|fc_0c46f549b1619370016a90b1acce4c87d0bea283769c41825a",
+				"toolName": "edit"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 177,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:52:47.774Z",
+			"detail": {
+				"isError": true,
+				"toolCallId": "call_gyDecjUQgB8senSib8194MQg|fc_0c46f549b1619370016a90b1acce4c87d0bea283769c41825a",
+				"toolName": "edit"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 178,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:52:47.774Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 179,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:52:47.774Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 180,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:52:50.104Z",
+			"detail": {
+				"path": "packages/core-v2/src/contracts/trace.ts",
+				"toolCallId": "call_s2oKX6Dv5kfpQlRjSTX0C2AG|fc_0c46f549b1619370016a90b1b23a6087d0be37b7fc789f02ab",
+				"toolName": "read"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 181,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:52:50.104Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_s2oKX6Dv5kfpQlRjSTX0C2AG|fc_0c46f549b1619370016a90b1b23a6087d0be37b7fc789f02ab",
+				"toolName": "read"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 182,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:52:50.105Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 183,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:52:50.105Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 184,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:52:51.946Z",
+			"detail": {
+				"path": "packages/core-v2/src/contracts/trace.ts",
+				"toolCallId": "call_2l8o1RBzhu7R9vrhZGISsKdd|fc_0c46f549b1619370016a90b1b3ee0087d09ffd3a5e991f08de",
+				"toolName": "read"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 185,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:52:51.947Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_2l8o1RBzhu7R9vrhZGISsKdd|fc_0c46f549b1619370016a90b1b3ee0087d09ffd3a5e991f08de",
+				"toolName": "read"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 186,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:52:51.947Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 187,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:52:51.947Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 188,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:52:57.790Z",
+			"detail": {
+				"toolCallId": "call_AxuAimg9wJwE47QIM93JKJMo|fc_0c46f549b1619370016a90b1b9f3d087d0a25ce30e375cf7ea",
+				"toolName": "edit"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 189,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:52:57.791Z",
+			"detail": {
+				"toolCallId": "call_QLn0kYWEv5liTZH66Zqo9Mhz|fc_0c46f549b1619370016a90b1b9f3e487d084188c10129b3495",
+				"toolName": "edit"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 190,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:52:57.794Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_AxuAimg9wJwE47QIM93JKJMo|fc_0c46f549b1619370016a90b1b9f3d087d0a25ce30e375cf7ea",
+				"toolName": "edit"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 191,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:52:57.794Z",
+			"detail": {
+				"isError": true,
+				"toolCallId": "call_QLn0kYWEv5liTZH66Zqo9Mhz|fc_0c46f549b1619370016a90b1b9f3e487d084188c10129b3495",
+				"toolName": "edit"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 192,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:52:57.795Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 193,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:52:57.795Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 194,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:53:01.367Z",
+			"detail": {
+				"toolCallId": "call_V1SeOlocZ0YrVSEzuLYk7koo|fc_0c46f549b1619370016a90b1bd64b487d0aceba53fdbd122bc",
+				"toolName": "edit"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 195,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:53:01.367Z",
+			"detail": {
+				"isError": true,
+				"toolCallId": "call_V1SeOlocZ0YrVSEzuLYk7koo|fc_0c46f549b1619370016a90b1bd64b487d0aceba53fdbd122bc",
+				"toolName": "edit"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 196,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:53:01.367Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 197,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:53:01.367Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 198,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:53:03.185Z",
+			"detail": {
+				"path": "packages/core-v2/src/contracts/trace.ts",
+				"toolCallId": "call_7yEBGfvr3LQKe9qgJwJuKQb1|fc_0c46f549b1619370016a90b1bf2fe087d0b5843cb5fdb47287",
+				"toolName": "read"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 199,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:53:03.186Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_7yEBGfvr3LQKe9qgJwJuKQb1|fc_0c46f549b1619370016a90b1bf2fe087d0b5843cb5fdb47287",
+				"toolName": "read"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 200,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:53:03.186Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 201,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:53:03.186Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 202,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:53:07.328Z",
+			"detail": {
+				"toolCallId": "call_JVeLzfrBN0FK7pkf3qLSHTHt|fc_0c46f549b1619370016a90b1c1d83487d094c6e39452f30249",
+				"toolName": "edit"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 203,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:53:07.331Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_JVeLzfrBN0FK7pkf3qLSHTHt|fc_0c46f549b1619370016a90b1c1d83487d094c6e39452f30249",
+				"toolName": "edit"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 204,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:53:07.331Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 205,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:53:07.331Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 206,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:53:09.734Z",
+			"detail": {
+				"toolCallId": "call_VW4vsYT4ug2qNtF7Qm9ukmqe|fc_0c46f549b1619370016a90b1c5634487d09830c4faae814703",
+				"toolName": "grep"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 207,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:53:09.743Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_VW4vsYT4ug2qNtF7Qm9ukmqe|fc_0c46f549b1619370016a90b1c5634487d09830c4faae814703",
+				"toolName": "grep"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 208,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:53:09.743Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 209,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:53:09.743Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 210,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:53:37.969Z",
+			"detail": {
+				"toolCallId": "call_LK9zFgIy1DcH52tWnTp4BaF6|fc_0c46f549b1619370016a90b1c905d887d0b364565cd2b29209",
+				"toolName": "edit"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 211,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:53:37.973Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_LK9zFgIy1DcH52tWnTp4BaF6|fc_0c46f549b1619370016a90b1c905d887d0b364565cd2b29209",
+				"toolName": "edit"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 212,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:53:37.973Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 213,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:53:37.973Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 214,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:53:55.450Z",
+			"detail": {
+				"toolCallId": "call_BUlSSoxh5rJF5YWTHFJeIdIh|fc_0c46f549b1619370016a90b1e83c7487d0bcd8b3b962f137de",
+				"toolName": "edit"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 215,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:53:55.453Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_BUlSSoxh5rJF5YWTHFJeIdIh|fc_0c46f549b1619370016a90b1e83c7487d0bcd8b3b962f137de",
+				"toolName": "edit"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 216,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:53:55.453Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 217,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:53:55.453Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 218,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:53:58.135Z",
+			"detail": {
+				"path": "packages/core-v2/test/test-trace.ts",
+				"toolCallId": "call_wLFoB4mYJAv9ciPX2Vr6N08y|fc_0c46f549b1619370016a90b1f62f9887d0befacb09d1bbfe13",
+				"toolName": "read"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 219,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:53:58.136Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_wLFoB4mYJAv9ciPX2Vr6N08y|fc_0c46f549b1619370016a90b1f62f9887d0befacb09d1bbfe13",
+				"toolName": "read"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 220,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:53:58.136Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 221,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:53:58.136Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 222,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:54:19.989Z",
+			"detail": {
+				"toolCallId": "call_H8VxlkxFDxGIvi1jOiImVEfe|fc_0c46f549b1619370016a90b1fd802887d08fb3e77764aa48ee",
+				"toolName": "edit"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 223,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:54:19.992Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_H8VxlkxFDxGIvi1jOiImVEfe|fc_0c46f549b1619370016a90b1fd802887d08fb3e77764aa48ee",
+				"toolName": "edit"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 224,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:54:19.992Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 225,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:54:19.992Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 226,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:54:45.731Z",
+			"detail": {
+				"path": "packages/core-v2/test/test-cli.ts",
+				"toolCallId": "call_5uxK5yEe61kdSvbwk7oG0D2d|fc_0c46f549b1619370016a90b225d4a087d0b0ffd75a5805ad6a",
+				"toolName": "read"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 227,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:54:45.732Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_5uxK5yEe61kdSvbwk7oG0D2d|fc_0c46f549b1619370016a90b225d4a087d0b0ffd75a5805ad6a",
+				"toolName": "read"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 228,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:54:45.732Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 229,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:54:45.732Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 230,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:54:57.295Z",
+			"detail": {
+				"toolCallId": "call_r8nr2BXQCNySWBwFpVEY9H4D|fc_0c46f549b1619370016a90b229013487d088cc24ca95b72fcb",
+				"toolName": "edit"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 231,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:54:57.299Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_r8nr2BXQCNySWBwFpVEY9H4D|fc_0c46f549b1619370016a90b229013487d088cc24ca95b72fcb",
+				"toolName": "edit"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 232,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:54:57.299Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 233,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:54:57.299Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 234,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:55:02.886Z",
+			"detail": {
+				"path": "packages/core-v2/src/contracts/verification-driver.ts",
+				"toolCallId": "call_EdQSULacJLYyXNbtZdafKeTk|fc_0c46f549b1619370016a90b237122887d0a67a7bc5f500c1d2",
+				"toolName": "read"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 235,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:55:02.887Z",
+			"detail": {
+				"path": "packages/core-v2/src/contracts/trace.ts",
+				"toolCallId": "call_e77vvnG7guKyumFFGmjerbbX|fc_0c46f549b1619370016a90b237123c87d08a5d6808e097bebb",
+				"toolName": "read"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 236,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:55:02.887Z",
+			"detail": {
+				"path": "packages/core-v2/src/contracts/trace.ts",
+				"toolCallId": "call_cGa7gQkJerlTvubGIgtOyqqn|fc_0c46f549b1619370016a90b237124887d0a77737abf026ae6f",
+				"toolName": "read"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 237,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:55:02.887Z",
+			"detail": {
+				"path": "packages/core-v2/test/test-verify-run.ts",
+				"toolCallId": "call_l6E122IvuhHtenoeeEJezNXR|fc_0c46f549b1619370016a90b237125487d0995e2a1f5e064e2b",
+				"toolName": "read"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 238,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:55:02.887Z",
+			"detail": {
+				"path": "packages/core-v2/test/test-trace.ts",
+				"toolCallId": "call_DhXyGD5KGSiUK0oJU9kqn2BN|fc_0c46f549b1619370016a90b237125c87d09cd5b9646a1818ba",
+				"toolName": "read"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 239,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:55:02.887Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_e77vvnG7guKyumFFGmjerbbX|fc_0c46f549b1619370016a90b237123c87d08a5d6808e097bebb",
+				"toolName": "read"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 240,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:55:02.887Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_EdQSULacJLYyXNbtZdafKeTk|fc_0c46f549b1619370016a90b237122887d0a67a7bc5f500c1d2",
+				"toolName": "read"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 241,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:55:02.887Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_DhXyGD5KGSiUK0oJU9kqn2BN|fc_0c46f549b1619370016a90b237125c87d09cd5b9646a1818ba",
+				"toolName": "read"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 242,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:55:02.888Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_cGa7gQkJerlTvubGIgtOyqqn|fc_0c46f549b1619370016a90b237124887d0a77737abf026ae6f",
+				"toolName": "read"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 243,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:55:02.888Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_l6E122IvuhHtenoeeEJezNXR|fc_0c46f549b1619370016a90b237125487d0995e2a1f5e064e2b",
+				"toolName": "read"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 244,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:55:02.888Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 245,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:55:02.888Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 246,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:55:07.499Z",
+			"detail": {
+				"toolCallId": "call_fb5Kiv5RbFFp0ABOnUuA6a7n|fc_0c46f549b1619370016a90b23ae58887d094043889fb970419",
+				"toolName": "edit"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 247,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:55:07.501Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_fb5Kiv5RbFFp0ABOnUuA6a7n|fc_0c46f549b1619370016a90b23ae58887d094043889fb970419",
+				"toolName": "edit"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 248,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:55:07.501Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 249,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:55:07.501Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 250,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:55:23.996Z",
+			"detail": {
+				"toolCallId": "call_2Xj3erggRpxylaqHOs3Lhk5W|fc_0c46f549b1619370016a90b24b67ec87d0a63b084b14a5e694",
+				"toolName": "edit"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 251,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:55:23.997Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_2Xj3erggRpxylaqHOs3Lhk5W|fc_0c46f549b1619370016a90b24b67ec87d0a63b084b14a5e694",
+				"toolName": "edit"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 252,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:55:23.997Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 253,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:55:23.997Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 254,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:55:36.495Z",
+			"detail": {
+				"toolCallId": "call_KhccSElG6T2jm34nxOtWhuRv|fc_0c46f549b1619370016a90b256588c87d09855384667076c80",
+				"toolName": "edit"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 255,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:55:36.499Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_KhccSElG6T2jm34nxOtWhuRv|fc_0c46f549b1619370016a90b256588c87d09855384667076c80",
+				"toolName": "edit"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 256,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:55:36.499Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 257,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:55:36.499Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 258,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:55:43.834Z",
+			"detail": {
+				"toolCallId": "call_aRf6Ys3AHZrlP7xLCemo8frU|fc_0c46f549b1619370016a90b26002bc87d0b089c5d818ff0820",
+				"toolName": "grep"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 259,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:55:43.835Z",
+			"detail": {
+				"toolCallId": "call_vbVd03kj9J99ibH65SpCL4dd|fc_0c46f549b1619370016a90b26002d487d090a345cb422148fe",
+				"toolName": "grep"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 260,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:55:43.835Z",
+			"detail": {
+				"path": "packages/core-v2/src/contracts/gateway-events.ts",
+				"toolCallId": "call_uejLfGVyk3ZOTkKfe0U4tSat|fc_0c46f549b1619370016a90b26002dc87d093cdfdbc5c3de58e",
+				"toolName": "read"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 261,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:55:43.835Z",
+			"detail": {
+				"path": "packages/core-v2/src/verify/adapter.ts",
+				"toolCallId": "call_NoX8t9hYp1gdnynwHPBg5C4V|fc_0c46f549b1619370016a90b26002e887d0937d87eafaf87d5f",
+				"toolName": "read"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 262,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:55:43.835Z",
+			"detail": {
+				"path": "packages/core-v2/test/test-cli.ts",
+				"toolCallId": "call_cBaeoBDZ2l8psewNqsfXdfy1|fc_0c46f549b1619370016a90b26002f487d0a418111aab388096",
+				"toolName": "read"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 263,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:55:43.840Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_NoX8t9hYp1gdnynwHPBg5C4V|fc_0c46f549b1619370016a90b26002e887d0937d87eafaf87d5f",
+				"toolName": "read"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 264,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:55:43.840Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_uejLfGVyk3ZOTkKfe0U4tSat|fc_0c46f549b1619370016a90b26002dc87d093cdfdbc5c3de58e",
+				"toolName": "read"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 265,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:55:43.841Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_cBaeoBDZ2l8psewNqsfXdfy1|fc_0c46f549b1619370016a90b26002f487d0a418111aab388096",
+				"toolName": "read"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 266,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:55:43.842Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_vbVd03kj9J99ibH65SpCL4dd|fc_0c46f549b1619370016a90b26002d487d090a345cb422148fe",
+				"toolName": "grep"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 267,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:55:43.843Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_aRf6Ys3AHZrlP7xLCemo8frU|fc_0c46f549b1619370016a90b26002bc87d0b089c5d818ff0820",
+				"toolName": "grep"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 268,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:55:43.843Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 269,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:55:43.843Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 270,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:55:49.506Z",
+			"detail": {
+				"toolCallId": "call_DBIUUI3uZJv5799BITWuuB9u|fc_0c46f549b1619370016a90b26240f487d08d182b657e6943b4",
+				"toolName": "edit"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 271,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:55:49.510Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_DBIUUI3uZJv5799BITWuuB9u|fc_0c46f549b1619370016a90b26240f487d08d182b657e6943b4",
+				"toolName": "edit"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 272,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:55:49.510Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 273,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:55:49.510Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 274,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:56:02.143Z",
+			"detail": {
+				"toolCallId": "call_uXu7w9hWPbE7O6G9XzWSmHsB|fc_0c46f549b1619370016a90b271fc7c87d0a5e270420da39b51",
+				"toolName": "grep"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 275,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:56:02.155Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_uXu7w9hWPbE7O6G9XzWSmHsB|fc_0c46f549b1619370016a90b271fc7c87d0a5e270420da39b51",
+				"toolName": "grep"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 276,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:56:02.155Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 277,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:56:02.155Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 278,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:56:04.659Z",
+			"detail": {
+				"path": "packages/core-v2/src/cli.ts",
+				"toolCallId": "call_6t3i0b6M2B02b0eHl6fbKweI|fc_0c46f549b1619370016a90b274ca7487d0908905d853d1bfcf",
+				"toolName": "read"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 279,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:56:04.660Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_6t3i0b6M2B02b0eHl6fbKweI|fc_0c46f549b1619370016a90b274ca7487d0908905d853d1bfcf",
+				"toolName": "read"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 280,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:56:04.660Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 281,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:56:04.660Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 282,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:56:07.934Z",
+			"detail": {
+				"toolCallId": "call_MRZ0YKSSSV9h8oHxRmrsDUAo|fc_0c46f549b1619370016a90b277e30887d0aaa7f834c98f8dc7",
+				"toolName": "grep"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 283,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:56:07.939Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_MRZ0YKSSSV9h8oHxRmrsDUAo|fc_0c46f549b1619370016a90b277e30887d0aaa7f834c98f8dc7",
+				"toolName": "grep"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 284,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:56:07.939Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 285,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:56:07.939Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 286,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:56:09.636Z",
+			"detail": {
+				"path": "packages/core-v2/src/daemon/task-runner.ts",
+				"toolCallId": "call_GFYU1FhW8hhZhLtpYKW23h4R|fc_0c46f549b1619370016a90b279579887d0a4eb1041e368567d",
+				"toolName": "read"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 287,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:56:09.638Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_GFYU1FhW8hhZhLtpYKW23h4R|fc_0c46f549b1619370016a90b279579887d0a4eb1041e368567d",
+				"toolName": "read"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 288,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:56:09.638Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 289,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:56:09.638Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 290,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:56:15.810Z",
+			"detail": {
+				"toolCallId": "call_UWCHESv2FT94IhiM3wKL6OK4|fc_0c46f549b1619370016a90b27d78d087d099d83396405ef8d2",
+				"toolName": "edit"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 291,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:56:15.814Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_UWCHESv2FT94IhiM3wKL6OK4|fc_0c46f549b1619370016a90b27d78d087d099d83396405ef8d2",
+				"toolName": "edit"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 292,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:56:15.814Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 293,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:56:15.814Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 294,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:56:31.744Z",
+			"detail": {
+				"toolCallId": "call_AAZbUzgCO1UuxPrgvRNqNLzS|fc_0c46f549b1619370016a90b28a4e5087d09bf35cfca62d5318",
+				"toolName": "edit"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 295,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:56:31.748Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_AAZbUzgCO1UuxPrgvRNqNLzS|fc_0c46f549b1619370016a90b28a4e5087d09bf35cfca62d5318",
+				"toolName": "edit"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 296,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:56:31.748Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 297,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:56:31.748Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 298,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:56:35.123Z",
+			"detail": {
+				"toolCallId": "call_5jgXZaQxu4bKpIZqZF1sYAc8|fc_0c46f549b1619370016a90b291ed3c87d0abf369bc7c02c421",
+				"toolName": "edit"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 299,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:56:35.128Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_5jgXZaQxu4bKpIZqZF1sYAc8|fc_0c46f549b1619370016a90b291ed3c87d0abf369bc7c02c421",
+				"toolName": "edit"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 300,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:56:35.128Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 301,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:56:35.128Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 302,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:56:39.632Z",
+			"detail": {
+				"toolCallId": "call_nv6139fXqY9feTPAWB0sVDvk|fc_0c46f549b1619370016a90b2951ca087d092b00a20f9676a41",
+				"toolName": "edit"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 303,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:56:39.633Z",
+			"detail": {
+				"isError": true,
+				"toolCallId": "call_nv6139fXqY9feTPAWB0sVDvk|fc_0c46f549b1619370016a90b2951ca087d092b00a20f9676a41",
+				"toolName": "edit"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 304,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:56:39.633Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 305,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:56:39.633Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 306,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:56:41.657Z",
+			"detail": {
+				"toolCallId": "call_RosS7x53sHZ93H7IXVbn8XCS|fc_0c46f549b1619370016a90b299857087d08641d5adc8e3a977",
+				"toolName": "grep"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 307,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:56:41.662Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_RosS7x53sHZ93H7IXVbn8XCS|fc_0c46f549b1619370016a90b299857087d08641d5adc8e3a977",
+				"toolName": "grep"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 308,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:56:41.663Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 309,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:56:41.663Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 310,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:56:47.018Z",
+			"detail": {
+				"toolCallId": "call_ZtNH9GLCvHMAvXsufKzNwDZW|fc_0c46f549b1619370016a90b29f39fc87d086a025f4bb259ff0",
+				"toolName": "edit"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 311,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:56:47.018Z",
+			"detail": {
+				"toolCallId": "call_Nzq21rPB1WPc9WXQlanFO3z8|fc_0c46f549b1619370016a90b29f3a1487d09bd7fa7330d4c7f5",
+				"toolName": "edit"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 312,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:56:47.023Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_ZtNH9GLCvHMAvXsufKzNwDZW|fc_0c46f549b1619370016a90b29f39fc87d086a025f4bb259ff0",
+				"toolName": "edit"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 313,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:56:47.024Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_Nzq21rPB1WPc9WXQlanFO3z8|fc_0c46f549b1619370016a90b29f3a1487d09bd7fa7330d4c7f5",
+				"toolName": "edit"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 314,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:56:47.024Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 315,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:56:47.024Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 316,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:56:52.131Z",
+			"detail": {
+				"toolCallId": "call_iuPZUrre0Tsd6T60Bb2dIjTJ|fc_0c46f549b1619370016a90b2a0f15087d0b4885615fcfe3bf0",
+				"toolName": "edit"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 317,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:56:52.132Z",
+			"detail": {
+				"isError": true,
+				"toolCallId": "call_iuPZUrre0Tsd6T60Bb2dIjTJ|fc_0c46f549b1619370016a90b2a0f15087d0b4885615fcfe3bf0",
+				"toolName": "edit"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 318,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:56:52.132Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 319,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:56:52.132Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 320,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:56:54.147Z",
+			"detail": {
+				"path": "packages/core-v2/test/test-verify-run.ts",
+				"toolCallId": "call_SyXU4BkhgsEwpOV3k3XLaoz3|fc_0c46f549b1619370016a90b2a6205887d0b00b17da2b88b6e2",
+				"toolName": "read"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 321,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:56:54.148Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_SyXU4BkhgsEwpOV3k3XLaoz3|fc_0c46f549b1619370016a90b2a6205887d0b00b17da2b88b6e2",
+				"toolName": "read"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 322,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:56:54.148Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 323,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:56:54.148Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 324,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:56:58.985Z",
+			"detail": {
+				"toolCallId": "call_u8MGKyCg9ZjHTtlBhl2sxOBm|fc_0c46f549b1619370016a90b2a7fe5487d0ab452e55dbbb7c20",
+				"toolName": "edit"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 325,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:56:58.988Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_u8MGKyCg9ZjHTtlBhl2sxOBm|fc_0c46f549b1619370016a90b2a7fe5487d0ab452e55dbbb7c20",
+				"toolName": "edit"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 326,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:56:58.988Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 327,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:56:58.988Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 328,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:57:07.223Z",
+			"detail": {
+				"toolCallId": "call_8LpXXlVw3BiYVGixoblAN6Lm|fc_0c46f549b1619370016a90b2ad5d4c87d0ad6c1402efe776b6",
+				"toolName": "edit"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 329,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:57:07.227Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_8LpXXlVw3BiYVGixoblAN6Lm|fc_0c46f549b1619370016a90b2ad5d4c87d0ad6c1402efe776b6",
+				"toolName": "edit"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 330,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:57:07.227Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 331,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:57:07.227Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 332,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:57:10.616Z",
+			"detail": {
+				"toolCallId": "call_CQxduQodrOvnEb9TaNrilvTJ|fc_0c46f549b1619370016a90b2b6964c87d090b382613047456b",
+				"toolName": "grep"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 333,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:57:10.623Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_CQxduQodrOvnEb9TaNrilvTJ|fc_0c46f549b1619370016a90b2b6964c87d090b382613047456b",
+				"toolName": "grep"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 334,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:57:10.623Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 335,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:57:10.623Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 336,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:57:26.183Z",
+			"detail": {
+				"toolCallId": "call_GZMBJhADTWZJuNLkP3dgWhsS|fc_0c46f549b1619370016a90b2c6083887d090707b04eec48202",
+				"toolName": "grep"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 337,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:57:26.188Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_GZMBJhADTWZJuNLkP3dgWhsS|fc_0c46f549b1619370016a90b2c6083887d090707b04eec48202",
+				"toolName": "grep"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 338,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:57:26.189Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 339,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:57:26.189Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 340,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:57:29.090Z",
+			"detail": {
+				"path": "packages/core-v2/src/contracts/gateway-events.ts",
+				"toolCallId": "call_VCxIrpymdVMGf6wK9KO2jQ5q|fc_0c46f549b1619370016a90b2c9221c87d0a88da1571c748361",
+				"toolName": "read"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 341,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:57:29.091Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_VCxIrpymdVMGf6wK9KO2jQ5q|fc_0c46f549b1619370016a90b2c9221c87d0a88da1571c748361",
+				"toolName": "read"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 342,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:57:29.091Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 343,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:57:29.091Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 344,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:57:34.851Z",
+			"detail": {
+				"toolCallId": "call_ApOICsOfGU6UAizLv0IRJEp5|fc_0c46f549b1619370016a90b2cdfd6087d081609885740ebab4",
+				"toolName": "edit"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 345,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:57:34.855Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_ApOICsOfGU6UAizLv0IRJEp5|fc_0c46f549b1619370016a90b2cdfd6087d081609885740ebab4",
+				"toolName": "edit"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 346,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:57:34.855Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 347,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:57:34.855Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 348,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:57:38.679Z",
+			"detail": {
+				"toolCallId": "call_pMBl2GKGOEivAh4ySVdbAgpR|fc_0c46f549b1619370016a90b2d0ba0087d0893ec63d4a3fb7a5",
+				"toolName": "edit"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 349,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:57:38.681Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_pMBl2GKGOEivAh4ySVdbAgpR|fc_0c46f549b1619370016a90b2d0ba0087d0893ec63d4a3fb7a5",
+				"toolName": "edit"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 350,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:57:38.681Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 351,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:57:38.681Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 352,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:57:51.291Z",
+			"detail": {
+				"toolCallId": "call_blhzZx8z1bTW1GLci7kiqXR1|fc_0c46f549b1619370016a90b2ddbae087d0a01e482e494c8df1",
+				"toolName": "edit"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 353,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:57:51.293Z",
+			"detail": {
+				"isError": false,
+				"toolCallId": "call_blhzZx8z1bTW1GLci7kiqXR1|fc_0c46f549b1619370016a90b2ddbae087d0a01e482e494c8df1",
+				"toolName": "edit"
+			},
+			"phase": "tool",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 354,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "tool.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:57:51.294Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 355,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:57:51.294Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 356,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:58:13.394Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 357,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:58:13.394Z",
+			"detail": { "outcome": "settled" },
+			"phase": "session",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 358,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "session.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:58:13.395Z",
+			"detail": { "code": "timed_out", "message": "prompt exceeded 600000ms" },
+			"phase": "session",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 359,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "failure",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:58:13.395Z",
+			"config": "1",
+			"detail": {
+				"checkpointAvailable": false,
+				"fromEpochId": "epoch-41a2502199c77c15c30c8b23",
+				"reason": "interruption",
+				"role": "worker-0"
+			},
+			"phase": "recovery",
+			"provider": "symbol-tree",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 360,
+			"taskId": "3cd4fdba4dd1",
+			"type": "epoch.transitioned",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:58:13.396Z",
+			"phase": "turn",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 361,
+			"taskId": "3cd4fdba4dd1",
+			"type": "turn.started",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:58:13.635Z",
+			"detail": { "outcome": "exhausted" },
+			"phase": "session",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 362,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "session.ended",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:58:13.694Z",
+			"detail": { "commitId": "c058805ea48eba2a3c0090da4754c80e389ca5bd" },
+			"phase": "artifact",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 363,
+			"taskId": "3cd4fdba4dd1",
+			"type": "artifact.accepted",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:58:32.958Z",
+			"detail": { "passed": true },
+			"phase": "verification",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 364,
+			"taskId": "3cd4fdba4dd1",
+			"type": "verification.completed",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:58:33.201Z",
+			"detail": { "cause": "one or more workers failed" },
+			"phase": "task",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 365,
+			"sessionId": "3cd4fdba4dd1-worker",
+			"taskId": "3cd4fdba4dd1",
+			"type": "task.failed",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:58:33.202Z",
+			"detail": {
+				"cacheReadTokens": 6388736,
+				"cacheWriteTokens": 0,
+				"costUsd": 0.19379612000000002,
+				"inputTokens": 168563,
+				"outputTokens": 26924,
+				"status": "measured"
+			},
+			"phase": "usage",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 366,
+			"taskId": "3cd4fdba4dd1",
+			"type": "usage.observed",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:58:33.202Z",
+			"detail": { "delivered": true },
+			"phase": "artifact",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 367,
+			"taskId": "3cd4fdba4dd1",
+			"type": "receipt.delivered",
+			"version": 1
+		},
+		{
+			"at": "2026-08-27T21:58:33.207Z",
+			"detail": { "delivered": true },
+			"phase": "artifact",
+			"runId": "3cd4fdba4dd1",
+			"sequence": 368,
+			"taskId": "3cd4fdba4dd1",
+			"type": "trace.delivered",
+			"version": 1
+		}
+	],
+	"outcome": "failed",
+	"runId": "3cd4fdba4dd1",
+	"startedAt": "2026-08-27T21:48:11.732Z",
+	"taskId": "3cd4fdba4dd1",
+	"usage": {
+		"cacheReadTokens": 6388736,
+		"cacheWriteTokens": 0,
+		"costUsd": 0.19379612000000002,
+		"inputTokens": 168563,
+		"outputTokens": 26924,
+		"status": "measured"
+	},
+	"version": 1
+}

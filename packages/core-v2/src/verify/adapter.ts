@@ -48,7 +48,7 @@ export async function verifyThroughEnvironment(
 	commands: string[],
 	options?: Pick<
 		VerifyOptions,
-		"commandTimeoutMs" | "wallTimeoutMs" | "graceMs"
+		"commandTimeoutMs" | "wallTimeoutMs" | "graceMs" | "now"
 	>,
 ): Promise<VerificationResult> {
 	const resolved = await env.resolvePath({

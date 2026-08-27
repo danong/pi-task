@@ -21,13 +21,19 @@ import type {
 	SessionHostConfig,
 	SessionHostEvent,
 } from "../src/sessions/host.ts";
-import type { TaskGateway, TaskLifecycleEvent } from "../src/contracts/index.ts";
+import type {
+	TaskGateway,
+	TaskLifecycleEvent,
+} from "../src/contracts/index.ts";
 import { runCli, type CliDependencies, CliUsageError } from "../src/cli.ts";
 import { parseCliArgs, cliHelp, cliExitCode } from "../src/cli.ts";
 import { LedgerStore } from "../src/ledger/store.ts";
 import { deriveTaskId } from "../src/daemon/task-runner.ts";
 import { JujutsuWorkspaceDriver } from "../src/workspaces/jj-driver.ts";
-import { TraceArtifactSchema, type TraceArtifact } from "../src/contracts/index.ts";
+import {
+	TraceArtifactSchema,
+	type TraceArtifact,
+} from "../src/contracts/index.ts";
 
 const SPEC = `## Goal
 Create the result file.
@@ -123,7 +129,11 @@ class FakeHandle implements SessionHandle {
 	subscribe(listener: (event: SessionHostEvent) => void): () => void {
 		for (let turn = 0; turn < (this.options.turns ?? 1); turn += 1) {
 			listener({ type: "turnStart" });
-			listener({ type: "toolStart", toolName: "write", toolCallId: `write-${turn + 1}` });
+			listener({
+				type: "toolStart",
+				toolName: "write",
+				toolCallId: `write-${turn + 1}`,
+			});
 			listener({
 				type: "toolEnd",
 				toolName: "write",
@@ -151,8 +161,11 @@ class FakeHandle implements SessionHandle {
 				});
 			}
 			this.result = {
-				files_changed: this.options.reportedFiles ?? (this.options.writeResult === false ? [] : ["result.txt"]),
-				summary: this.options.writeResult === false ? "no change" : "created result",
+				files_changed:
+					this.options.reportedFiles ??
+					(this.options.writeResult === false ? [] : ["result.txt"]),
+				summary:
+					this.options.writeResult === false ? "no change" : "created result",
 				commit_ids: ["fake-commit"],
 				deviations: [],
 			};
@@ -214,7 +227,10 @@ class CapturingGateway implements TaskGateway {
 		for (const handler of this.handlers) handler(event);
 	}
 
-	on(_pattern: string, handler: (event: TaskLifecycleEvent) => void): () => void {
+	on(
+		_pattern: string,
+		handler: (event: TaskLifecycleEvent) => void,
+	): () => void {
 		this.handlers.add(handler);
 		return () => this.handlers.delete(handler);
 	}
@@ -258,7 +274,10 @@ export async function runTests(): Promise<void> {
 		cliHelp().includes("required unless PI_TASK_V2_MODEL is set"),
 		"help documents provider-neutral required model selection",
 	);
-	check(!cliHelp().includes("ox-alpha"), "help does not claim a product model default");
+	check(
+		!cliHelp().includes("ox-alpha"),
+		"help does not claim a product model default",
+	);
 	const priorModel = process.env.PI_TASK_V2_MODEL;
 	try {
 		delete process.env.PI_TASK_V2_MODEL;
@@ -266,7 +285,10 @@ export async function runTests(): Promise<void> {
 			parseCliArgs(["--spec", "task.md"]);
 			errors.push("model-less CLI arguments were accepted");
 		} catch (error) {
-			check(error instanceof CliUsageError, "missing model is a typed usage error");
+			check(
+				error instanceof CliUsageError,
+				"missing model is a typed usage error",
+			);
 			check(
 				error instanceof Error && error.message.includes("--model"),
 				"missing model error names --model",
@@ -342,18 +364,47 @@ export async function runTests(): Promise<void> {
 			write: () => undefined,
 		};
 		const missingPolicy = await runCli(
-			["--spec", missingPolicyPath, "--project-dir", repo, "--model", "fake/model"],
+			[
+				"--spec",
+				missingPolicyPath,
+				"--project-dir",
+				repo,
+				"--model",
+				"fake/model",
+			],
 			ingressDependencies,
 		);
-		check(missingPolicy.exitCode === 2, "missing artifact policy is a usage error");
-		check(missingPolicy.error?.includes("Artifact Policy") === true, "missing policy error names the policy section");
+		check(
+			missingPolicy.exitCode === 2,
+			"missing artifact policy is a usage error",
+		);
+		check(
+			missingPolicy.error?.includes("Artifact Policy") === true,
+			"missing policy error names the policy section",
+		);
 		const invalidPolicy = await runCli(
-			["--spec", invalidPolicyPath, "--project-dir", repo, "--model", "fake/model"],
+			[
+				"--spec",
+				invalidPolicyPath,
+				"--project-dir",
+				repo,
+				"--model",
+				"fake/model",
+			],
 			ingressDependencies,
 		);
-		check(invalidPolicy.exitCode === 2, "invalid artifact policy is a usage error");
-		check(invalidPolicy.error?.includes("artifact policy") === true, "invalid policy error identifies policy validation");
-		check(ingressDaemonCalls === 0 && ingressSpawns.value === 0, "policy validation precedes daemon and session providers");
+		check(
+			invalidPolicy.exitCode === 2,
+			"invalid artifact policy is a usage error",
+		);
+		check(
+			invalidPolicy.error?.includes("artifact policy") === true,
+			"invalid policy error identifies policy validation",
+		);
+		check(
+			ingressDaemonCalls === 0 && ingressSpawns.value === 0,
+			"policy validation precedes daemon and session providers",
+		);
 		const artifacts = join(root, "artifacts");
 		const dbPath = join(root, "ledger.sqlite");
 		const progress: string[] = [];
@@ -401,13 +452,66 @@ export async function runTests(): Promise<void> {
 			"receipt artifact is delivered",
 		);
 		const successTrace = readTrace(success.tracePath);
-		check(successTrace.taskId === success.receipt?.taskId, "trace identity agrees with success receipt");
-		check(successTrace.runId === success.receipt?.taskId, "trace run identity agrees with success receipt");
-		check(successTrace.outcome === "ship", "successful trace records ship outcome");
-		check(successTrace.events.some((event) => event.type === "model.assigned"), "successful trace records model assignment");
-		check(successTrace.events.some((event) => event.type === "context.injected"), "successful trace records context injection");
-		check(successTrace.events.some((event) => event.type === "turn.started"), "successful trace records typed turn activity");
-		check(successTrace.events.some((event) => event.type === "trace.delivered" && event.detail?.delivered === true), "successful trace records delivery only after writing");
+		check(
+			successTrace.taskId === success.receipt?.taskId,
+			"trace identity agrees with success receipt",
+		);
+		check(
+			successTrace.runId === success.receipt?.taskId,
+			"trace run identity agrees with success receipt",
+		);
+		check(
+			successTrace.outcome === "ship",
+			"successful trace records ship outcome",
+		);
+		const assignedModel = successTrace.events.find(
+			(event) => event.type === "model.assigned",
+		);
+		check(
+			assignedModel?.detail?.familyId === success.receipt?.taskId &&
+				assignedModel?.detail?.attemptId === success.receipt?.taskId &&
+				assignedModel?.detail?.attemptNumber === 1 &&
+				typeof assignedModel?.detail?.engineVersion === "string" &&
+				typeof assignedModel?.detail?.specHash === "string",
+			"successful trace records bounded engine, spec-family, and attempt metadata",
+		);
+		check(
+			successTrace.events.some((event) => event.type === "context.injected"),
+			"successful trace records context injection",
+		);
+		const successVerification = successTrace.events.find(
+			(event) => event.type === "verification.completed",
+		);
+		check(
+			successVerification?.detail?.passed === true &&
+				typeof successVerification?.detail?.evidence === "object",
+			"successful trace records structural verification evidence",
+		);
+		check(
+			!JSON.stringify(successTrace).includes("test -f result.txt") &&
+				!JSON.stringify(successTrace).includes("cat result.txt"),
+			"successful trace omits verification command text",
+		);
+		check(
+			successTrace.events.some((event) => event.type === "turn.started"),
+			"successful trace records typed turn activity",
+		);
+		check(
+			successTrace.events.some(
+				(event) =>
+					event.type === "trace.delivered" && event.detail?.delivered === true,
+			),
+			"successful trace records delivery only after writing",
+		);
+		check(
+			progress.some((line) => line === `run: ${success.receipt?.taskId}`),
+			"progress announces the run identity before terminal delivery",
+		);
+		check(
+			progress.some((line) => line.startsWith("receipt artifact: ")) &&
+				progress.some((line) => line.startsWith("trace artifact: ")),
+			"terminal progress names the durable receipt and trace artifacts",
+		);
 		check(
 			progress.some((line) => line.includes("task queued")),
 			"progress includes task lifecycle",
@@ -431,7 +535,10 @@ export async function runTests(): Promise<void> {
 		const successLedger = new LedgerStore(dbPath);
 		const successTasks = successLedger.listTasks();
 		const successTaskId = success.receipt?.taskId;
-		check(successTasks.length === 1, "success ledger has one canonical task row");
+		check(
+			successTasks.length === 1,
+			"success ledger has one canonical task row",
+		);
 		check(
 			successTaskId !== undefined && successTasks[0]?.id === successTaskId,
 			"success ledger task is the receipt identity",
@@ -442,19 +549,19 @@ export async function runTests(): Promise<void> {
 		);
 		check(
 			successTaskId !== undefined &&
-			!successTaskId.endsWith("-p") &&
-			!successTaskId.endsWith("-0"),
+				!successTaskId.endsWith("-p") &&
+				!successTaskId.endsWith("-0"),
 			"single task identity is not a parallel aggregate or indexed worker",
 		);
 		check(successSpawns.value === 1, "success creates one worker session");
 		check(
 			successTaskId !== undefined &&
-			successLedger.listSessions(successTaskId).length === 1,
+				successLedger.listSessions(successTaskId).length === 1,
 			"success ledger has one worker session row",
 		);
 		check(
 			successTaskId !== undefined &&
-			successLedger.listWorkspaces(successTaskId).length === 1,
+				successLedger.listWorkspaces(successTaskId).length === 1,
 			"success ledger has one workspace",
 		);
 		const successLifecycle = gateway.events.filter((event) =>
@@ -462,13 +569,13 @@ export async function runTests(): Promise<void> {
 		);
 		check(
 			successTaskId !== undefined &&
-			successLifecycle.length === 2 &&
-			successLifecycle.every((event) => event.taskId === successTaskId),
+				successLifecycle.length === 2 &&
+				successLifecycle.every((event) => event.taskId === successTaskId),
 			"success event stream has one canonical task lifecycle",
 		);
 		check(
 			successTaskId !== undefined &&
-			existsSync(join(artifacts, `${successTaskId}.receipt.json`)),
+				existsSync(join(artifacts, `${successTaskId}.receipt.json`)),
 			"success receipt filename agrees with task identity",
 		);
 		successLedger.close();
@@ -491,17 +598,50 @@ export async function runTests(): Promise<void> {
 		const warmArtifacts = join(root, "warm-artifacts");
 		const warm = await runCli(
 			[
-				"--spec", specPath, "--project-dir", repo, "--model", "fake/model",
-				"--db", dbPath, "--artifacts-dir", warmArtifacts,
+				"--spec",
+				specPath,
+				"--project-dir",
+				repo,
+				"--model",
+				"fake/model",
+				"--db",
+				dbPath,
+				"--artifacts-dir",
+				warmArtifacts,
 			],
 			deps,
 		);
-		check(warm.exitCode === 0, `warm-ledger task exits zero (${warm.error ?? ""}, ${warm.receipt?.verdict ?? "none"}, ${progress.slice(-8).join("|")})`);
-		check(warm.receipt?.taskId !== success.receipt?.taskId, "warm-ledger run gets a new attempt identity");
-		check(warm.receipt?.taskId.endsWith("-a2") === true, "warm-ledger run uses the second attempt suffix");
+		check(
+			warm.exitCode === 0,
+			`warm-ledger task exits zero (${warm.error ?? ""}, ${warm.receipt?.verdict ?? "none"}, ${progress.slice(-8).join("|")})`,
+		);
+		check(
+			warm.receipt?.taskId !== success.receipt?.taskId,
+			"warm-ledger run gets a new attempt identity",
+		);
+		check(
+			warm.receipt?.taskId.endsWith("-a2") === true,
+			"warm-ledger run uses the second attempt suffix",
+		);
 		const warmTrace = readTrace(warm.tracePath);
-		check(warmTrace.taskId === warm.receipt?.taskId && warmTrace.runId === warm.receipt?.taskId, "warm trace and receipt identities agree");
-		check(existsSync(join(warmArtifacts, `${warm.receipt?.taskId}.trace.json`)), "warm trace uses the receipt identity in its filename");
+		check(
+			warmTrace.taskId === warm.receipt?.taskId &&
+				warmTrace.runId === warm.receipt?.taskId,
+			"warm trace and receipt identities agree",
+		);
+		const warmAssignment = warmTrace.events.find(
+			(event) => event.type === "model.assigned",
+		);
+		check(
+			warmAssignment?.detail?.familyId === success.receipt?.taskId &&
+				warmAssignment?.detail?.attemptId === warm.receipt?.taskId &&
+				warmAssignment?.detail?.attemptNumber === 2,
+			"warm trace correlates the second attempt with its stable task family",
+		);
+		check(
+			existsSync(join(warmArtifacts, `${warm.receipt?.taskId}.trace.json`)),
+			"warm trace uses the receipt identity in its filename",
+		);
 
 		// Content acceptance runs after otherwise-passing verification: a
 		// missing required report must not ship merely because result.txt passed.
@@ -512,24 +652,40 @@ export async function runTests(): Promise<void> {
 		const requiredArtifacts = join(root, "required-report-artifacts");
 		const required = await runCli(
 			[
-				"--spec", requiredSpecPath, "--project-dir", requiredRepo,
-				"--model", "fake/model", "--db", join(root, "required-report.sqlite"),
-				"--artifacts-dir", requiredArtifacts,
+				"--spec",
+				requiredSpecPath,
+				"--project-dir",
+				requiredRepo,
+				"--model",
+				"fake/model",
+				"--db",
+				join(root, "required-report.sqlite"),
+				"--artifacts-dir",
+				requiredArtifacts,
 			],
 			{
 				...deps,
-				workspaceDriver: new JujutsuWorkspaceDriver({ projectDir: requiredRepo }),
+				workspaceDriver: new JujutsuWorkspaceDriver({
+					projectDir: requiredRepo,
+				}),
 				write: () => undefined,
 			},
 		);
 		check(required.exitCode !== 0, "missing required report is non-shippable");
-		check(required.receipt?.verdict === "failed", "missing required report returns failed receipt");
-		const requiredFailurePath = required.receipt?.taskId === undefined
-			? undefined
-			: join(requiredArtifacts, `${required.receipt.taskId}.failure.json`);
 		check(
-			requiredFailurePath !== undefined && existsSync(requiredFailurePath) &&
-			JSON.parse(readFileSync(requiredFailurePath, "utf8")).cause.includes("missing_file"),
+			required.receipt?.verdict === "failed",
+			"missing required report returns failed receipt",
+		);
+		const requiredFailurePath =
+			required.receipt?.taskId === undefined
+				? undefined
+				: join(requiredArtifacts, `${required.receipt.taskId}.failure.json`);
+		check(
+			requiredFailurePath !== undefined &&
+				existsSync(requiredFailurePath) &&
+				JSON.parse(readFileSync(requiredFailurePath, "utf8")).cause.includes(
+					"missing_file",
+				),
 			"missing required report exposes an actionable acceptance reason",
 		);
 
@@ -542,25 +698,47 @@ export async function runTests(): Promise<void> {
 		const emptyChangeArtifacts = join(root, "empty-change-artifacts");
 		const emptyChange = await runCli(
 			[
-				"--spec", emptyChangeSpecPath, "--project-dir", emptyChangeRepo,
-				"--model", "fake/model", "--db", join(root, "empty-change.sqlite"),
-				"--artifacts-dir", emptyChangeArtifacts,
+				"--spec",
+				emptyChangeSpecPath,
+				"--project-dir",
+				emptyChangeRepo,
+				"--model",
+				"fake/model",
+				"--db",
+				join(root, "empty-change.sqlite"),
+				"--artifacts-dir",
+				emptyChangeArtifacts,
 			],
 			{
 				...deps,
-				workspaceDriver: new JujutsuWorkspaceDriver({ projectDir: emptyChangeRepo }),
+				workspaceDriver: new JujutsuWorkspaceDriver({
+					projectDir: emptyChangeRepo,
+				}),
 				host: fakeHost("ok", undefined, { writeResult: false }),
 				write: () => undefined,
 			},
 		);
-		check(emptyChange.exitCode !== 0, "empty change-required task is non-shippable");
-		check(emptyChange.receipt?.verdict === "failed", "empty change-required task returns failed receipt");
-		const emptyChangeFailurePath = emptyChange.receipt?.taskId === undefined
-			? undefined
-			: join(emptyChangeArtifacts, `${emptyChange.receipt.taskId}.failure.json`);
 		check(
-			emptyChangeFailurePath !== undefined && existsSync(emptyChangeFailurePath) &&
-			JSON.parse(readFileSync(emptyChangeFailurePath, "utf8")).cause.includes("empty_change"),
+			emptyChange.exitCode !== 0,
+			"empty change-required task is non-shippable",
+		);
+		check(
+			emptyChange.receipt?.verdict === "failed",
+			"empty change-required task returns failed receipt",
+		);
+		const emptyChangeFailurePath =
+			emptyChange.receipt?.taskId === undefined
+				? undefined
+				: join(
+						emptyChangeArtifacts,
+						`${emptyChange.receipt.taskId}.failure.json`,
+					);
+		check(
+			emptyChangeFailurePath !== undefined &&
+				existsSync(emptyChangeFailurePath) &&
+				JSON.parse(readFileSync(emptyChangeFailurePath, "utf8")).cause.includes(
+					"empty_change",
+				),
 			"empty change exposes an actionable acceptance reason",
 		);
 
@@ -571,35 +749,82 @@ export async function runTests(): Promise<void> {
 		writeFileSync(noChangeSpecPath, INTENTIONAL_NO_CHANGE_SPEC, "utf8");
 		const noChange = await runCli(
 			[
-				"--spec", noChangeSpecPath, "--project-dir", noChangeRepo,
-				"--model", "fake/model", "--db", join(root, "intentional-no-change.sqlite"),
-				"--artifacts-dir", join(root, "intentional-no-change-artifacts"),
+				"--spec",
+				noChangeSpecPath,
+				"--project-dir",
+				noChangeRepo,
+				"--model",
+				"fake/model",
+				"--db",
+				join(root, "intentional-no-change.sqlite"),
+				"--artifacts-dir",
+				join(root, "intentional-no-change-artifacts"),
 			],
 			{
 				...deps,
-				workspaceDriver: new JujutsuWorkspaceDriver({ projectDir: noChangeRepo }),
+				workspaceDriver: new JujutsuWorkspaceDriver({
+					projectDir: noChangeRepo,
+				}),
 				host: fakeHost("ok", undefined, { writeResult: false }),
 				write: () => undefined,
 			},
 		);
 		check(noChange.exitCode === 0, "declared intentional no-change task ships");
-		check(noChange.receipt?.verdict === "ship", "intentional no-change returns ship receipt");
+		check(
+			noChange.receipt?.verdict === "ship",
+			"intentional no-change returns ship receipt",
+		);
 
 		const setupArtifacts = join(root, "setup-failure-artifacts");
 		const unsupportedDriver = new JujutsuWorkspaceDriver({ projectDir: repo });
 		unsupportedDriver.isSupported = async () => false;
+		const setupOutput: string[] = [];
 		const setupFailure = await runCli(
 			[
-				"--spec", specPath, "--project-dir", repo, "--model", "fake/model",
-				"--db", join(root, "setup-failure.sqlite"), "--artifacts-dir", setupArtifacts,
+				"--spec",
+				specPath,
+				"--project-dir",
+				repo,
+				"--model",
+				"fake/model",
+				"--db",
+				join(root, "setup-failure.sqlite"),
+				"--artifacts-dir",
+				setupArtifacts,
 			],
-			{ ...deps, workspaceDriver: unsupportedDriver, write: () => undefined },
+			{
+				...deps,
+				workspaceDriver: unsupportedDriver,
+				write: (line) => setupOutput.push(line),
+			},
 		);
-		check(setupFailure.exitCode !== 0, "post-validation setup failure exits nonzero");
+		check(
+			setupFailure.exitCode !== 0,
+			"post-validation setup failure exits nonzero",
+		);
 		const setupTrace = readTrace(setupFailure.tracePath);
-		check(setupTrace.outcome === "failed", "setup failure trace records failed outcome");
-		check(setupTrace.events.some((event) => event.type === "task.failed"), "setup failure trace records task failure");
-		check(setupTrace.taskId === deriveTaskId(SPEC, repo), "first setup failure uses the canonical task identity");
+		check(
+			setupTrace.outcome === "failed",
+			"setup failure trace records failed outcome",
+		);
+		check(
+			setupTrace.events.some(
+				(event) =>
+					event.type === "task.failed" &&
+					event.detail?.stage === "setup" &&
+					event.detail?.code === "internal_error",
+			),
+			"setup failure trace records a stable stage and code",
+		);
+		check(
+			setupOutput.some((line) => line.startsWith("failure artifact: ")) &&
+				setupOutput.some((line) => line.startsWith("trace artifact: ")),
+			"setup failure output names its diagnostic artifacts",
+		);
+		check(
+			setupTrace.taskId === deriveTaskId(SPEC, repo),
+			"first setup failure uses the canonical task identity",
+		);
 
 		const failArtifacts = join(root, "fail-artifacts");
 		const failureGateway = new CapturingGateway();
@@ -634,10 +859,35 @@ export async function runTests(): Promise<void> {
 			"failed run still delivers a durable receipt",
 		);
 		const failedTrace = readTrace(failed.tracePath);
-		check(failedTrace.taskId === failed.receipt?.taskId && failedTrace.runId === failed.receipt?.taskId, "failed trace identity agrees with receipt");
-		check(failedTrace.outcome === "failed", "failed trace records failed outcome");
-		check(failedTrace.events.some((event) => event.type === "verification.completed" && event.detail?.passed === false), "failed trace records verification failure");
-		check(failedTrace.events.some((event) => event.type === "task.failed"), "failed trace records task failure");
+		check(
+			failedTrace.taskId === failed.receipt?.taskId &&
+				failedTrace.runId === failed.receipt?.taskId,
+			"failed trace identity agrees with receipt",
+		);
+		check(
+			failedTrace.outcome === "failed",
+			"failed trace records failed outcome",
+		);
+		check(
+			failedTrace.events.some(
+				(event) =>
+					event.type === "verification.completed" &&
+					event.detail?.passed === false,
+			),
+			"failed trace records verification failure",
+		);
+		check(
+			failedTrace.events.some(
+				(event) =>
+					event.type === "verification.completed" &&
+					typeof event.detail?.evidence === "object",
+			),
+			"failed trace records structural failure evidence",
+		);
+		check(
+			failedTrace.events.some((event) => event.type === "task.failed"),
+			"failed trace records task failure",
+		);
 		check(
 			existsSync(join(failArtifacts, `${failed.receipt?.taskId}.failure.json`)),
 			"verification failure retains failure evidence",
@@ -651,12 +901,12 @@ export async function runTests(): Promise<void> {
 		check(failureSpawns.value === 1, "failure creates one worker session");
 		check(
 			failedTaskId !== undefined &&
-			failureLedger.listSessions(failedTaskId).length === 1,
+				failureLedger.listSessions(failedTaskId).length === 1,
 			"failure ledger has one worker session row",
 		);
 		check(
 			failedTaskId !== undefined &&
-			failureLedger.listWorkspaces(failedTaskId).length === 1,
+				failureLedger.listWorkspaces(failedTaskId).length === 1,
 			"failure ledger has one preserved workspace record",
 		);
 		const failureLifecycle = failureGateway.events.filter((event) =>
@@ -664,8 +914,8 @@ export async function runTests(): Promise<void> {
 		);
 		check(
 			failedTaskId !== undefined &&
-			failureLifecycle.length === 2 &&
-			failureLifecycle.every((event) => event.taskId === failedTaskId),
+				failureLifecycle.length === 2 &&
+				failureLifecycle.every((event) => event.taskId === failedTaskId),
 			"failure event stream has one canonical task lifecycle",
 		);
 		failureLedger.close();
@@ -679,33 +929,78 @@ export async function runTests(): Promise<void> {
 		const receiptFailureOutput: string[] = [];
 		mkdirSync(receiptFailureArtifacts, { recursive: true });
 		const receiptFailureTaskId = deriveTaskId(SPEC, receiptFailureRepo);
-		mkdirSync(join(receiptFailureArtifacts, `${receiptFailureTaskId}.receipt.json`));
+		mkdirSync(
+			join(receiptFailureArtifacts, `${receiptFailureTaskId}.receipt.json`),
+		);
 		const receiptFailure = await runCli(
 			[
-				"--spec", specPath, "--project-dir", receiptFailureRepo, "--model", "fake/model",
-				"--db", join(root, "receipt-failure.sqlite"), "--artifacts-dir", receiptFailureArtifacts,
+				"--spec",
+				specPath,
+				"--project-dir",
+				receiptFailureRepo,
+				"--model",
+				"fake/model",
+				"--db",
+				join(root, "receipt-failure.sqlite"),
+				"--artifacts-dir",
+				receiptFailureArtifacts,
 			],
 			{
 				...deps,
-				workspaceDriver: new JujutsuWorkspaceDriver({ projectDir: receiptFailureRepo }),
+				workspaceDriver: new JujutsuWorkspaceDriver({
+					projectDir: receiptFailureRepo,
+				}),
 				write: (line) => receiptFailureOutput.push(line),
 			},
 		);
-		check(receiptFailure.exitCode === 3, `receipt delivery failure maps to artifact exit (${receiptFailure.exitCode}, ${receiptFailure.error ?? ""})`);
-		check(receiptFailure.receipt?.verdict === "failed", "receipt delivery failure returns a non-ship receipt");
-		check(!receiptFailureOutput.some((line) => line.startsWith("receipt: ")), "receipt delivery failure does not print a ship receipt");
-		const receiptFailureArtifact = receiptFailure.receipt?.taskId === undefined
-			? undefined
-			: join(receiptFailureArtifacts, `${receiptFailure.receipt.taskId}.failure.json`);
 		check(
-			receiptFailureArtifact !== undefined && existsSync(receiptFailureArtifact) &&
-			JSON.parse(readFileSync(receiptFailureArtifact, "utf8")).cause.includes("receipt"),
+			receiptFailure.exitCode === 3,
+			`receipt delivery failure maps to artifact exit (${receiptFailure.exitCode}, ${receiptFailure.error ?? ""})`,
+		);
+		check(
+			receiptFailure.receipt?.verdict === "failed",
+			"receipt delivery failure returns a non-ship receipt",
+		);
+		check(
+			!receiptFailureOutput.some((line) => line.startsWith("receipt: ")),
+			"receipt delivery failure does not print a ship receipt",
+		);
+		const receiptFailureArtifact =
+			receiptFailure.receipt?.taskId === undefined
+				? undefined
+				: join(
+						receiptFailureArtifacts,
+						`${receiptFailure.receipt.taskId}.failure.json`,
+					);
+		check(
+			receiptFailureArtifact !== undefined &&
+				existsSync(receiptFailureArtifact) &&
+				JSON.parse(readFileSync(receiptFailureArtifact, "utf8")).cause.includes(
+					"receipt",
+				),
 			"receipt delivery failure retains a durable failure explanation",
 		);
 		const receiptFailureTrace = readTrace(receiptFailure.tracePath);
-		check(receiptFailureTrace.outcome === "failed", "receipt delivery failure trace is non-ship");
-		check(receiptFailureTrace.events.some((event) => event.type === "receipt.delivered" && event.detail?.delivered === false), "trace reports failed receipt delivery honestly");
-		check(!receiptFailureTrace.events.some((event) => event.type === "receipt.delivered" && event.detail?.delivered === true), "trace does not report a failed receipt as delivered");
+		check(
+			receiptFailureTrace.outcome === "failed",
+			"receipt delivery failure trace is non-ship",
+		);
+		check(
+			receiptFailureTrace.events.some(
+				(event) =>
+					event.type === "receipt.delivered" &&
+					event.detail?.delivered === false,
+			),
+			"trace reports failed receipt delivery honestly",
+		);
+		check(
+			!receiptFailureTrace.events.some(
+				(event) =>
+					event.type === "receipt.delivered" &&
+					event.detail?.delivered === true,
+			),
+			"trace does not report a failed receipt as delivered",
+		);
 
 		// The trace target itself is unwritable, so the CLI must return the
 		// dedicated artifact exit even though the receipt was delivered.
@@ -713,24 +1008,62 @@ export async function runTests(): Promise<void> {
 		initRepo(traceFailureRepo);
 		const traceFailureArtifacts = join(root, "trace-failure-artifacts");
 		mkdirSync(traceFailureArtifacts, { recursive: true });
-		mkdirSync(join(traceFailureArtifacts, `${deriveTaskId(SPEC, traceFailureRepo)}.trace.json`));
+		mkdirSync(
+			join(
+				traceFailureArtifacts,
+				`${deriveTaskId(SPEC, traceFailureRepo)}.trace.json`,
+			),
+		);
 		const traceFailure = await runCli(
 			[
-				"--spec", specPath, "--project-dir", traceFailureRepo, "--model", "fake/model",
-				"--db", join(root, "trace-failure.sqlite"), "--artifacts-dir", traceFailureArtifacts,
+				"--spec",
+				specPath,
+				"--project-dir",
+				traceFailureRepo,
+				"--model",
+				"fake/model",
+				"--db",
+				join(root, "trace-failure.sqlite"),
+				"--artifacts-dir",
+				traceFailureArtifacts,
 			],
-			{ ...deps, workspaceDriver: new JujutsuWorkspaceDriver({ projectDir: traceFailureRepo }), write: () => undefined },
+			{
+				...deps,
+				workspaceDriver: new JujutsuWorkspaceDriver({
+					projectDir: traceFailureRepo,
+				}),
+				write: () => undefined,
+			},
 		);
-		check(traceFailure.exitCode === 3, "trace delivery failure maps to artifact exit");
-		check(traceFailure.receipt?.verdict === "failed", "trace delivery failure returns a non-ship receipt");
-		check(traceFailure.error?.includes("trace artifact delivery failed") === true, `trace delivery failure is actionable (${traceFailure.error ?? ""})`);
-		check(traceFailure.tracePath === undefined, "failed trace delivery is not reported as delivered");
-		const traceFailureArtifact = traceFailure.receipt?.taskId === undefined
-			? undefined
-			: join(traceFailureArtifacts, `${traceFailure.receipt.taskId}.failure.json`);
 		check(
-			traceFailureArtifact !== undefined && existsSync(traceFailureArtifact) &&
-			JSON.parse(readFileSync(traceFailureArtifact, "utf8")).cause.includes("trace"),
+			traceFailure.exitCode === 3,
+			"trace delivery failure maps to artifact exit",
+		);
+		check(
+			traceFailure.receipt?.verdict === "failed",
+			"trace delivery failure returns a non-ship receipt",
+		);
+		check(
+			traceFailure.error?.includes("trace artifact delivery failed") === true,
+			`trace delivery failure is actionable (${traceFailure.error ?? ""})`,
+		);
+		check(
+			traceFailure.tracePath === undefined,
+			"failed trace delivery is not reported as delivered",
+		);
+		const traceFailureArtifact =
+			traceFailure.receipt?.taskId === undefined
+				? undefined
+				: join(
+						traceFailureArtifacts,
+						`${traceFailure.receipt.taskId}.failure.json`,
+					);
+		check(
+			traceFailureArtifact !== undefined &&
+				existsSync(traceFailureArtifact) &&
+				JSON.parse(readFileSync(traceFailureArtifact, "utf8")).cause.includes(
+					"trace",
+				),
 			"trace delivery failure retains a durable failure explanation",
 		);
 
@@ -739,20 +1072,42 @@ export async function runTests(): Promise<void> {
 		const unavailableArtifacts = join(root, "unavailable-artifacts");
 		const unavailable = await runCli(
 			[
-				"--spec", specPath, "--project-dir", unavailableRepo, "--model", "fake/model",
-				"--db", join(root, "unavailable.sqlite"), "--artifacts-dir", unavailableArtifacts,
+				"--spec",
+				specPath,
+				"--project-dir",
+				unavailableRepo,
+				"--model",
+				"fake/model",
+				"--db",
+				join(root, "unavailable.sqlite"),
+				"--artifacts-dir",
+				unavailableArtifacts,
 			],
 			{
 				...deps,
-				workspaceDriver: new JujutsuWorkspaceDriver({ projectDir: unavailableRepo }),
+				workspaceDriver: new JujutsuWorkspaceDriver({
+					projectDir: unavailableRepo,
+				}),
 				host: fakeHost("ok", undefined, { turns: 3, statsAvailable: false }),
 				write: () => undefined,
 			},
 		);
-		check(unavailable.exitCode === 0, `unavailable usage run still ships (${unavailable.exitCode}, ${unavailable.error ?? ""}, ${unavailable.receipt?.verdict ?? "none"})`);
-		check(unavailable.receipt?.turns === 3, `receipt retains every observed turn when stats reject (${unavailable.receipt?.turns ?? "none"})`);
-		check(unavailable.receipt?.usageStatus === "unavailable", "receipt distinguishes unavailable usage from measured zero");
-		check(readTrace(unavailable.tracePath).usage?.status === "unavailable", "trace preserves unavailable usage status");
+		check(
+			unavailable.exitCode === 0,
+			`unavailable usage run still ships (${unavailable.exitCode}, ${unavailable.error ?? ""}, ${unavailable.receipt?.verdict ?? "none"})`,
+		);
+		check(
+			unavailable.receipt?.turns === 3,
+			`receipt retains every observed turn when stats reject (${unavailable.receipt?.turns ?? "none"})`,
+		);
+		check(
+			unavailable.receipt?.usageStatus === "unavailable",
+			"receipt distinguishes unavailable usage from measured zero",
+		);
+		check(
+			readTrace(unavailable.tracePath).usage?.status === "unavailable",
+			"trace preserves unavailable usage status",
+		);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}

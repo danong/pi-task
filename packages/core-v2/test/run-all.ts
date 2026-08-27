@@ -44,6 +44,7 @@ import { runTests as runRouterTests } from "./test-router.ts";
 import { runTests as runSurfacesTests } from "./test-surfaces.ts";
 import { runTests as runSymbolTreeTests } from "./test-symbol-tree.ts";
 import { runTests as runTraceTests } from "./test-trace.ts";
+import { runTests as runTraceReportTests } from "./test-trace-report.ts";
 import { runTests as runVerifyRunTests } from "./test-verify-run.ts";
 import { runTests as runWatchdogDriverTests } from "./test-watchdog-driver.ts";
 import { runTests as runWatchdogTests } from "./test-watchdogs.ts";
@@ -88,6 +89,7 @@ const SUITES: Array<{ name: string; run: () => Promise<void> }> = [
 	{ name: "surfaces", run: runSurfacesTests },
 	{ name: "symbol-tree", run: runSymbolTreeTests },
 	{ name: "trace", run: runTraceTests },
+	{ name: "trace-report", run: runTraceReportTests },
 	{ name: "workflow-plan", run: runWorkflowPlanTests },
 	{ name: "workflow-build", run: runWorkflowBuildTests },
 	{ name: "workflow-receipts", run: runWorkflowReceiptsTests },

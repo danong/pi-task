@@ -44,6 +44,7 @@ import { acquisitionFactoryFromLegacy } from "./context/provider-adapter.ts";
 import { rawContextProviderFactory } from "./context/raw-provider.ts";
 import { ContextArtifactStore } from "./context/artifact-store.ts";
 import type { ContextEvidenceEvent } from "./daemon/parallel.ts";
+import { CORE_V2_MILESTONE, CORE_V2_VERSION } from "./version.ts";
 
 const DEFAULT_STATE_ROOT = ".local/state";
 
@@ -374,7 +375,13 @@ function recordSessionEvent(
 			phase: "session",
 			taskId: trace.taskId,
 			sessionId: `${trace.taskId}-worker`,
-			detail: { message: event.message, code: event.code },
+			detail: {
+				cause: event.message,
+				stage: "session",
+				code:
+					event.code === "timed_out" ? "session_timed_out" : "session_failed",
+				hostCode: event.code,
+			},
 		});
 	} else if (event.type === "yielded") {
 		trace.record({
@@ -397,6 +404,7 @@ function recordSessionEvent(
 
 function createCliTrace(
 	taskId: string,
+	familyId: string,
 	model: string,
 	specMarkdown: string,
 ): TraceCollector {
@@ -408,7 +416,18 @@ function createCliTrace(
 		taskId,
 		provider,
 		config: model.trim(),
-		detail: { modelId: model },
+		detail: {
+			modelId: model,
+			engineVersion: CORE_V2_VERSION,
+			milestone: CORE_V2_MILESTONE,
+			specHash: `sha256:${createHash("sha256").update(specMarkdown).digest("hex")}`,
+			familyId,
+			attemptId: taskId,
+			attemptNumber:
+				taskId === familyId
+					? 1
+					: Number.parseInt(taskId.slice(familyId.length + 2), 10),
+		},
 	});
 	// Context lifecycle evidence is emitted by the selected capability before
 	// the worker spawn; the task prompt itself is not a context artifact.
@@ -488,20 +507,33 @@ export async function runCli(
 	const familyId = deriveTaskId(specMarkdown, projectDir);
 	let trace: TraceCollector | undefined;
 	let traceTaskId = familyId;
+	let runAnnounced = false;
 	let daemon: Awaited<ReturnType<typeof startDaemon>> | undefined;
-	const deliverFailureTrace = (cause: string): CliResult => {
-		trace ??= createCliTrace(traceTaskId, args.model, specMarkdown);
+	const announceRun = (): void => {
+		if (runAnnounced) return;
+		write(`run: ${traceTaskId}`);
+		runAnnounced = true;
+	};
+	const deliverFailureTrace = (
+		cause: string,
+		classification: {
+			stage: "setup" | "internal";
+			code: "internal_error";
+		} = { stage: "internal", code: "internal_error" },
+	): CliResult => {
+		trace ??= createCliTrace(traceTaskId, familyId, args.model, specMarkdown);
+		announceRun();
 		trace.record({
 			type: "failure",
 			phase: "task",
 			taskId: trace.taskId,
-			detail: { message: cause },
+			detail: { cause, ...classification },
 		});
 		trace.record({
 			type: "task.failed",
 			phase: "task",
 			taskId: trace.taskId,
-			detail: { cause },
+			detail: { cause, ...classification },
 		});
 		const failurePath = writeFailureArtifact({
 			artifactsDir: paths.artifactsDir,
@@ -515,6 +547,9 @@ export async function runCli(
 			writeError(
 				`error: trace artifact delivery failed: ${traceDelivery.error}`,
 			);
+		if (failurePath !== undefined) write(`failure artifact: ${failurePath}`);
+		if (traceDelivery.path !== undefined)
+			write(`trace artifact: ${traceDelivery.path}`);
 		const deliveryError =
 			traceDelivery.error === undefined
 				? undefined
@@ -540,7 +575,8 @@ export async function runCli(
 		} finally {
 			identityStore.close();
 		}
-		trace = createCliTrace(traceTaskId, args.model, specMarkdown);
+		trace = createCliTrace(traceTaskId, familyId, args.model, specMarkdown);
+		announceRun();
 		const daemonStarter = dependencies.startDaemon ?? startDaemon;
 		daemon = await daemonStarter(paths.dbPath, { projectDir });
 		const daemonAttemptId = resolveAttemptId(daemon.store, familyId);
@@ -656,13 +692,21 @@ export async function runCli(
 					type: "failure",
 					phase: "artifact",
 					taskId: trace.taskId,
-					detail: { message: "receipt artifact delivery failed" },
+					detail: {
+						cause: "receipt artifact delivery failed",
+						stage: "delivery",
+						code: "delivery_failed",
+					},
 				});
 				trace.record({
 					type: "task.failed",
 					phase: "task",
 					taskId: trace.taskId,
-					detail: { cause: "receipt artifact delivery failed" },
+					detail: {
+						cause: "receipt artifact delivery failed",
+						stage: "delivery",
+						code: "delivery_failed",
+					},
 				});
 			}
 
@@ -763,6 +807,9 @@ export async function runCli(
 				};
 			}
 			write(`receipt: ${JSON.stringify(finalReceipt)}`);
+			write(`receipt artifact: ${deliveredReceiptPath}`);
+			if (traceDelivery.path !== undefined)
+				write(`trace artifact: ${traceDelivery.path}`);
 			return {
 				exitCode: cliExitCode(finalReceipt.verdict, result.conflicts),
 				receipt: finalReceipt,
@@ -779,7 +826,10 @@ export async function runCli(
 		}
 	} catch (error) {
 		const message = validationError(error);
-		return deliverFailureTrace(message);
+		return deliverFailureTrace(message, {
+			stage: "setup",
+			code: "internal_error",
+		});
 	} finally {
 		if (daemon !== undefined) daemon.store.close();
 	}

@@ -15,6 +15,8 @@
  * lives ledger-side; the event carries only capped, structural detail.
  */
 
+import type { VerificationEvidence } from "./verification-driver.ts";
+
 /** The event vocabulary (subsystems §3 initial set). Additive-only. */
 export const TASK_LIFECYCLE_EVENTS = [
 	"task.queued",
@@ -33,6 +35,45 @@ export const TASK_LIFECYCLE_EVENTS = [
 ] as const;
 
 export type TaskLifecycleEventType = (typeof TASK_LIFECYCLE_EVENTS)[number];
+
+/** Structural failure location; details remain in bounded failure artifacts. */
+export const TASK_FAILURE_STAGES = [
+	"setup",
+	"context",
+	"session",
+	"workspace",
+	"verification",
+	"acceptance",
+	"delivery",
+	"workflow",
+	"internal",
+] as const;
+export type TaskFailureStage = (typeof TASK_FAILURE_STAGES)[number];
+
+/** Stable provider-neutral failure classification for traces and reports. */
+export const TASK_FAILURE_CODES = [
+	"invalid_input",
+	"context_failed",
+	"session_failed",
+	"session_timed_out",
+	"worker_failed",
+	"merge_failed",
+	"verification_failed",
+	"artifact_rejected",
+	"delivery_failed",
+	"dependency_failed",
+	"internal_error",
+	"unclassified",
+] as const;
+export type TaskFailureCode = (typeof TASK_FAILURE_CODES)[number];
+
+export interface TaskFailureDetail {
+	cause: string;
+	/** Optional for additive compatibility; core producers always supply it. */
+	stage?: TaskFailureStage;
+	/** Optional for additive compatibility; core producers always supply it. */
+	code?: TaskFailureCode;
+}
 
 /** The receipt verdicts a terminal task.* event can carry (payloads.ts). */
 export type TaskVerdict = "ship" | "escalate" | "failed";
@@ -53,7 +94,11 @@ export type TaskLifecycleEvent =
 	| { type: "session.spawned"; taskId: string; sessionId: string }
 	| { type: "session.yielded"; taskId: string; sessionId: string }
 	| { type: "session.exhausted"; taskId: string; sessionId: string }
-	| { type: "verify.completed"; taskId: string; detail: { passed: boolean } }
+	| {
+			type: "verify.completed";
+			taskId: string;
+			detail: { passed: boolean; evidence?: VerificationEvidence };
+	  }
 	| {
 			type: "review.completed";
 			taskId: string;
@@ -83,7 +128,7 @@ export type TaskLifecycleEvent =
 			type: "task.failed";
 			taskId: string;
 			sessionId?: string;
-			detail: { cause: string };
+			detail: TaskFailureDetail;
 	  }
 	| {
 			type: "task.escalated";

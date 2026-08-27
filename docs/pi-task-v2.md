@@ -353,7 +353,15 @@ Both raw and symbol-tree runs shipped with measured usage; the neutral report
 correctly makes no advantage claim. Validate future matched evidence with
 `mise run m4-proof -- <evidence.json> [report.md]`. This smoke does **not** adopt
 symbol-tree, establish general quality/cost improvement, or provide a user
-continuation workflow. M5 will consume the checkpoint/epoch contracts for
+continuation workflow.
+
+### M4.1 — observability patch
+
+M4.1 hardens verification and trace debuggability without adding transcripts
+or private reasoning. Verification measures per-command `durationMs` (injectable
+clock for determinism), emits bounded structural evidence (`index/digest/exitCode/timedOut/durationMs` with `executed/expected/omitted/capped` capped at 24), and rejects impossible counts. The CLI announces `run: <attemptId>` before execution and prints `receipt/trace/failure artifact:` paths at termination; `model.assigned` now carries `engineVersion/milestone/specHash/familyId/attemptId/attemptNumber`. Every terminal `task.failed` carries a stable `stage`/`code` taxonomy (`setup/context/session/workspace/verification/acceptance/delivery/workflow/internal` × `session_timed_out/worker_failed/verification_failed/...`) for both CLI and daemon paths, and `mise run trace-report -- <trace.json> [report.md]` renders a bounded single-run explanation. The first useful dogfood timeout (67 turns, 108 tool calls, `$0.19`, `prompt exceeded 600000ms`) is retained as `test/fixtures/dogfood/m41-verification-timeout.trace.json` — not a performance baseline, but the evidence that prompted independent execution caps for M5.
+
+M5 will consume the checkpoint/epoch contracts for
 durable sequential continuation and self-hosting.
 
 ### M5 — sequential composition and self-hosting
