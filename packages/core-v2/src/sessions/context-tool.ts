@@ -26,10 +26,12 @@ const CONTEXT_PARAMS_SCHEMA = Type.Union([
 ]);
 
 function safeText(value: unknown): string {
+	// The artifact and handle contracts already bound the number and shape of
+	// returned records. Do not slice the encoded JSON: a character prefix can
+	// make an otherwise bounded artifact unparsable and discard its budgets or
+	// provenance. Source bodies are not part of either contract.
 	const text = JSON.stringify(value);
-	return text === undefined
-		? "{}"
-		: text.slice(0, DEFAULT_CONTEXT_BUDGET.maxCharacters);
+	return text === undefined ? "{}" : text;
 }
 
 export interface ContextToolFallbackEvent {
@@ -48,6 +50,19 @@ export interface ContextToolOptions {
 
 function errorText(error: unknown): string {
 	return (error instanceof Error ? error.message : String(error)).slice(0, 256);
+}
+
+function isInvalidHandleError(error: unknown): boolean {
+	const message = errorText(error).toLowerCase();
+	return (
+		message.includes("unknown") ||
+		message.includes("unsafe") ||
+		message.includes("traversal")
+	);
+}
+
+function isUnsafeHandle(handle: string): boolean {
+	return handle.includes("..") || handle.includes("/") || handle.includes("\\");
 }
 
 /** Minimal provider-neutral fallback for direct tool consumers that did not
@@ -166,10 +181,12 @@ export function makeContextTool(
 								},
 							};
 						} catch (fallbackError) {
-							notifyFallback(error);
 							return rejected(fallbackError);
 						}
 					}
+				}
+				if (params.handles.some(isUnsafeHandle)) {
+					return rejected(new Error("unsafe context handle"));
 				}
 				try {
 					const handles = await provider.resolve(params.handles);
@@ -182,8 +199,39 @@ export function makeContextTool(
 						},
 					};
 				} catch (error) {
-					notifyFallback(error);
-					return rejected(error);
+					// A known-invalid handle is a caller error, not an indexing
+					// failure. Do not emit false fallback evidence for it.
+					if (isInvalidHandleError(error)) return rejected(error);
+					try {
+						try {
+							const handles = await fallbackProvider.resolve(params.handles);
+							notifyFallback(error);
+							return {
+								content: [{ type: "text" as const, text: safeText({ handles }) }],
+								details: {
+									status: "fallback",
+									provider: fallbackProvider.identity.id,
+									selectedCount: handles.length,
+								},
+							};
+						} catch {
+							// Raw has no resolvable handles. Its empty artifact is the
+							// explicit no-injection result for a failed index lookup.
+							const artifact = await fallbackProvider.query({ query: "" });
+							notifyFallback(error, artifact);
+							return {
+								content: [{ type: "text" as const, text: safeText(artifact) }],
+								details: {
+									status: "fallback",
+									provider: artifact.provider.id,
+									selectedCount: artifact.handles.length,
+									omittedCount: artifact.omissions.count,
+								},
+							};
+						}
+					} catch (fallbackError) {
+						return rejected(fallbackError);
+					}
 				}
 			} catch (error) {
 				return rejected(error);

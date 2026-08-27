@@ -153,6 +153,105 @@ export async function runTests(): Promise<void> {
 			"async retrieval failure returns bounded raw fallback and evidence",
 		);
 
+		let resolveFallback:
+			{ fallbackProvider: string; artifact: string | undefined } | undefined;
+		const resolveFailingProvider: ContextProvider = {
+			identity: { id: "broken-index", version: "1" },
+			compile: symbol.compile.bind(symbol),
+			query: symbol.query.bind(symbol),
+			resolve: () => {
+				throw new Error("index unavailable");
+			},
+		};
+		const resolveFallbackTool = makeContextTool(resolveFailingProvider, {
+			fallbackProvider: raw,
+			onFallback: (event) => {
+				resolveFallback = {
+					fallbackProvider: event.fallbackProvider.id,
+					artifact: event.artifact?.provider.id,
+				};
+			},
+		});
+		const resolvedAfterFailure = await resolveFallbackTool.execute(
+			"resolve-fallback",
+			{ action: "resolve", handles: ["h-0123456789abcdef"] },
+			undefined,
+			undefined,
+			undefined as never,
+		);
+		const resolvedFallbackText =
+			(resolvedAfterFailure.content[0] as { text?: string } | undefined)?.text ?? "";
+		let resolvedFallbackArtifact: { provider?: { id?: string }; budget?: unknown };
+		try {
+			resolvedFallbackArtifact = JSON.parse(resolvedFallbackText) as typeof resolvedFallbackArtifact;
+		} catch {
+			resolvedFallbackArtifact = {};
+		}
+		check(
+			(resolvedAfterFailure.details as { status?: string }).status === "fallback" &&
+			resolvedFallbackArtifact.provider?.id === "raw" &&
+			resolvedFallbackArtifact.budget !== undefined &&
+			resolveFallback?.fallbackProvider === "raw" &&
+			resolveFallback.artifact === "raw",
+			"handle resolution failure returns a raw artifact and records actual fallback",
+		);
+
+		let invalidFallbackNotified = false;
+		const invalidTool = makeContextTool(symbol, {
+			fallbackProvider: raw,
+			onFallback: () => {
+				invalidFallbackNotified = true;
+			},
+		});
+		await invalidTool.execute(
+			"resolve-invalid",
+			{ action: "resolve", handles: ["../secret"] },
+			undefined,
+			undefined,
+			undefined as never,
+		);
+		check(!invalidFallbackNotified, "invalid handles do not claim a fallback");
+
+		const largeRoot = join(root, "large");
+		mkdirSync(join(largeRoot, "src"), { recursive: true });
+		for (let index = 0; index < 32; index += 1) {
+			writeFileSync(
+				join(largeRoot, "src", `widget-${index}.ts`),
+				`export function createWidget${index}(): string { return "fixture"; }\n`,
+				"utf8",
+			);
+		}
+		const largeSymbol = createSymbolTreeContextProvider({
+			root: largeRoot,
+			sourceRevision: "fixture-large",
+		});
+		const largeTool = makeContextTool(largeSymbol);
+		const largeQuery = await largeTool.execute(
+			"large-query",
+			{ action: "query", query: "widget" },
+			undefined,
+			undefined,
+			undefined as never,
+		);
+		const largeQueryText =
+			(largeQuery.content[0] as { text?: string } | undefined)?.text ?? "";
+		try {
+			const largeArtifact = JSON.parse(largeQueryText) as {
+				budget?: { maxCharacters?: number };
+				handles?: Array<{ provenance?: { treeIdentity?: string } }>;
+			};
+			check(
+				largeArtifact.budget?.maxCharacters === DEFAULT_CONTEXT_BUDGET.maxCharacters &&
+				(largeArtifact.handles?.length ?? 0) > 0 &&
+				largeArtifact.handles?.every(
+					(handle) => handle.provenance?.treeIdentity !== undefined,
+				) === true,
+				"large context query remains valid JSON with budget and provenance",
+			);
+		} catch {
+			errors.push("large context query must return valid JSON");
+		}
+
 		const tool = makeContextTool(symbol);
 		const queried = await tool.execute(
 			"query-1",
