@@ -31,6 +31,7 @@ export function runTests(): Promise<void> {
 	try {
 		mkdirSync(join(root, "src"), { recursive: true });
 		mkdirSync(join(root, "config"), { recursive: true });
+		mkdirSync(join(root, "nested", ".git"), { recursive: true });
 		mkdirSync(outside, { recursive: true });
 
 		// Deliberately create paths out of order; output ordering must not depend
@@ -68,7 +69,6 @@ export function runTests(): Promise<void> {
 		writeFileSync(join(root, "huge.ts"), hugeContent, "utf8");
 
 		for (const ignored of [
-			".git",
 			".jj",
 			"node_modules",
 			"vendor",
@@ -82,6 +82,12 @@ export function runTests(): Promise<void> {
 				"utf8",
 			);
 		}
+		writeFileSync(join(root, ".git"), "gitdir: ../worktrees/repo\n", "utf8");
+		writeFileSync(
+			join(root, "nested", ".git", "ignored.ts"),
+			"export const leakedFromGitDirectory = true;\n",
+			"utf8",
+		);
 
 		writeFileSync(
 			join(outside, "secret.ts"),
@@ -175,24 +181,23 @@ export function runTests(): Promise<void> {
 		check(
 			first.entries
 				.filter((entry) => entry.status === "oversized")
-				.every((entry) => entry.contentIdentityScope === "prefix"),
-			"oversized files disclose their bounded identity scope",
+				.every((entry) => entry.contentIdentityScope === "full"),
+			"oversized files disclose their full-content identity scope",
 		);
 
-		// Mutate within the bounded prefix while preserving the file length.
-		const changedWithinPrefix = hugeContent.replace(
-			"hiddenBySize",
-			"hiddenBySizE",
+		// Mutate beyond the retained descriptor prefix while preserving the
+		// file length. Identity must still cover the complete byte stream.
+		const changedBeyondPrefix = `${hugeContent.slice(0, -1)}y`;
+		check(
+			changedBeyondPrefix.length === hugeContent.length,
+			"oversized tail mutation preserves file length",
 		);
 		check(
-			changedWithinPrefix.length === hugeContent.length,
-			"oversized mutation preserves file length",
+			changedBeyondPrefix.slice(0, first.limits.maxFileBytes + 1) ===
+				hugeContent.slice(0, first.limits.maxFileBytes + 1),
+			"oversized mutation is beyond the retained descriptor prefix",
 		);
-		check(
-			first.limits.maxFileBytes > 0,
-			"oversized mutation is within the readable prefix",
-		);
-		writeFileSync(join(root, "huge.ts"), changedWithinPrefix, "utf8");
+		writeFileSync(join(root, "huge.ts"), changedBeyondPrefix, "utf8");
 		const oversizedMutation = scanSymbolTree(options);
 		const mutatedHuge = oversizedMutation.entries.find(
 			(entry) => entry.path === "huge.ts",
@@ -203,15 +208,19 @@ export function runTests(): Promise<void> {
 		check(
 			mutatedHuge?.sizeBytes === originalHuge?.sizeBytes &&
 				mutatedHuge?.contentIdentity !== originalHuge?.contentIdentity,
-			"a same-size mutation within the bounded prefix changes oversized content identity",
+			"a same-size mutation beyond the retained prefix changes oversized content identity",
 		);
 		check(
 			oversizedMutation.treeIdentity !== first.treeIdentity,
 			"an oversized content mutation changes tree identity",
 		);
 
+		check(!paths.includes(".git"), "root Git worktree metadata file is absent");
+		check(
+			!paths.some((path) => path.split("/").includes(".git")),
+			"Git metadata directories are absent at every depth",
+		);
 		for (const forbidden of [
-			".git/",
 			".jj/",
 			"node_modules/",
 			"vendor/",

@@ -3,8 +3,8 @@
  *
  * The scanner is deliberately independent of jj, models, and network access.
  * It walks only real filesystem entries beneath a canonical repository root,
- * reads only a configured prefix (plus one oversized probe byte), retaining
- * bounded content for parsing and identity. Unsupported,
+ * reads a configured prefix for parsing while hashing the complete file in
+ * bounded chunks. Unsupported,
  * binary, oversized, and unreadable files remain visible as explicit entries
  * rather than making the whole index fail.
  */
@@ -249,23 +249,30 @@ interface HashedContent {
 }
 
 /**
- * Hash only the bounded descriptor prefix, including one byte to detect an
- * oversized file. The descriptor is opened once by the caller, so a path
- * replacement cannot redirect a later read to a different file.
+ * Hash the complete file in bounded chunks while retaining only the bounded
+ * descriptor prefix for parsing. The descriptor is opened once by the caller,
+ * so a path replacement cannot redirect a later read to a different file.
  */
 function hashContent(fd: number, byteLimit: number): HashedContent {
 	const hash = createHash("sha256");
 	const prefixChunks: Buffer[] = [];
 	let prefixBytes = 0;
-	while (prefixBytes < byteLimit) {
-		const chunkLength = Math.min(HASH_CHUNK_BYTES, byteLimit - prefixBytes);
-		const chunk = Buffer.allocUnsafe(chunkLength);
-		const count = readSync(fd, chunk, 0, chunkLength, null);
+	while (true) {
+		const chunk = Buffer.allocUnsafe(HASH_CHUNK_BYTES);
+		const count = readSync(fd, chunk, 0, chunk.length, null);
 		if (count === 0) break;
 		const bytes = chunk.subarray(0, count);
 		hash.update(bytes);
-		prefixChunks.push(Buffer.from(bytes));
-		prefixBytes += count;
+		if (prefixBytes < byteLimit) {
+			const retained = bytes.subarray(
+				0,
+				Math.min(bytes.length, byteLimit - prefixBytes),
+			);
+			if (retained.length > 0) {
+				prefixChunks.push(Buffer.from(retained));
+				prefixBytes += retained.length;
+			}
+		}
 	}
 	return {
 		prefix: Buffer.concat(prefixChunks, prefixBytes),
@@ -391,7 +398,7 @@ function readEntry(
 	const bytes = hashed.prefix;
 	const oversized =
 		_sizeBytes > limits.maxFileBytes || bytes.length > limits.maxFileBytes;
-	const scope: ContentIdentityScope = oversized ? "prefix" : "full";
+	const scope: ContentIdentityScope = "full";
 	const binary = isBinary(relPath, bytes);
 	if (oversized) {
 		return {
@@ -514,7 +521,11 @@ export function scanSymbolTree(options: ScanSymbolTreeOptions): SymbolTree {
 			continue;
 		}
 		for (const child of children) {
-			if (IGNORED_DIRECTORY_NAMES.has(child.name)) continue;
+			// Git worktree metadata is a file in linked worktrees and a directory
+			// in ordinary repositories; neither form belongs in the symbol tree.
+			if (child.name === ".git") continue;
+			if (child.isDirectory() && IGNORED_DIRECTORY_NAMES.has(child.name))
+				continue;
 			const fullPath = resolve(directory, child.name);
 			if (!isWithinRoot(root, fullPath) || child.isSymbolicLink()) continue;
 			if (child.isDirectory()) {
