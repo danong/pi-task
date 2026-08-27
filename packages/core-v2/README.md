@@ -1,324 +1,108 @@
 # core-v2 — pi-task-v2 core package
 
-The strict-typed engineering bar for pi-task-v2 (docs/pi-task-v2.md §8, M0).
-This subtree holds the kernel contract seams and the ledger store — the
-surfaces the v2 daemon builds on — plus their hermetic tests. It is a
-type-checked island deliberately **excluded** from the v1 engine under
-`extensions/`, whose procedural modules are intentionally out of scope for
-the strict gate.
+Strict-typed kernel for [pi-task-v2](../../docs/pi-task-v2.md) (§8, M0). This subtree holds the six contract seams, ledger, context lifecycle, and daemon — the surfaces the v2 engine builds on — plus hermetic tests. It is a type-checked island **excluded** from the v1 engine under [`extensions/`](../../extensions/).
 
-## Current foundation and context-prototype status
+Source of truth is [`docs/pi-task-v2.md`](../../docs/pi-task-v2.md) and [`docs/pi-task-v2-subsystems.md`](../../docs/pi-task-v2-subsystems.md); [`docs/pi-task-v2-future.md`](../../docs/pi-task-v2-future.md) is deferred work. Historical material is archived under [`../../docs/old/`](../../docs/old/README.md) and is non-normative. The accepted context ownership decision is [`adr/context-control-plane.md`](../../docs/adr/context-control-plane.md).
 
-M1–M3 are complete as an evidence-backed MVP foundation. M1 supplies the
-versioned and bounded provider-neutral trace contract, observed turn events,
-explicit `measured`/`unavailable` usage status, and versioned baseline trace
-fixtures. Fixtures under `test/fixtures/` are evidence inputs for testing
-trace derivation and reporting; they are not performance claims or model
-defaults.
+## Status
 
-M2 makes `## Artifact Policy` mandatory at the CLI ingress. After integration,
-the engine mechanically checks required artifacts, changed paths, the
-engine-derived VCS identity, verification, and receipt/trace delivery. Typed
-rejection and recovery evidence produces a non-ship outcome when acceptance or
-delivery fails. Acceptance does not prove user intent beyond declared artifacts
-and verification.
+Implementation is authoritative for shipped behavior.
 
-M3 makes checklist registration sensitive to requirement count, uses one-shot
-`yield` with `files_changed`, `summary`, and `deviations`, and keeps VCS
-finalization and verification engine-owned. Real-model efficiency improvement
-has not yet been measured. The current runnable interface is:
+| Milestone                                 | State                  | What it proves                                                                                                                                                                      |
+| ----------------------------------------- | ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **M1** trace + ledger + router            | ✓ shipped              | Versioned, bounded, provider-neutral trace; `measured`/`unavailable` usage; routing                                                                                                 |
+| **M2** policy + workspace                 | ✓ shipped              | Strict `## Artifact Policy` ingress; engine-owned jj finalization + verification; acceptance                                                                                        |
+| **M3** worker + yield                     | ✓ shipped              | Requirement-sensitive checklist; one-shot `yield`; engine-owned VCS/verification                                                                                                    |
+| **M4** context control plane              | ✓ shipped              | Kernel-owned plans, artifact store, economic/window/attention budgets, cache-affine assembly, checkpoints, epochs                                                                   |
+| **M4.1** verification + observability     | ✓ shipped (`b10b3636`) | Measured `durationMs`, bounded `VerificationEvidence` (24 digests, `executed/expected/omitted/capped`), `stage/code` taxonomy, `run:` announcement + artifact paths, `trace-report` |
+| **M5** sequential children + self-hosting | next                   | Parent/child ledger, checkpoint handoffs, self-hosting loop (needs execution caps)                                                                                                  |
+| **M6**                                    | open                   | Cutover/scale deferred until M5 gate                                                                                                                                                |
+
+`src/version.ts` is `CORE_V2_MILESTONE="M4.1"` / `CORE_V2_VERSION="0.0.0-m4.1"`.
+
+Fixtures under [`test/fixtures/`](./test/fixtures/) are evidence inputs for derivation/reporting, not performance claims. `test/fixtures/m4-proof/` holds a minimal matched Luna smoke (neutral report); `test/fixtures/dogfood/m41-verification-timeout.trace.json` is a retained timeout (`67 turns, $0.19, prompt exceeded 600000ms`) that motivated execution caps.
+
+## Quickstart
 
 ```sh
 mise run v2 -- --spec ./task.md --project-dir . --model provider/model
+# or PI_TASK_V2_MODEL=provider/model mise run v2 -- --spec ./task.md --project-dir .
 ```
 
-The model is a required placeholder value, not a provider default; an explicit
-model or `PI_TASK_V2_MODEL` is needed. A spec must include:
+Spec must contain `Goal`, `Requirements`, `Verification`, and a strict `## Artifact Policy`:
 
 ```markdown
 ## Artifact Policy
 
 - Required: reports/result.json
 - Change required
+
+# or: - Intentional no-change
 ```
 
-Use `- Intentional no-change` for an explicitly verified no-diff task. Paths
-must be repository-relative. The CLI's user-state artifact directory contains
-receipt, trace, and failure/recovery artifacts. It announces the run identity
-before execution and names the durable artifacts at termination. Explain one
-run or aggregate validated traces with:
+Paths are repository-relative; strict ingress rejects missing/empty/unsafe/duplicate/contradictory/unknown entries. The CLI validates before provider work, provisions one isolated jj workspace, runs one worker, verifies the integrated tree, and atomically delivers ` <runId>.trace.json` + `<runId>.receipt.json` under project-keyed user state (`XDG_STATE_HOME` when set, else `~/.local/state`). It announces `run: <attemptId>` early and prints `receipt/trace/failure artifact:` at termination. `attemptId` is `familyId` or `familyId-a2…`; `specHash`/`familyId`/`engineVersion` are on `model.assigned`.
 
-```sh
-mise run trace-report -- <trace.json> [report.md]
-mise run bench-report -- --traces-dir <trace-directory> --label <label>
-```
+Context: `--context raw` (default, empty plan) or `--context symbol-tree` (opt-in bounded handles + `context` query/resolve tool). Raw has no index dependency; symbol-tree failures degrade explicitly. See [context-control-plane ADR](../../docs/adr/context-control-plane.md).
 
-Verification events carry bounded command digests, exit/timeout status, and
-measured durations without command text or output. Terminal failures carry a
-stable stage and code. The single-run report renders those facts alongside
-model/attempt identity, context/cache evidence, tool activity, usage, and
-sibling artifact availability.
+## Observability
 
-M3 grounding evaluation is dry by default (`mise run eval-grounding`) and
-writes real-run evidence, when requested with `-- --run`, under the selected
-metrics directory as `eval-grounding/records.jsonl` and `summary.md`.
+Every run emits a canonical, versioned, provider-neutral trace ([`src/contracts/trace.ts`](./src/contracts/trace.ts), [`src/contracts/gateway-events.ts`](./src/contracts/gateway-events.ts)). No transcript or private reasoning is stored.
 
-M4's context lifecycle is implementation-complete under hermetic conformance.
-`src/context/` now contains deterministic planning/assembly, a bounded local
-content-addressed artifact store, declarative checkpoints, and execution epoch
-primitives. The lifecycle contracts distinguish economic, window, and
-attention budgets; cache strategy is a plan while actual cache-read tokens
-remain usage evidence. The CLI stores optional context state under its existing
-project-keyed user-state root and records plans, artifact activity, epochs, and
-typed degradation in canonical traces.
-
-The deterministic symbol tree remains an opt-in acquisition experiment. The
-CLI selects `raw` (default) or `symbol-tree` via `--context`; raw is an empty
-plan with no static index dependency. Symbol-tree provides bounded handles and
-the `context` query/resolve tool while preserving ordinary exploration. Use
-`mise run context-eval` for the zero-model dry plan and `mise run
-context-report -- <trace-jsonl>` for evidence-only comparison.
-Kernel/session/tool code consumes the explicit acquisition/materialization
-contract; old provider translation is localized in `context/provider-adapter.ts`.
-A minimal matched measured smoke is retained under `test/fixtures/m4-proof/`;
-validate equivalent evidence with `mise run m4-proof -- <evidence.json>
-[report.md]`. The neutral result does not establish a general quality/cost
-advantage or adopt symbol-tree. The useful-dogfood timeout fixture under
-`test/fixtures/dogfood/` remains a debugging input, not a performance baseline;
-it established that subsequent real runs need independent execution caps. M5
-will build typed sequential continuation and self-hosting on these contracts;
-M6 scope remains intentionally open.
+- **Verification:** per-command `durationMs` (injectable clock), bounded `VerificationEvidence` (`index/digest/exitCode/timedOut/durationMs`, `executed/expected/omitted/capped` with `executed ≤ expected` and `capped == omitted>0`, capped at 24), never `command`/`stdout`/`stderr` text — tails stay in `.failure.json`.
+- **Failures:** every terminal `task.failed` carries `stage` (`setup/context/session/workspace/verification/acceptance/delivery/workflow/internal`) and `code` (`session_timed_out/worker_failed/verification_failed/...`) across CLI, single-run, parallel, and scheduler paths; `FORBIDDEN_DETAIL_KEY` blocks `transcript`/`reasoning`/`stdoutTail`/`output` etc. while allowing legitimate `tool.started:command`.
+- **Debug one run:**
+  ```sh
+  mise run trace-report -- <trace.json> [report.md]
+  ```
+  Renders outcome, model/engine/specHash/family/attempt, elapsed, turns/tools/errors/repeated-reads, context `selected/omitted/tokens/cache`, verification `executed/expected` + measured time, failure `stage/code/cause`, usage, and sibling `receipt`/`failure` presence — no output tails.
+- **Aggregate:**
+  ```sh
+  mise run bench-report -- --traces-dir <dir> --label <label>
+  mise run m4-proof -- <evidence.json> [report.md]   # matched raw vs symbol-tree proof
+  mise run context-eval                             # dry plan, no LLM
+  mise run context-report -- <trace.jsonl>          # canonical evidence only
+  ```
 
 ## Layout
 
-- `src/contracts/` — the six kernel seams and their typed boundary payloads
-  (FR-2 / FR-3). Each seam is one file with no shared mutable state:
-  - `payloads.ts` — the five prompt-bound artifact schemas
-    (`Spec`, `ExecutionBundle`, `Yield`, `HandoffBundle`, `TaskReceipt`)
-    as zod schemas (deterministic-serialization rule, NFR-3/NFR-4)
-  - `serialize.ts` — byte-stable prompt serialization
-  - `context-lifecycle.ts` — M4 plans, artifact references, multidimensional
-    budgets, cache strategy, prompt segments, checkpoints, and epochs;
-    `context-provider.ts` remains the bounded acquisition compatibility seam
-  - `workspace-driver.ts`, `environment-driver.ts`, `context-compressor.ts`,
-    `verification-driver.ts`, `task-plugin.ts`, `control-surface.ts`
-  - `index.ts` — the contracts barrel re-exporting every seam (import from
-    here, not individual files)
-- `src/context/` — M4 information lifecycle: acquisition adapters, raw and
-  symbol-tree candidates, immutable local artifact storage, pure planning and
-  assembly, declarative checkpoints, execution epochs, and honest evaluation
-  inputs. The kernel modules do not import the optional symbol index on raw
-  execution.
-- `src/ledger/store.ts` — the SQLite ledger (`node:sqlite`, zero new
-  dependencies): tasks, micro-sessions, routing feedback, workspaces; a
-  versioned additive migration (opening an older DB upgrades in place), the
-  in-flight status vocabulary, and boot-reconciliation (`reconcileOnBoot`).
-- `src/router/route.ts` — the M1.1 router skeleton (docs/pi-task-v2.md
-  §5.3/§5.4): `routeTask`, a pure decision function mapping spec metadata,
-  the resolved tier config, and per-repo `routing_feedback` telemetry to
-  `{ planMode, tier, lane }`, plus the feedback-aggregation helpers and
-  the named (config-overridable) routing thresholds.
-- `src/sessions/` — the M1.2 in-process session host: `host.ts` spawns one
-  pi SDK `AgentSession` per role (no subprocess, no RPC; model resolution
-  is typed and never silent), `tools.ts` registers the engine-side `yield`
-  and `checklist` tools, and `SDK-NOTES.md` records the surveyed SDK
-  surface the host relies on.
-- `src/guards/` — the M1.3 safety layer: `watchdogs.ts` (pure settle /
-  no-progress / wall / per-tool-timeout decisions), `watchdog-driver.ts`
-  (injectable-timer driver carrying out the decisions on a session
-  handle), and `artifacts.ts` (capped `.failure.json` diagnostics).
-- `src/daemon/` — the M1.4 assembly: `task-runner.ts` runs the full pipeline
-  (validate → route → host → guard → yield → verify → ledger → receipt),
-  `start.ts` opens the ledger and reconciles stale in-flight tasks at boot.- `src/verify/run.ts` — the M1.3 verification runner: per-command timeout,
-  suite wall with bounded grace, typed per-command results with capped
-  output tails.
-- `src/environments/` — the M2.b environment ladder's first rungs:
-  `HostEnvironmentDriver` (bare exec, hard per-command timeout → exit 124,
-  capped tails) and `MiseEnvironmentDriver` (`mise exec --` for project-
-  pinned tools; capability-detected, null when absent). argv is preserved
-  exactly — the driver never re-wraps through a shell.
-- `src/workspaces/` — the M2.c workspace seam: `jj.ts` ports v1's ladder
-  primitives verbatim (change-id-tracked atomic revset-union squash,
-  per-file union resolution via git merge-file --union, consistency gate
-  over the pre-merge file union, clean-WC guard, fetch-if-remote,
-  bounded every-call timeouts), and `jj-driver.ts` implements the
-  WorkspaceDriver seam on top with two integration modes: `task-base`
-  (AI-authored base + atomic combine + checkoutMerged) and
-  `feature-branch` (per-worker bookmarks; integration is the operator's
-  act). The driver NEVER pushes. Failure-artifact contract
-  (docs/pi-task-design.md): `failure-hygiene.ts` ports v1's rescue /
-  post-mortem machinery — one goal-named rescue commit per affected tree,
-  only provably engine-authored empty stubs abandoned, undescribed
-  snapshots folded into the rescue, workspace chains stacked by stable
-  change id (idempotent re-runs), machine-grep-able recovery lines — and
-  `reconcileRepoArtifacts` gives boot (`startDaemon(projectDir)`) and the
-  driver (`recoverFailedRun`) their engine-side reconciliation entry
-  points; user-authored content is never destroyed.
-- `src/daemon/` — the M1.4 assembly: `task-runner.ts` (`runTask`: validate
-  → route → guarded session → yield → verify → ledger → receipt;
-  deterministic worker prompt; injectable host for tests),
-  `parallel.ts` (`runParallelTask`: the shared composition core; isolated mode
-  selects one canonical worker/workspace, while parallel mode runs N workers
-  across driver-created workspaces → one combine → ONE verification gate on the
-  integrated tree through the EnvironmentDriver; residual conflicts escalate,
-  never ship),
-  and `start.ts` (`startDaemon`: open ledger + boot reconciliation).
-  - Measured efficiency (NFR-3): after a session settles the runner reads
-    `SessionHandle.stats()` — the SDK already prices usage — and records
-    real tokens/USD plus the COR grounding ratio on every receipt; the
-    parallel aggregate sums per-worker usage and recomputes cor from the
-    sums (never an average of ratios). The grounding numerator is an
-    approximation: ≈4 utf-8 bytes per token over system prompt + spec,
-    computed where the worker prompt is built; the denominator counts
-    everything billed as prompt (`input + cacheRead + cacheWrite`). A
-    rejecting stats() read — or a spawn failure with no session at all —
-    zeroes the usage fields instead of failing the run (`USAGE_UNAVAILABLE`).
-    Receipts stay ≈150 tokens (§5.6): flat numeric fields only.
-- `test/e2e-parity.ts` — the M1 exit gate: one real single-worker run using
-  an explicitly configured model against a temp jj repo, asserting ship
-  receipt + verification + ledger rows. Manual/network gate — NOT part of
-  `mise run test`; run it with
-  `timeout 1200 npx tsx packages/core-v2/test/e2e-parity.ts`.
-- `test/e2e-parallel.ts` — the M2 exit gate: multiple real workers using an
-  explicitly configured model through the real jj driver in a temp jj repo
-  (disjoint files, atomic combine, aggregate receipt). Same manual-gate rules:
-  `timeout 1800 npx tsx packages/core-v2/test/e2e-parallel.ts`.
-- `src/guards/` — M1.3 operational hardening (FR-7/FR-8):
-  - `watchdogs.ts` — pure watchdog decisions over observed session events
-    - elapsed time (`continue` / `nudge(text)` / `abort(reason)`), every
-      bound a named constant
-  - `watchdog-driver.ts` — the stateful driver applying those decisions
-    (injectable timer source; `attachWatchdogs` propagates nudges/aborts
-    to a live session handle)
-  - `artifacts.ts` — failure artifacts (R4): bounded atomic
-    `<artifactsDir>/<runId>.failure.json` writes ({ cause, lastEvent?,
-    lastTool?, stderrTail? }, each field capped by a named constant,
-    never throws on write failure)
-- `src/verify/run.ts` — the verification runner (M1.3 R3, FR-6): runs a
-  spec's bash commands sequentially with per-command timeouts, a suite
-  wall clock, and bounded grace for the command in flight at expiry;
-  typed `{ passed, failures: [{ command, exitCode, stderrTail }] }`
-  with capped output tails.
-- `src/version.ts` — the package identity (milestone `CORE_V2_MILESTONE`,
-  version `CORE_V2_VERSION`).
-- `src/plugins/` — the config-driven plugin kernel (subsystems §3):
-  `loader.ts` reads `[plugins]` paths from task.toml (resolved against
-  cwd) and imports each file's default export, failing typed
-  (`PluginLoadError`: not_found / invalid_config / invalid_export /
-  import_failed, each with recoverable guidance — never a silent skip);
-  `hooks.ts` runs transform/lifecycle/register hooks per-call isolated
-  (a throwing plugin is reported through a sink and the untransformed
-  value proceeds) and re-validates every transformed bundle through its
-  zod schema so an invalid bundle can never reach a prompt prefix.
-
-## How to write a plugin
-
-1. Create ONE file with ONE default export implementing `TaskPlugin`
-   (`src/contracts/task-plugin.ts`): a `name` string plus any subset of
-   `registerTriggers`, `transformExecutionBundle`, `transformHandoff`,
-   `onLifecycleEvent`.
-2. List the path under `[plugins] paths = [...]` in your task.toml
-   (relative entries resolve against cwd). Bad entries fail typed with a
-   `PluginLoadError` from `src/plugins/errors.ts` — see its codes for the
-   failure taxonomy; nothing loads silently.
-3. Write one HERMETIC test exercising the real load path — import your
-   file via `loadPluginsFromToml` / `importPluginAt`
-   (`src/plugins/loader.ts`) and drive the hook you implement through
-   `src/plugins/hooks.ts`. A test that only covers pure helpers does not
-   pass review (FR-11). See `test/test-gateway-plugins.ts` for the
-   pattern over real plugin files.
-
-- `src/bench/` — the M3 suite-03 grounding-evaluation harness
-  (docs/pi-task-v2.md §7): `grounding-configs.ts` (the grounding-mode
-  vocabulary — bare / current engine / daemon cold, prewalk, bundle, fork
-  (+ pruned), with strong-model variants gated behind `--allow-strong`),
-  `grounding-plan.ts` (pure (config × spec) plan assembly against the
-  owner file's recorded baselines), `grounding-metrics.ts` (per-config
-  aggregation — COR recomputed from summed grounding over summed billed
-  input, never averaged ratios; NFR-3 cost normalization as USD per
-  changed file; NFR-4 cache-affinity violation counting; wins/loses
-  rendering), and `grounding-store.ts` (append-only JSONL evidence + the
-  summary artifact). Specs/fixtures/baselines are NOT duplicated here —
-  they live in the owner file `extensions/task/bench-regression.ts`
-  (`GROUNDING_SPECS`, `GROUNDING_LAYERS`, `baseline` tables); the CLI glue
-  is `extensions/task/grounding-eval.ts`, one command via
-  `mise run eval-grounding` (dry plan by default, zero LLM; `-- --run`
-  for real runs).
-- `test/` — hermetic tests mirroring the layout:
-  - `test-contracts.ts` — schema round-trips, deterministic serialization,
-    ControlSurface typing, and per-seam smoke tests over in-memory fakes
-  - `test-ledger.ts` — migration-on-open, CRUD round-trips, constraint
-    rejection, boot reconciliation
-  - `test-router.ts` — pure router decisions: every plan mode reachable,
-    feedback switching (hit-rate/deviation thresholds), empty-feedback
-    defaults, threshold overrides, and determinism
-  - `test-grounding-eval.ts` — the grounding harness: config enumeration
-    - strong-model gating, plan assembly vs owner-file baselines,
-      COR-from-sums aggregation, NFR-3/NFR-4 normalization, summary
-      rendering, and the JSONL evidence round-trip
-  - `test-watchdogs.ts`, `test-watchdog-driver.ts` — the watchdog decision
-    matrix and driver behavior over fake timers
-  - `test-verify-run.ts`, `test-artifacts.ts` — real-bash verification
-    semantics (pass/fail/timeout/wall/grace, capped tails) and failure-
-    artifact shape/caps/never-throw
-  - `test-gateway-plugins.ts` — the plugin kernel over REAL plugin files:
-    loader typed failures + valid round-trips, sequential transform
-    ordering, schema re-validation surfacing, throw isolation (name +
-    hook attribution), and daemon wiring (bundle transform before
-    grounding attach, handoff transform before retry)
-  - `run-all.ts` — the aggregator (see below)
+| Path                                           | Owns                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`src/contracts/`](./src/contracts/)           | Six seams, one file each, no shared mutable state: `payloads.ts` (Spec/ExecutionBundle/Yield/HandoffBundle/TaskReceipt as zod, `serialize.ts` byte-stable), `context-lifecycle.ts` (M4.1 plans, budgets, cache, checkpoints, epochs) + `context-provider.ts` (compat) + `verification-driver.ts` (bounded evidence, 24 digests), `workspace-driver.ts`, `environment-driver.ts`, `context-compressor.ts`, `task-plugin.ts`, `control-surface.ts`, `gateway-events.ts` (`stage/code`), `trace.ts`, `index.ts` barrel |
+| [`src/context/`](./src/context/)               | M4.1 lifecycle: `acquisition.ts` / `provider-adapter.ts` (explicit acquisition/materialization caps), `raw-provider.ts` / `symbol-tree.ts` + `providers.ts`, `artifact-store.ts` (content-addressed, project-keyed user state), `planner.ts`/`assembler.ts`, `checkpoint.ts`, `epoch.ts`, `retrieval.ts`                                                                                                                                                                                                            |
+| [`src/ledger/store.ts`](./src/ledger/store.ts) | SQLite (`node:sqlite`, zero deps): tasks, micro-sessions, routing_feedback, workspaces; additive migration + `reconcileOnBoot`                                                                                                                                                                                                                                                                                                                                                                                      |
+| [`src/router/route.ts`](./src/router/route.ts) | Pure `routeTask(spec,tier,feedback) → {planMode,tier,lane}` + thresholds                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| [`src/sessions/`](./src/sessions/)             | `host.ts` (one pi SDK `AgentSession` per role, typed model resolution), `tools.ts` (`yield`/`checklist`), `context-tool.ts` (bounded acquisition tool)                                                                                                                                                                                                                                                                                                                                                              |
+| [`src/guards/`](./src/guards/)                 | `watchdogs.ts` (pure settle/no-progress/wall/per-tool decisions) + `watchdog-driver.ts` + `artifacts.ts` (capped `.failure.json`)                                                                                                                                                                                                                                                                                                                                                                                   |
+| [`src/daemon/`](./src/daemon/)                 | `task-runner.ts` (validate→route→guarded session→yield→verify→ledger→receipt, NFR-3 `SessionHandle.stats()` + COR), `parallel.ts` (isolated vs N-worker combine→single verify gate), `isolated.ts` (CLI adapter), `start.ts` (open + boot reconcile)                                                                                                                                                                                                                                                                |
+| [`src/verify/`](./src/verify/)                 | `run.ts` (per-command timeout, suite wall + bounded grace, capped tails, `durationMs`) + `adapter.ts`                                                                                                                                                                                                                                                                                                                                                                                                               |
+| [`src/environments/`](./src/environments/)     | `HostEnvironmentDriver` + `MiseEnvironmentDriver` (capability-detected)                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| [`src/workspaces/`](./src/workspaces/)         | `jj.ts` (atomic revset-union squash, `git merge-file --union`, consistency gate, timeouts) + `jj-driver.ts` (task-base vs feature-branch, never pushes) + `failure-hygiene.ts`                                                                                                                                                                                                                                                                                                                                      |
+| [`src/bench/`](./src/bench/)                   | `benchmark.ts`/`report.ts` (trace→BenchmarkRecord), `trace-report.ts` (single-run explainer), `context-evaluation.ts`/`m4-proof.ts`, `grounding-*` (M3 suite-03)                                                                                                                                                                                                                                                                                                                                                    |
+| [`src/version.ts`](./src/version.ts)           | `CORE_V2_MILESTONE` / `CORE_V2_VERSION`                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| [`src/plugins/`](./src/plugins/)               | Config-driven loader (`loader.ts` typed `PluginLoadError`, `hooks.ts` throw-isolated + re-validated)                                                                                                                                                                                                                                                                                                                                                                                                                |
 
 ## Gates
 
-Everything below is hermetic (zero LLM, zero network); run in the repo root.
+Hermetic (zero LLM, zero network) unless noted. Run from repo root.
 
-- **Typecheck** — `mise run typecheck`
-  - Strictly typechecks ONLY `packages/core-v2` (`src` + `test`) via
-    `packages/core-v2/tsconfig.json` — the same gate contract FR-11 enforces.
-    tsx-style runners strip types without checking them, so this is the
-    gate that actually catches undeclared identifiers in this subtree.
-- **Test** — `mise run test`
-  - The full hermetic suite: v1's suites first, then core-v2 via
-    `run-all.ts` (the suite list lives in `run-all.ts`; expect exactly
-    the suites it lists there).
-- **Core suite directly** — `npx tsx packages/core-v2/test/run-all.ts`
-  - The aggregate runs every module's exported `runTests()`; each module
-    can also run standalone (`npx tsx packages/core-v2/test/<suite>.ts`).
-- **Suite-03 grounding evaluation (M3)** — `mise run eval-grounding`
-  - One command for the grounding-mode comparison (§7): dry plan render by
-    default (zero spawns, zero LLM); `mise run eval-grounding -- --run`
-    executes real runs (LLM/network gate — never part of `mise run test`).
-    Strong-model configs additionally need `--allow-strong` or
-    `PI_TASK_ALLOW_STRONG=1`. Evidence lands in
-    `<metrics-dir>/eval-grounding/` (`records.jsonl` + `summary.md`);
-    exit code 3 flags an NFR-4 deterministic-prefix violation.
-- **Parity e2e (manual, real LLM)** — `timeout 1200 npx tsx packages/core-v2/test/e2e-parity.ts`
-  - One real single-worker `runTask` using an explicitly configured model
-    against a temp jj repo; asserts ship verdict, committed file, and ledger
-    rows. Skips with exit 0 when the required provider authentication is not
-    configured. On failure the workspace, ledger, and failure artifact are
-    kept for diagnosis.
+| Gate                                    | Command                                                                                                             |
+| --------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| Typecheck (only this subtree)           | `mise run typecheck` (`packages/core-v2/tsconfig.json`)                                                             |
+| All hermetic suites (v1 + core-v2 47)   | `mise run test` (`run-all.ts` is the list)                                                                          |
+| Core-v2 only                            | `npx tsx packages/core-v2/test/run-all.ts` or `npx tsx packages/core-v2/test/<suite>.ts`                            |
+| Context dry plan                        | `mise run context-eval`                                                                                             |
+| Single-run explainer                    | `mise run trace-report -- <trace.json> [report.md]`                                                                 |
+| Matched proof                           | `mise run m4-proof -- <evidence.json> [report.md]`                                                                  |
+| Benchmark aggregate                     | `mise run bench-report -- --traces-dir <dir> --label <label>`                                                       |
+| Grounding (M3 suite-03, dry by default) | `mise run eval-grounding` / `mise run eval-grounding -- --run` (real LLM, needs `--allow-strong` for strong models) |
+| Parity e2e (manual, real LLM)           | `timeout 1200 npx tsx packages/core-v2/test/e2e-parity.ts` (skips 0 without auth)                                   |
 
-### Bench runner (suite-03 baselines)
+Bench regression runner (`extensions/task/bench-regression.ts --tier bench-good --spec grounding-anchor --dry-run`) is a manual LLM gate, never part of `mise run test`.
 
-The bench regression runner lives in the v1 tree but is part of M0's
-engineering bar (docs/pi-task-v2.md §7). It spawns real pi + a real LLM on
-the configured bench tiers, so it is a manual, network/LLM gate — never part
-of the hermetic `mise run test` suite.
+## Plugins
 
-- **Run one tier/spec** — in the repo root, e.g.
-  `npx tsx extensions/task/bench-regression.ts --tier bench-good --spec grounding-anchor`
-  - `--tier <name>` — which budget tier's models to benchmark (repeatable)
-  - `--spec <id>` — narrow to a named spec (repeatable; matches canned and
-    suite-03 grounding specs)
-  - `--metrics-dir <path>` — where run manifests land/are read (always pass
-    a temp dir for baseline-recording runs so untouched results stay put;
-    default is the agent dir's results)
-  - `--dry-run` — print the plan (tiers × specs × expected cost/time) with
-    no spawns
-- **Suite-03 recorded baselines** live in the `baseline` table of each
-  spec in `extensions/task/bench-regression.ts` (`BENCH_SPECS` then
-  `GROUNDING_SPECS`). There is a "default" fallback entry for custom tiers
-  plus a RECORDED `bench-good` entry per grounding spec, transcribed from a
-  real run. Re-measure with `--tier bench-good --metrics-dir <temp-dir>`
-  and refresh the RECORDED entries when the numbers move.
+1. One file, one default export `TaskPlugin` ([`src/contracts/task-plugin.ts`](./src/contracts/task-plugin.ts)): `name` + optional `registerTriggers`/`transformExecutionBundle`/`transformHandoff`/`onLifecycleEvent`.
+2. List under `[plugins] paths = [...]` in `task.toml` (relative to `cwd`); bad entries fail typed (`PluginLoadError` in [`src/plugins/errors.ts`](./src/plugins/errors.ts)).
+3. One hermetic test via `loadPluginsFromToml`/`importPluginAt` ([`src/plugins/loader.ts`](./src/plugins/loader.ts)) + `src/plugins/hooks.ts` — pure-helper-only coverage does not pass review (FR-11). See [`test/test-gateway-plugins.ts`](./test/test-gateway-plugins.ts).
+
+Further reading: [product contract](../../docs/pi-task-v2.md), [subsystems](../../docs/pi-task-v2-subsystems.md), [future](../../docs/pi-task-v2-future.md), [v1 design](../../docs/pi-task-design.md).
