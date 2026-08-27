@@ -38,7 +38,9 @@ import { SessionManager } from "@earendil-works/pi-coding-agent";
 
 import type {
 	CompiledContextArtifact,
+	ContextPlan,
 	ContextProvider,
+	ExecutionEpoch,
 	Yield,
 } from "../contracts/index.ts";
 import {
@@ -105,6 +107,10 @@ export interface SessionHostConfig {
 	}) => void;
 	/** Deterministic initial artifact compiled before session spawn. */
 	initialContext?: CompiledContextArtifact;
+	/** Kernel-owned lifecycle plan bound to this session's epoch. */
+	contextPlan?: ContextPlan;
+	/** Durable execution-epoch identity for checkpointed continuation. */
+	contextEpoch?: ExecutionEpoch;
 }
 
 /** Default requirement count for callers that predate the protocol field. */
@@ -144,6 +150,11 @@ export function selectWorkerTools(
 		requestedTools,
 		getRequirementTrackingPolicy(requirementCount),
 	);
+}
+
+/** Byte-stable cache-key component derived from the actual registered policy. */
+export function workerToolSchemaIdentity(requirementCount: number): string {
+	return `worker-tools-v1:${selectWorkerTools(requirementCount).join(",")}`;
 }
 
 /** Settle/turn/tool lifecycle event the host streams to listeners. */

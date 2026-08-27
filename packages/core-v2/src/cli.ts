@@ -40,10 +40,8 @@ import { LedgerStore } from "./ledger/store.ts";
 import type { SessionHost, SessionHostEvent } from "./sessions/host.ts";
 import type { TaskLifecycleEvent } from "./contracts/gateway-events.ts";
 import type { ContextProviderFactory } from "./contracts/context-provider.ts";
-import {
-	rawContextProviderFactory,
-	symbolTreeContextProviderFactory,
-} from "./context/providers.ts";
+import { rawContextProviderFactory } from "./context/raw-provider.ts";
+import { ContextArtifactStore } from "./context/artifact-store.ts";
 import type { ContextEvidenceEvent } from "./daemon/parallel.ts";
 
 const DEFAULT_STATE_ROOT = ".local/state";
@@ -576,8 +574,15 @@ export async function runCli(
 			const selectedContextFactory =
 				dependencies.contextProviderFactory ??
 				(args.context === "symbol-tree"
-					? symbolTreeContextProviderFactory
+					? (await import("./context/providers.ts"))
+							.symbolTreeContextProviderFactory
 					: rawContextProviderFactory);
+			const contextArtifactStore =
+				selectedContextFactory.identity.id === "raw"
+					? undefined
+					: new ContextArtifactStore({
+							root: join(dirname(paths.artifactsDir), "context-cache"),
+						});
 			const result = await runIsolatedTask({
 				specMarkdown,
 				projectDir,
@@ -585,10 +590,15 @@ export async function runCli(
 				dbPath: paths.dbPath,
 				model: args.model,
 				contextProviderFactory: selectedContextFactory,
+				...(contextArtifactStore === undefined ? {} : { contextArtifactStore }),
 				onContextEvent: (event: ContextEvidenceEvent) =>
 					trace!.record({
 						type: event.type,
-						phase: "context",
+						phase:
+							event.type.startsWith("epoch") ||
+							event.type.startsWith("checkpoint")
+								? "recovery"
+								: "context",
 						taskId: trace!.taskId,
 						provider: event.provider.id,
 						config: event.provider.version,

@@ -47,17 +47,24 @@ import type {
 	ContextProvider,
 	ContextProviderFactory,
 } from "../contracts/context-provider.ts";
-import { createRawContextProvider } from "../context/providers.ts";
-import {
-	buildInitialContextQuery,
-	renderInitialContextArtifact,
-} from "../context/compiler.ts";
+import { createRawContextProvider } from "../context/raw-provider.ts";
+import { buildInitialContextQuery } from "../context/compiler.ts";
+import { assembleContext } from "../context/assembler.ts";
+import { contextItemsFromArtifact } from "../context/acquisition.ts";
+import { deriveInformationNeeds, planContext } from "../context/planner.ts";
+import { startExecutionEpoch } from "../context/epoch.ts";
+import type { ContextPlan } from "../contracts/context-lifecycle.ts";
+import type { ContextArtifactStore } from "../context/artifact-store.ts";
 import type { SessionHostEvent } from "../sessions/host.ts";
 import { InMemoryTaskGateway } from "../gateway/index.ts";
 import { registerPluginTriggers } from "../plugins/index.ts";
 import { HostEnvironmentDriver } from "../environments/drivers.ts";
 import { verifyThroughEnvironment } from "../verify/adapter.ts";
-import { createSessionHost, type SessionHost } from "../sessions/host.ts";
+import {
+	createSessionHost,
+	workerToolSchemaIdentity,
+	type SessionHost,
+} from "../sessions/host.ts";
 import {
 	buildWorkerPromptText,
 	buildWorkerSystemPrompt,
@@ -100,12 +107,22 @@ export interface RunParallelOptions {
 	singleTask?: boolean;
 	/** Explicit context capability; raw is the default baseline. */
 	contextProviderFactory?: ContextProviderFactory;
+	/** Optional user-state artifact store. Raw execution never requires it. */
+	contextArtifactStore?: ContextArtifactStore;
 	/** Canonical trace projection for context lifecycle evidence. */
 	onContextEvent?: (event: ContextEvidenceEvent) => void;
 }
 
 export interface ContextEvidenceEvent {
-	type: "context.selected" | "context.injected" | "context.omitted";
+	type:
+		| "context.planned"
+		| "context.selected"
+		| "context.injected"
+		| "context.omitted"
+		| "context.cache"
+		| "checkpoint.saved"
+		| "epoch.started"
+		| "epoch.transitioned";
 	provider: { id: string; version: string };
 	detail: Record<string, unknown>;
 }
@@ -255,6 +272,7 @@ async function runWithStore(
 	};
 	let contextProvider: ContextProvider;
 	let contextArtifact: CompiledContextArtifact;
+	let contextPlan: ContextPlan;
 	try {
 		contextProvider = (
 			requestedFactory ?? {
@@ -293,10 +311,100 @@ async function runWithStore(
 			},
 		});
 	}
+	const contextGoal = parsed[0]?.goal ?? "task";
+	const contextRequirements = parsed.flatMap((item) => item.requirements);
+	const informationNeeds = deriveInformationNeeds({
+		goal: contextGoal,
+		requirements: contextRequirements,
+	}).needs;
+	contextPlan = planContext({
+		goal: contextGoal,
+		requirements: contextRequirements,
+		candidates: contextItemsFromArtifact(
+			contextArtifact,
+			contextProvider,
+			informationNeeds,
+		),
+		sourceRevision: contextArtifact.source.treeIdentity,
+		modelId: options.model,
+		toolSchemaIdentity: parsed
+			.map((task) => workerToolSchemaIdentity(task.requirements.length))
+			.join("|"),
+		mode: contextProvider.identity.id === "raw" ? "raw" : "managed",
+	});
+	let storedContextArtifactId: string | undefined;
+	let storedPlanId: string | undefined;
+	if (
+		contextProvider.identity.id !== "raw" &&
+		options.contextArtifactStore !== undefined
+	) {
+		try {
+			const contextRef = options.contextArtifactStore.putJson(contextArtifact, {
+				namespace: "context",
+				kind: "context",
+				mediaType: "application/json",
+				sensitivity: "internal",
+				sourceRevision: contextArtifact.source.sourceRevision,
+			});
+			const planRef = options.contextArtifactStore.putJson(contextPlan, {
+				namespace: "plan",
+				kind: "plan",
+				mediaType: "application/json",
+				sensitivity: "internal",
+				sourceRevision: contextPlan.sourceRevision,
+			});
+			storedContextArtifactId = contextRef.id;
+			storedPlanId = planRef.id;
+		} catch (error: unknown) {
+			options.onContextEvent?.({
+				type: "context.omitted",
+				provider: contextProvider.identity,
+				detail: {
+					failureCode: "artifact_store_unavailable",
+					message:
+						error instanceof Error
+							? error.message.slice(0, 256)
+							: String(error).slice(0, 256),
+					selectedCount: contextArtifact.handles.length,
+					omittedCount: contextArtifact.omissions.count,
+				},
+			});
+		}
+	}
+	options.onContextEvent?.({
+		type: "context.planned",
+		provider: contextProvider.identity,
+		detail: {
+			planId: contextPlan.id,
+			mode: contextPlan.mode,
+			selectedCount: contextPlan.selected.length,
+			omittedCount: contextPlan.omissions.length,
+			storedPlanId,
+			storedContextArtifactId,
+		},
+	});
+	options.onContextEvent?.({
+		type: "context.cache",
+		provider: contextProvider.identity,
+		detail: {
+			planId: contextPlan.id,
+			strategy: contextPlan.cache.strategy,
+			attribution: contextPlan.cache.attribution,
+			compatible: contextPlan.cache.compatible,
+			localStore:
+				options.contextArtifactStore === undefined
+					? "unavailable"
+					: "available",
+			storedArtifactCount: [storedPlanId, storedContextArtifactId].filter(
+				(id) => id !== undefined,
+			).length,
+		},
+	});
 	options.onContextEvent?.({
 		type: "context.selected",
 		provider: contextProvider.identity,
 		detail: {
+			planId: contextPlan.id,
 			treeIdentity: contextArtifact.source.treeIdentity,
 			sourceRevision: contextArtifact.source.sourceRevision,
 			selectedCount: contextArtifact.handles.length,
@@ -309,6 +417,7 @@ async function runWithStore(
 		type: "context.injected",
 		provider: contextProvider.identity,
 		detail: {
+			planId: contextPlan.id,
 			treeIdentity: contextArtifact.source.treeIdentity,
 			selectedCount: contextArtifact.handles.length,
 			omittedCount: contextArtifact.omissions.count,
@@ -320,6 +429,7 @@ async function runWithStore(
 		type: "context.omitted",
 		provider: contextProvider.identity,
 		detail: {
+			planId: contextPlan.id,
 			treeIdentity: contextArtifact.source.treeIdentity,
 			selectedCount: contextArtifact.handles.length,
 			omittedCount: contextArtifact.omissions.count,
@@ -328,7 +438,7 @@ async function runWithStore(
 			estimatedTokens: contextArtifact.estimatedSize.tokens,
 		},
 	});
-	const contextPrompt = renderInitialContextArtifact(contextArtifact);
+	const contextPrompt = assembleContext({ plan: contextPlan }).prompt;
 	const contexts: WorkspaceContext[] = [];
 	for (let i = 0; i < options.subTasks.length; i += 1) {
 		if (!singleTask) {
@@ -384,6 +494,26 @@ async function runWithStore(
 		turns: 0,
 		watchdogAbort: undefined,
 	}));
+	const contextEpochs = contexts.map((_context, index) =>
+		startExecutionEpoch({
+			role: `worker-${index}`,
+			modelId: options.model,
+			plan: contextPlan,
+		}),
+	);
+	for (const epoch of contextEpochs) {
+		options.onContextEvent?.({
+			type: "epoch.started",
+			provider: contextProvider.identity,
+			detail: {
+				epochId: epoch.id,
+				role: epoch.role,
+				planId: epoch.planId,
+				modelId: epoch.modelId,
+				transition: epoch.transition,
+			},
+		});
+	}
 	const host = options.host ?? createSessionHost();
 	const handles = await Promise.all(
 		contexts.map(async (_ctx, i) => {
@@ -423,6 +553,8 @@ async function runWithStore(
 						},
 					}),
 				initialContext: contextArtifact,
+				contextPlan,
+				contextEpoch: contextEpochs[i]!,
 				...(options.sessionTimeoutMs === undefined
 					? {}
 					: { timeoutMs: options.sessionTimeoutMs }),
@@ -457,6 +589,19 @@ async function runWithStore(
 	const promptResults = await Promise.allSettled(
 		handles.map((h, i) => h.prompt(promptTexts[i]!)),
 	);
+	for (const [index, result] of promptResults.entries()) {
+		if (result.status !== "rejected") continue;
+		options.onContextEvent?.({
+			type: "epoch.transitioned",
+			provider: contextProvider.identity,
+			detail: {
+				fromEpochId: contextEpochs[index]!.id,
+				role: contextEpochs[index]!.role,
+				reason: "interruption",
+				checkpointAvailable: false,
+			},
+		});
+	}
 	// NFR-3: capture every attempt's measured usage while its session is
 	// still live — even failed attempts get their real numbers; a
 	// rejecting stats() zeroes inside collectUsage.

@@ -31,7 +31,9 @@ The active design set is:
 - [pi-task-v2-future.md](pi-task-v2-future.md): work deliberately deferred
   until measured demand justifies it;
 - [pi-task-design.md](pi-task-design.md): the active v1 compatibility and
-  safety contract used as a migration reference.
+  safety contract used as a migration reference;
+- [context-control-plane ADR](adr/context-control-plane.md): the accepted M4
+  kernel/provider/cache/checkpoint ownership decision.
 
 The implementation is the final authority for shipped behavior. Source paths
 linked below are evidence anchors, not an inventory snapshot.
@@ -322,20 +324,30 @@ the report does not infer them.
 
 ### M4 — context subsystem
 
-M4 is in progress. Its information-acquisition experiment is implemented and
-hermetically conforming: `--context symbol-tree` supplies bounded handles and a
-query/resolve tool, while `raw` remains the no-injection baseline. Canonical
-context events and the dry/report commands preserve provider identity,
-provenance, omissions, size, activity, acceptance, unavailable measurements,
-and neutral or negative outcomes. No real-model quality or cost advantage has
-been established.
+M4 is implementation-complete and hermetically stabilized. The kernel now owns
+versioned context plans, immutable user-state artifact references, separate
+economic/window/attention budgets, deterministic cache-oriented assembly,
+core-enforced materialization limits, bounded working checkpoints, and per-
+worker execution epochs. Planned cache strategy is recorded separately from
+actual provider cache-read usage; model changes never imply cache transfer.
+Attempt identities remain ledger-only, so an unchanged source snapshot and
+prompt/tool configuration stay cache-affine across retries.
 
-M4 is complete only when the engine also has a provider-neutral context control
-plane: immutable artifact references, separate economic/window/attention
-budgets, deterministic cache-oriented segments, core-enforced materialization
-limits, typed working checkpoints, and execution-epoch transitions. The symbol
-tree remains one removable acquisition provider behind that control plane.
-Raw execution must remain correct when it is deleted or unavailable.
+Information acquisition remains replaceable. `--context symbol-tree` supplies
+bounded handles and a query/resolve tool through an adapter; `raw` is a
+standalone empty plan with no module-load dependency on the symbol index.
+Optional acquisition failures degrade explicitly, and context state is stored
+outside the repository. Canonical lifecycle evidence and the dry/report
+commands preserve plans, provenance, omissions, artifact reuse, epochs,
+activity, acceptance, unavailable measurements, and neutral or negative
+outcomes.
+
+This status means the control plane and its deletion/failure paths pass
+hermetic conformance. It does **not** mean symbol-tree is adopted, that context
+management improves quality or cost, or that interruption continuation is a
+user workflow. Cheap real-model comparison remains deliberately pending; M5
+will consume the checkpoint/epoch contracts for durable sequential
+continuation and self-hosting.
 
 ### M5 — sequential composition and self-hosting
 

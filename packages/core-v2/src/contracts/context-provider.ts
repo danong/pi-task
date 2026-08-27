@@ -1,5 +1,9 @@
-/** Typed context-provider capability used by the execution kernel (M4). */
+/** Typed bounded acquisition-provider compatibility seam (M4). */
 import { z } from "zod";
+
+export const CONTEXT_PROVIDER_MAX_HANDLES = 64;
+export const CONTEXT_PROVIDER_MAX_CHARACTERS = 32_000;
+export const CONTEXT_PROVIDER_MAX_TOKENS = 8_000;
 
 export const ContextProviderIdentitySchema = z
 	.object({
@@ -54,9 +58,17 @@ export type ContextArtifactHandle = z.infer<typeof ContextArtifactHandleSchema>;
 
 export const ContextBudgetSchema = z
 	.object({
-		maxHandles: z.number().int().nonnegative(),
-		maxCharacters: z.number().int().nonnegative(),
-		maxTokens: z.number().int().nonnegative(),
+		maxHandles: z
+			.number()
+			.int()
+			.nonnegative()
+			.max(CONTEXT_PROVIDER_MAX_HANDLES),
+		maxCharacters: z
+			.number()
+			.int()
+			.nonnegative()
+			.max(CONTEXT_PROVIDER_MAX_CHARACTERS),
+		maxTokens: z.number().int().nonnegative().max(CONTEXT_PROVIDER_MAX_TOKENS),
 	})
 	.strict();
 export type ContextBudget = z.infer<typeof ContextBudgetSchema>;
@@ -66,7 +78,9 @@ export const ContextArtifactSchema = z
 		provider: ContextProviderIdentitySchema,
 		source: ContextProvenanceSchema,
 		query: z.string().max(2000),
-		handles: z.array(ContextArtifactHandleSchema),
+		handles: z
+			.array(ContextArtifactHandleSchema)
+			.max(CONTEXT_PROVIDER_MAX_HANDLES),
 		omissions: z
 			.object({
 				count: z.number().int().nonnegative(),
@@ -75,13 +89,40 @@ export const ContextArtifactSchema = z
 			.strict(),
 		estimatedSize: z
 			.object({
-				characters: z.number().int().nonnegative(),
-				tokens: z.number().int().nonnegative(),
+				characters: z
+					.number()
+					.int()
+					.nonnegative()
+					.max(CONTEXT_PROVIDER_MAX_CHARACTERS),
+				tokens: z.number().int().nonnegative().max(CONTEXT_PROVIDER_MAX_TOKENS),
 			})
 			.strict(),
 		budget: ContextBudgetSchema,
 	})
-	.strict();
+	.strict()
+	.superRefine((artifact, ctx) => {
+		if (artifact.handles.length > artifact.budget.maxHandles) {
+			ctx.addIssue({
+				code: "custom",
+				path: ["handles"],
+				message: "handle count exceeds declared budget",
+			});
+		}
+		if (artifact.estimatedSize.characters > artifact.budget.maxCharacters) {
+			ctx.addIssue({
+				code: "custom",
+				path: ["estimatedSize", "characters"],
+				message: "character estimate exceeds declared budget",
+			});
+		}
+		if (artifact.estimatedSize.tokens > artifact.budget.maxTokens) {
+			ctx.addIssue({
+				code: "custom",
+				path: ["estimatedSize", "tokens"],
+				message: "token estimate exceeds declared budget",
+			});
+		}
+	});
 export type CompiledContextArtifact = z.infer<typeof ContextArtifactSchema>;
 /** Descriptive alias used by provider consumers and conformance tests. */
 export const CompiledContextArtifactSchema = ContextArtifactSchema;

@@ -99,7 +99,9 @@ explicitly requests cancellation.
 
 ## 4. Context control plane and acquisition capabilities
 
-Context has a kernel-owned lifecycle and provider-owned information stages:
+The accepted ownership and deletion decision is recorded in the
+[context control-plane ADR](adr/context-control-plane.md). Context has a
+kernel-owned lifecycle and provider-owned information stages:
 
 ```text
 snapshot → acquire candidates → plan → materialize → assemble epoch
@@ -333,20 +335,29 @@ receipt delivery, success cleanup, and verification-failure recovery.
 
 ### M4 status
 
-The deterministic symbol-tree acquisition candidate is implemented as an
-opt-in experiment. The CLI records `raw` or `symbol-tree` selection, injects
-bounded handles, and exposes bounded query/resolve behavior without removing
-ordinary exploration tools. Scan or retrieval failure records typed evidence
-and degrades to raw. The comparison harness derives context volume, selected
-handles, reads, tool activity, repeated reads, turns, measured or unavailable
-cost, and acceptance while retaining neutral and negative results.
+M4's control-plane implementation and hermetic conformance are complete. The
+lifecycle contracts cover plans, artifact references, multidimensional
+budgets, cache capabilities and strategy, prompt segments, checkpoints, and
+execution epochs. The planner and assembler enforce these boundaries before
+session spawn; the context tool re-validates acquisition output at its model
+boundary. The CLI injects the optional artifact store under project-keyed user
+state, never inside the checkout. Canonical events distinguish planning,
+storage/cache strategy, initial epochs, and interruption transitions from
+actual measured cache tokens.
 
-This proves acquisition-provider mechanics, not completion of the context
-subsystem. The current `ContextProvider` contract is a prototype seam to be
-split or adapted behind the kernel control plane described above. M4 remains
-open until context plans, immutable artifact references, multidimensional
-budgets, cache-oriented assembly, working checkpoints, and execution epochs
-have boundary schemas, deletion behavior, and runnable evidence.
+The deterministic symbol tree remains an opt-in acquisition experiment behind
+a compatibility adapter. Raw is implemented independently and has no static
+symbol-index dependency. Scan, storage, query, or materialization failure is
+bounded and explicitly degraded. The comparison harness derives context
+volume, selected handles, stored artifacts, cache-read usage when measured,
+epoch activity, reads, repeated reads, turns, cost availability, and acceptance
+while retaining neutral and negative outcomes.
+
+M4 has not established a real-model advantage or adopted symbol-tree as a
+default. Checkpoint persistence and epoch transitions are available as kernel
+primitives; M5 owns their parent/child continuation workflow and self-hosting
+proof. The old `ContextProvider` shape remains only as the current acquisition
+adapter and can be removed after callers migrate to the lifecycle capabilities.
 
 ### M5 status
 

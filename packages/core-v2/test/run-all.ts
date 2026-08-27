@@ -12,8 +12,15 @@ import { runTests as runAcceptanceTests } from "./test-acceptance.ts";
 import { runTests as runBenchmarkTests } from "./test-benchmark.ts";
 import { runTests as runBundleTests } from "./test-bundle.ts";
 import { runTests as runContractTests } from "./test-contracts.ts";
+import { runTests as runContextLifecycleContractTests } from "./test-context-lifecycle-contracts.ts";
+import { runTests as runContextArtifactStoreTests } from "./test-context-artifact-store.ts";
+import { runTests as runContextPlannerTests } from "./test-context-planner.ts";
+import { runTests as runContextAssemblerTests } from "./test-context-assembler.ts";
+import { runTests as runContextCheckpointTests } from "./test-context-checkpoint.ts";
+import { runTests as runContextEpochTests } from "./test-context-epoch.ts";
 import { runTests as runContextRetrievalTests } from "./test-context-retrieval.ts";
 import { runTests as runContextProviderTests } from "./test-context-provider.ts";
+import { runTests as runContextToolTests } from "./test-context-tool.ts";
 import { runTests as runContextIntegrationTests } from "./test-context-integration.ts";
 import { runTests as runContextEvalTests } from "./test-context-eval.ts";
 import { runTests as runContinuationTests } from "./test-continuation.ts";
@@ -47,8 +54,18 @@ import { runTests as runWorkerProtocolTests } from "./test-worker-protocol.ts";
 
 const SUITES: Array<{ name: string; run: () => Promise<void> }> = [
 	{ name: "contracts", run: runContractTests },
+	{
+		name: "context-lifecycle-contracts",
+		run: runContextLifecycleContractTests,
+	},
+	{ name: "context-artifact-store", run: runContextArtifactStoreTests },
+	{ name: "context-planner", run: runContextPlannerTests },
+	{ name: "context-assembler", run: runContextAssemblerTests },
+	{ name: "context-checkpoint", run: runContextCheckpointTests },
+	{ name: "context-epoch", run: runContextEpochTests },
 	{ name: "context-retrieval", run: runContextRetrievalTests },
 	{ name: "context-provider", run: runContextProviderTests },
+	{ name: "context-tool", run: runContextToolTests },
 	{ name: "context-integration", run: runContextIntegrationTests },
 	{ name: "context-eval", run: runContextEvalTests },
 	{ name: "bundle", run: runBundleTests },

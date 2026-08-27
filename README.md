@@ -114,23 +114,24 @@ The first command makes no LLM calls; real runs require the configured model
 and network. Evidence is written under the selected metrics directory in
 `eval-grounding/records.jsonl` and `eval-grounding/summary.md`.
 
-M4's first information-acquisition candidate is implemented as an opt-in,
-evidence-producing prototype. The v2 CLI selects `raw` (the default) or
-`symbol-tree` with `--context`; symbol-tree injects bounded progressive-
-disclosure handles, exposes the bounded `context` worker tool, and records
-provider, tree identity, selection, omission, and size evidence. Index or
-retrieval failure, including a failed in-session query, falls back explicitly
-to raw exploration and records canonical fallback evidence. `mise run
-context-eval` is a hermetic dry plan; `mise run context-report -- <jsonl>`
-derives comparisons while preserving unavailable and negative outcomes.
+M4's context control plane is implementation-complete under hermetic gates.
+The kernel owns deterministic plans, immutable user-state artifacts,
+economic/window/attention budgets, cache-oriented prompt assembly, bounded
+checkpoints, and per-worker execution epochs. Planned cache strategy is kept
+separate from measured provider cache usage, and unchanged snapshots remain
+cache-affine across attempt identities.
 
-M4 is not yet complete: the remaining context control plane must own immutable
-artifact references, economic/window/attention budgets, cache-oriented prompt
-assembly, working checkpoints, and execution epochs. M5 then adds typed
-sequential children and must demonstrate a usable v2 self-hosting loop. M6
-scope is intentionally open until that bootstrap gate is discussed. See the
-active v2 contract for the stable exit criteria; no real-model quality or cost
-win is currently claimed.
+The v2 CLI still selects `raw` (default) or the experimental `symbol-tree` with
+`--context`. Symbol-tree supplies bounded progressive-disclosure handles and
+the bounded `context` tool; raw is a standalone empty plan that does not load
+the index. Provider or local-store failure degrades explicitly, and no context
+state is written into the repository. `mise run context-eval` remains a zero-
+model dry plan; `mise run context-report -- <jsonl>` reports canonical evidence
+including artifact/epoch activity and actual cache reads when available.
+
+M4 makes no real-model quality or cost claim and does not adopt symbol-tree as
+the default. M5 will use these checkpoint/epoch contracts for typed sequential
+children and a usable v2 self-hosting loop. M6 scope remains intentionally open.
 
 The repo ships `.pi/settings.json` registering itself as a project package
 (`"packages": [".."]`), so any trusted checkout auto-installs — the `task`

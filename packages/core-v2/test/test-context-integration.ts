@@ -1,6 +1,7 @@
 /** Hermetic M4 runnable-kernel integration: real jj/bash, fake sessions, zero model/network. */
 import { execFileSync } from "node:child_process";
 import {
+	existsSync,
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
@@ -57,7 +58,10 @@ class Handle implements SessionHandle {
 		commit_ids: [],
 		deviations: [],
 	};
-	constructor(private readonly config: SessionHostConfig) {}
+	constructor(
+		private readonly config: SessionHostConfig,
+		private readonly failPrompt = false,
+	) {}
 	subscribe(listener: (event: SessionHostEvent) => void): () => void {
 		listener({ type: "turnStart" });
 		listener({
@@ -88,6 +92,8 @@ class Handle implements SessionHandle {
 		return () => undefined;
 	}
 	prompt(): Promise<void> {
+		if (this.failPrompt)
+			return Promise.reject(new Error("fixture interruption"));
 		writeFileSync(join(this.config.cwd, "result.txt"), "ok", "utf8");
 		execFileSync("jj", ["commit", "-m", "fake result"], {
 			cwd: this.config.cwd,
@@ -118,11 +124,11 @@ class Handle implements SessionHandle {
 	close(): void {}
 }
 
-function host(captured: SessionHostConfig[]): SessionHost {
+function host(captured: SessionHostConfig[], failPrompt = false): SessionHost {
 	return {
 		spawn: async (config) => {
 			captured.push(config);
-			return new Handle(config);
+			return new Handle(config, failPrompt);
 		},
 	};
 }
@@ -161,6 +167,7 @@ export async function runTests(): Promise<void> {
 			name: string,
 			context: "raw" | "symbol-tree",
 			extra: Partial<CliDependencies> = {},
+			failPrompt = false,
 		) => {
 			const repo = join(parent, name);
 			mkdirSync(repo, { recursive: true });
@@ -182,7 +189,7 @@ export async function runTests(): Promise<void> {
 					join(parent, `${name}-artifacts`),
 				],
 				{
-					host: host(captured),
+					host: host(captured, failPrompt),
 					workspaceDriver: new JujutsuWorkspaceDriver({ projectDir: repo }),
 					write: () => undefined,
 					...extra,
@@ -220,8 +227,30 @@ export async function runTests(): Promise<void> {
 			symbol.captured[0]?.contextProvider?.identity.id === "symbol-tree",
 			"selected capability and context tool reach the session host",
 		);
+		check(
+			symbol.captured[0]?.contextPlan?.mode === "managed" &&
+				symbol.captured[0]?.contextEpoch?.planId ===
+					symbol.captured[0]?.contextPlan?.id,
+			"kernel plan and execution epoch reach the session boundary",
+		);
+		check(
+			!existsSync(join(parent, "symbol", ".local")),
+			"context artifacts never pollute the repository",
+		);
 		const trace = TraceArtifactSchema.parse(
 			JSON.parse(readFileSync(symbol.result.tracePath!, "utf8")),
+		);
+		const planned = trace.events.find(
+			(event) =>
+				event.type === "context.planned" && event.provider === "symbol-tree",
+		);
+		const cache = trace.events.find(
+			(event) =>
+				event.type === "context.cache" && event.provider === "symbol-tree",
+		);
+		const epoch = trace.events.find(
+			(event) =>
+				event.type === "epoch.started" && event.provider === "symbol-tree",
 		);
 		const selected = trace.events.find(
 			(event) =>
@@ -234,6 +263,13 @@ export async function runTests(): Promise<void> {
 		const omitted = trace.events.find(
 			(event) =>
 				event.type === "context.omitted" && event.provider === "symbol-tree",
+		);
+		check(
+			planned?.detail?.planId === symbol.captured[0]?.contextPlan?.id &&
+				cache?.detail?.localStore === "available" &&
+				typeof cache.detail.storedArtifactCount === "number" &&
+				epoch?.detail?.planId === planned?.detail?.planId,
+			"trace projects plan, truthful local-cache availability, and epoch identity",
 		);
 		check(
 			selected?.detail?.treeIdentity !== undefined &&
@@ -272,6 +308,24 @@ export async function runTests(): Promise<void> {
 		check(
 			(selected?.sequence ?? Number.MAX_SAFE_INTEGER) < spawnSequence,
 			"initial context compilation is observed before session spawn",
+		);
+
+		const interrupted = await run("interrupted", "raw", {}, true);
+		check(
+			interrupted.result.exitCode !== 0,
+			"interrupted epoch remains non-ship",
+		);
+		const interruptedTrace = TraceArtifactSchema.parse(
+			JSON.parse(readFileSync(interrupted.result.tracePath!, "utf8")),
+		);
+		check(
+			interruptedTrace.events.some(
+				(event) =>
+					event.type === "epoch.transitioned" &&
+					event.detail?.reason === "interruption" &&
+					event.detail?.checkpointAvailable === false,
+			),
+			"session interruption records an explicit non-resumed epoch boundary",
 		);
 
 		const failingFactory: ContextProviderFactory = {

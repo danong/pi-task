@@ -20,7 +20,7 @@ const TRACE_MAX_PROVIDER_CHARS = 256;
 export const TraceEventTypeSchema = z.enum([
 	"task.queued", "task.routed", "session.spawned", "session.ended",
 	"turn.started", "turn.ended", "tool.started", "tool.ended",
-	"context.selected", "context.injected", "context.omitted",
+	"context.planned", "context.selected", "context.injected", "context.omitted", "context.cache", "checkpoint.saved", "epoch.started", "epoch.transitioned",
 	"model.assigned", "model.changed", "usage.observed",
 	"verification.completed", "artifact.accepted", "artifact.rejected",
 	"receipt.delivered", "trace.delivered", "failure", "recovery.referenced",
@@ -221,6 +221,7 @@ function phaseForTraceType(type: TraceEventType): TraceEvent["phase"] {
 	if (type.startsWith("turn")) return "turn";
 	if (type.startsWith("tool")) return "tool";
 	if (type.startsWith("context")) return "context";
+	if (type.startsWith("checkpoint") || type.startsWith("epoch")) return "recovery";
 	if (type.startsWith("model")) return "model";
 	if (type.startsWith("usage")) return "usage";
 	if (type.startsWith("verification")) return "verification";

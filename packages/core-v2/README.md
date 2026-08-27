@@ -54,23 +54,24 @@ M3 grounding evaluation is dry by default (`mise run eval-grounding`) and
 writes real-run evidence, when requested with `-- --run`, under the selected
 metrics directory as `eval-grounding/records.jsonl` and `summary.md`.
 
-M4's deterministic symbol-tree information-acquisition candidate is implemented
-as an opt-in experiment. The CLI selects `raw` (default) or `symbol-tree` via
-`--context`; the latter compiles bounded handles before spawn and provides the
-bounded `context` query/resolve tool while preserving ordinary exploration.
-Provider identity, tree identity, provenance, omissions, and estimated size are
-recorded in canonical trace events. Index and in-session retrieval failures
-explicitly fall back to raw and emit fallback evidence. Use `mise run
-context-eval` for the zero-model dry plan and `mise run context-report --
-<trace-jsonl>` for an evidence-only comparison. The harness makes no quality or
-cost claim without measured real-model traces.
+M4's context lifecycle is implementation-complete under hermetic conformance.
+`src/context/` now contains deterministic planning/assembly, a bounded local
+content-addressed artifact store, declarative checkpoints, and execution epoch
+primitives. The lifecycle contracts distinguish economic, window, and
+attention budgets; cache strategy is a plan while actual cache-read tokens
+remain usage evidence. The CLI stores optional context state under its existing
+project-keyed user-state root and records plans, artifact activity, epochs, and
+typed degradation in canonical traces.
 
-This is an acquisition prototype, not a complete context lifecycle. The M4 exit
-gate additionally requires kernel-owned context plans, immutable artifact
-references, separate economic/window/attention budgets, cache-oriented prompt
-assembly, structured checkpoints, and execution epochs. M5 will build typed
-sequential children and a usable self-hosting path on those contracts. M6 scope
-remains intentionally open.
+The deterministic symbol tree remains an opt-in acquisition experiment. The
+CLI selects `raw` (default) or `symbol-tree` via `--context`; raw is an empty
+plan with no static index dependency. Symbol-tree provides bounded handles and
+the `context` query/resolve tool while preserving ordinary exploration. Use
+`mise run context-eval` for the zero-model dry plan and `mise run
+context-report -- <trace-jsonl>` for evidence-only comparison. M4 makes no
+quality/cost claim and does not adopt symbol-tree without cheap measured trials.
+M5 will build typed sequential continuation and self-hosting on these contracts;
+M6 scope remains intentionally open.
 
 ## Layout
 
@@ -80,10 +81,18 @@ remains intentionally open.
     (`Spec`, `ExecutionBundle`, `Yield`, `HandoffBundle`, `TaskReceipt`)
     as zod schemas (deterministic-serialization rule, NFR-3/NFR-4)
   - `serialize.ts` — byte-stable prompt serialization
+  - `context-lifecycle.ts` — M4 plans, artifact references, multidimensional
+    budgets, cache strategy, prompt segments, checkpoints, and epochs;
+    `context-provider.ts` remains the bounded acquisition compatibility seam
   - `workspace-driver.ts`, `environment-driver.ts`, `context-compressor.ts`,
     `verification-driver.ts`, `task-plugin.ts`, `control-surface.ts`
   - `index.ts` — the contracts barrel re-exporting every seam (import from
     here, not individual files)
+- `src/context/` — M4 information lifecycle: acquisition adapters, raw and
+  symbol-tree candidates, immutable local artifact storage, pure planning and
+  assembly, declarative checkpoints, execution epochs, and honest evaluation
+  inputs. The kernel modules do not import the optional symbol index on raw
+  execution.
 - `src/ledger/store.ts` — the SQLite ledger (`node:sqlite`, zero new
   dependencies): tasks, micro-sessions, routing feedback, workspaces; a
   versioned additive migration (opening an older DB upgrades in place), the

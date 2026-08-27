@@ -13,6 +13,11 @@ import {
 function fixture(id: string, provider: string, accepted: boolean, measured: boolean) {
 	let tick = 0;
 	const trace = new TraceCollector(id, id, () => new Date(tick++ * 1000).toISOString());
+	if (provider !== "v1-map-baseline") {
+		trace.record({ type: "context.planned", phase: "context", taskId: id, provider, config: "1", detail: { planId: `plan:${id}`, mode: provider === "raw" ? "raw" : "managed" } });
+		trace.record({ type: "context.cache", phase: "context", taskId: id, provider, config: "1", detail: { strategy: provider === "raw" ? "none" : "local", attribution: "unavailable", storedArtifactCount: provider === "raw" ? 0 : 2 } });
+		trace.record({ type: "epoch.started", phase: "recovery", taskId: id, provider, config: "1", detail: { epochId: `epoch:${id}`, planId: `plan:${id}` } });
+	}
 	trace.record({ type: "context.selected", phase: "context", taskId: id, provider, config: "1", detail: { treeIdentity: `tree:${id}`, selectedCount: provider === "raw" ? 0 : 3, omittedCount: 1, estimatedCharacters: provider === "raw" ? 0 : 600, estimatedTokens: provider === "raw" ? 0 : 150, ...(provider === "v1-map-baseline" ? { baselineShape: "v1-deterministic-map" } : {}) } });
 	trace.record({ type: "context.injected", phase: "context", taskId: id, provider, config: "1", detail: { treeIdentity: `tree:${id}`, selectedCount: provider === "raw" ? 0 : 3, omittedCount: 1, estimatedCharacters: provider === "raw" ? 0 : 600, estimatedTokens: provider === "raw" ? 0 : 150 } });
 	trace.record({ type: "turn.started", phase: "turn", taskId: id });
@@ -38,6 +43,7 @@ export function runTests(): Promise<void> {
 	check(symbol.readCalls === 2 && symbol.contextToolCalls === 1 && symbol.repeatedReads === 1 && symbol.turns === 1, "read/tool/repeated-read activity and turns derive from canonical events");
 	check(raw.costUsd === undefined && raw.costStatus === "unavailable", "unmeasured cost stays unavailable rather than zero");
 	check(symbol.costUsd === 0.25 && symbol.sourceTraceId === "symbol-1", "measured cost and source trace identity are preserved");
+	check(symbol.storedArtifacts === 2 && symbol.epochs === 1 && symbol.cacheStrategy === "local", "artifact strategy and epoch activity derive from canonical lifecycle events");
 
 	const aggregates = aggregateContextEvaluation([raw, v1, symbol]);
 	const report = renderContextEvaluationReport(aggregates);

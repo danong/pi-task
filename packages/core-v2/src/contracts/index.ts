@@ -13,6 +13,7 @@ export * from "./workspace-driver.ts";
 export * from "./environment-driver.ts";
 export * from "./context-compressor.ts";
 export * from "./context-provider.ts";
+export * from "./context-lifecycle.ts";
 export * from "./verification-driver.ts";
 export * from "./task-plugin.ts";
 export * from "./control-surface.ts";

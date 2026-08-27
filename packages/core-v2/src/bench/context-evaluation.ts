@@ -24,6 +24,14 @@ export interface ContextEvaluationRecord {
 	costUsd?: number;
 	unavailableMetrics: string[];
 	treeIdentity?: string;
+	planId?: string;
+	cacheStrategy?: string;
+	providerCacheReadTokens?: number;
+	cacheAttribution?: string;
+	storedArtifacts: number;
+	epochs: number;
+	epochTransitions: number;
+	checkpoints: number;
 }
 
 export interface ContextEvaluationAggregate {
@@ -41,6 +49,11 @@ export interface ContextEvaluationAggregate {
 	costStatus: "measured" | "unavailable";
 	unavailableMetrics: string[];
 	traceIds: string[];
+	storedArtifacts: number;
+	epochs: number;
+	epochTransitions: number;
+	checkpoints: number;
+	providerCacheReadTokens?: number;
 }
 
 function events(trace: TraceArtifact, type: TraceEvent["type"]): TraceEvent[] {
@@ -60,8 +73,10 @@ export function contextEvaluationRecord(
 	input: TraceArtifact,
 ): ContextEvaluationRecord {
 	const trace = TraceArtifactSchema.parse(input);
+	const planned = events(trace, "context.planned")[0];
 	const injected = events(trace, "context.injected")[0];
 	const selected = events(trace, "context.selected")[0];
+	const cache = events(trace, "context.cache")[0];
 	const toolStarts = events(trace, "tool.started");
 	const reads = toolStarts.filter((event) => event.detail?.toolName === "read");
 	const readPaths = reads
@@ -79,7 +94,7 @@ export function contextEvaluationRecord(
 		numberDetail(selected, "estimatedTokens") ??
 		numberDetail(injected, "tokens");
 	const unavailableMetrics: string[] = [];
-	if (!measured) unavailableMetrics.push("cost");
+	if (!measured) unavailableMetrics.push("cost", "providerCacheReadTokens");
 	if (contextTokens === undefined) unavailableMetrics.push("contextTokens");
 	const providerId =
 		typeof injected?.provider === "string"
@@ -110,6 +125,22 @@ export function contextEvaluationRecord(
 			? { costUsd: observedCost }
 			: {}),
 		unavailableMetrics,
+		storedArtifacts: numberDetail(cache, "storedArtifactCount") ?? 0,
+		epochs: events(trace, "epoch.started").length,
+		epochTransitions: events(trace, "epoch.transitioned").length,
+		checkpoints: events(trace, "checkpoint.saved").length,
+		...(typeof planned?.detail?.planId === "string"
+			? { planId: planned.detail.planId }
+			: {}),
+		...(typeof cache?.detail?.strategy === "string"
+			? { cacheStrategy: cache.detail.strategy }
+			: {}),
+		...(typeof cache?.detail?.attribution === "string"
+			? { cacheAttribution: cache.detail.attribution }
+			: {}),
+		...(trace.usage?.status === "measured"
+			? { providerCacheReadTokens: trace.usage.cacheReadTokens }
+			: {}),
 		...(typeof selected?.detail?.treeIdentity === "string"
 			? { treeIdentity: selected.detail.treeIdentity }
 			: {}),
@@ -181,6 +212,26 @@ export function aggregateContextEvaluation(
 					...new Set(group.flatMap((record) => record.unavailableMetrics)),
 				].sort(),
 				traceIds: group.map((record) => record.sourceTraceId).sort(),
+				storedArtifacts: group.reduce(
+					(sum, record) => sum + record.storedArtifacts,
+					0,
+				),
+				epochs: group.reduce((sum, record) => sum + record.epochs, 0),
+				epochTransitions: group.reduce(
+					(sum, record) => sum + record.epochTransitions,
+					0,
+				),
+				checkpoints: group.reduce((sum, record) => sum + record.checkpoints, 0),
+				...(group.every(
+					(record) => record.providerCacheReadTokens !== undefined,
+				)
+					? {
+							providerCacheReadTokens: group.reduce(
+								(sum, record) => sum + record.providerCacheReadTokens!,
+								0,
+							),
+						}
+					: {}),
 			};
 		});
 }
@@ -207,14 +258,14 @@ export function renderContextEvaluationReport(
 		"",
 		"No quality, cost, or acceptance advantage is inferred without measured trials.",
 		"",
-		"| provider | accepted | context chars | handles | reads | context tools | repeated reads | turns | cost | unavailable | traces |",
-		"|---|---:|---:|---:|---:|---:|---:|---:|---|---|---|",
+		"| provider | accepted | context chars | handles | stored artifacts | cache-read tokens | epochs | transitions | checkpoints | reads | context tools | repeated reads | turns | cost | unavailable | traces |",
+		"|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---|---|",
 	];
 	for (const aggregate of [...aggregates].sort((a, b) =>
 		a.providerId.localeCompare(b.providerId),
 	))
 		lines.push(
-			`| ${aggregate.providerId} | ${aggregate.accepted}/${aggregate.runs} | ${aggregate.contextCharacters ?? "unavailable"} | ${aggregate.selectedHandles} | ${aggregate.readCalls} | ${aggregate.contextToolCalls} | ${aggregate.repeatedReads} | ${aggregate.turns} | ${aggregate.costUsd ?? "unavailable"} | ${aggregate.unavailableMetrics.join(", ") || "none"} | ${aggregate.traceIds.join(", ")} |`,
+			`| ${aggregate.providerId} | ${aggregate.accepted}/${aggregate.runs} | ${aggregate.contextCharacters ?? "unavailable"} | ${aggregate.selectedHandles} | ${aggregate.storedArtifacts} | ${aggregate.providerCacheReadTokens ?? "unavailable"} | ${aggregate.epochs} | ${aggregate.epochTransitions} | ${aggregate.checkpoints} | ${aggregate.readCalls} | ${aggregate.contextToolCalls} | ${aggregate.repeatedReads} | ${aggregate.turns} | ${aggregate.costUsd ?? "unavailable"} | ${aggregate.unavailableMetrics.join(", ") || "none"} | ${aggregate.traceIds.join(", ")} |`,
 		);
 	return `${lines.join("\n")}\n`;
 }

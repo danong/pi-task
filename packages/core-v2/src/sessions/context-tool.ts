@@ -1,7 +1,12 @@
 /** Bounded worker-facing context query/handle resolution tool (M4). */
 import { defineTool } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { ContextArtifactSchema } from "../contracts/context-provider.ts";
+import {
+	CONTEXT_PROVIDER_MAX_CHARACTERS,
+	CONTEXT_PROVIDER_MAX_HANDLES,
+	ContextArtifactHandleSchema,
+	ContextArtifactSchema,
+} from "../contracts/context-provider.ts";
 import type {
 	CompiledContextArtifact,
 	ContextProvider,
@@ -26,12 +31,27 @@ const CONTEXT_PARAMS_SCHEMA = Type.Union([
 ]);
 
 function safeText(value: unknown): string {
-	// The artifact and handle contracts already bound the number and shape of
-	// returned records. Do not slice the encoded JSON: a character prefix can
-	// make an otherwise bounded artifact unparsable and discard its budgets or
-	// provenance. Source bodies are not part of either contract.
+	// Never slice structured output: reject an oversized provider result so the
+	// caller receives a valid typed fallback rather than malformed JSON.
 	const text = JSON.stringify(value);
-	return text === undefined ? "{}" : text;
+	if (text === undefined) return "{}";
+	if (text.length > CONTEXT_PROVIDER_MAX_CHARACTERS)
+		throw new RangeError(
+			"context tool output exceeds the hard character limit",
+		);
+	return text;
+}
+
+function validatedArtifact(value: unknown): CompiledContextArtifact {
+	return ContextArtifactSchema.parse(value);
+}
+
+function validatedHandles(
+	value: unknown,
+): ReturnType<typeof ContextArtifactHandleSchema.parse>[] {
+	if (!Array.isArray(value) || value.length > CONTEXT_PROVIDER_MAX_HANDLES)
+		throw new RangeError("context handle result exceeds the hard handle limit");
+	return value.map((handle) => ContextArtifactHandleSchema.parse(handle));
 }
 
 export interface ContextToolFallbackEvent {
@@ -151,10 +171,12 @@ export function makeContextTool(
 							? {}
 							: { maxResults: params.max_results };
 					try {
-						const artifact = await provider.query({
-							query: params.query,
-							options: queryOptions,
-						});
+						const artifact = validatedArtifact(
+							await provider.query({
+								query: params.query,
+								options: queryOptions,
+							}),
+						);
 						return {
 							content: [{ type: "text" as const, text: safeText(artifact) }],
 							details: {
@@ -166,10 +188,12 @@ export function makeContextTool(
 						};
 					} catch (error) {
 						try {
-							const artifact = await fallbackProvider.query({
-								query: params.query,
-								options: queryOptions,
-							});
+							const artifact = validatedArtifact(
+								await fallbackProvider.query({
+									query: params.query,
+									options: queryOptions,
+								}),
+							);
 							notifyFallback(error, artifact);
 							return {
 								content: [{ type: "text" as const, text: safeText(artifact) }],
@@ -189,7 +213,9 @@ export function makeContextTool(
 					return rejected(new Error("unsafe context handle"));
 				}
 				try {
-					const handles = await provider.resolve(params.handles);
+					const handles = validatedHandles(
+						await provider.resolve(params.handles),
+					);
 					return {
 						content: [{ type: "text" as const, text: safeText({ handles }) }],
 						details: {
@@ -204,10 +230,14 @@ export function makeContextTool(
 					if (isInvalidHandleError(error)) return rejected(error);
 					try {
 						try {
-							const handles = await fallbackProvider.resolve(params.handles);
+							const handles = validatedHandles(
+								await fallbackProvider.resolve(params.handles),
+							);
 							notifyFallback(error);
 							return {
-								content: [{ type: "text" as const, text: safeText({ handles }) }],
+								content: [
+									{ type: "text" as const, text: safeText({ handles }) },
+								],
 								details: {
 									status: "fallback",
 									provider: fallbackProvider.identity.id,
@@ -217,7 +247,9 @@ export function makeContextTool(
 						} catch {
 							// Raw has no resolvable handles. Its empty artifact is the
 							// explicit no-injection result for a failed index lookup.
-							const artifact = await fallbackProvider.query({ query: "" });
+							const artifact = validatedArtifact(
+								await fallbackProvider.query({ query: "" }),
+							);
 							notifyFallback(error, artifact);
 							return {
 								content: [{ type: "text" as const, text: safeText(artifact) }],

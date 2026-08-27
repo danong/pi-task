@@ -1,5 +1,11 @@
 /** Hermetic M4 context-provider contracts: bounded handles only, no model/network. */
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -17,6 +23,11 @@ import {
 	createRawContextProvider,
 	createSymbolTreeContextProvider,
 } from "../src/context/providers.ts";
+import {
+	acquisitionCapabilities,
+	planFromAcquisition,
+} from "../src/context/acquisition.ts";
+import { deriveInformationNeeds } from "../src/context/planner.ts";
 import { makeContextTool } from "../src/sessions/context-tool.ts";
 
 export async function runTests(): Promise<void> {
@@ -26,6 +37,14 @@ export async function runTests(): Promise<void> {
 	};
 	const root = mkdtempSync(join(tmpdir(), "core-v2-context-provider-"));
 	try {
+		const rawModule = readFileSync(
+			new URL("../src/context/raw-provider.ts", import.meta.url),
+			"utf8",
+		);
+		check(
+			!rawModule.includes("./providers") && !rawModule.includes("symbol-tree"),
+			"raw baseline has no module-load dependency on optional acquisition code",
+		);
 		mkdirSync(join(root, "src"), { recursive: true });
 		writeFileSync(
 			join(root, "src", "widget.ts"),
@@ -90,7 +109,7 @@ export async function runTests(): Promise<void> {
 			first.handles.every(
 				(handle) =>
 					handle.id.length > 0 &&
-					handle.provenance.sourceRevision === "fixture-1",
+					handle.provenance.sourceRevision === first.source.treeIdentity,
 			),
 			"handles preserve stable identity and provenance",
 		);
@@ -101,6 +120,47 @@ export async function runTests(): Promise<void> {
 		check(
 			first.estimatedSize.characters <= DEFAULT_CONTEXT_BUDGET.maxCharacters,
 			"compiled characters are bounded",
+		);
+		const retryProvider = createSymbolTreeContextProvider({
+			root,
+			sourceRevision: "different-attempt",
+		});
+		const firstPlan = await planFromAcquisition({
+			provider: symbol,
+			sourceRevision: "attempt-1",
+			query,
+			modelId: "fake/model",
+			toolSchemaIdentity: "worker-tools-v1:read,yield",
+		});
+		const retryPlan = await planFromAcquisition({
+			provider: retryProvider,
+			sourceRevision: "attempt-2",
+			query,
+			modelId: "fake/model",
+			toolSchemaIdentity: "worker-tools-v1:read,yield",
+		});
+		check(
+			firstPlan.plan.id === retryPlan.plan.id,
+			"unchanged content produces cache-affine plans across attempt identities",
+		);
+		const capabilities = acquisitionCapabilities(symbol);
+		const needs = deriveInformationNeeds({
+			goal: "Create the widget",
+			requirements: ["use createWidget"],
+		}).needs;
+		const acquired = await capabilities.candidates.acquire({
+			root,
+			sourceRevision: "fixture-1",
+			needs,
+		});
+		const materialized = await capabilities.materializer.materialize({
+			handles: first.handles.slice(0, 1).map((handle) => handle.id),
+			requirementIds: ["R1"],
+		});
+		check(
+			acquired.some((item) => item.requirementIds.length > 0) &&
+				materialized[0]?.requirementIds.includes("R1") === true,
+			"acquisition and materialization capabilities return requirement-linked lifecycle items",
 		);
 		const encoded = JSON.stringify(first);
 		check(
@@ -180,19 +240,26 @@ export async function runTests(): Promise<void> {
 			undefined as never,
 		);
 		const resolvedFallbackText =
-			(resolvedAfterFailure.content[0] as { text?: string } | undefined)?.text ?? "";
-		let resolvedFallbackArtifact: { provider?: { id?: string }; budget?: unknown };
+			(resolvedAfterFailure.content[0] as { text?: string } | undefined)
+				?.text ?? "";
+		let resolvedFallbackArtifact: {
+			provider?: { id?: string };
+			budget?: unknown;
+		};
 		try {
-			resolvedFallbackArtifact = JSON.parse(resolvedFallbackText) as typeof resolvedFallbackArtifact;
+			resolvedFallbackArtifact = JSON.parse(
+				resolvedFallbackText,
+			) as typeof resolvedFallbackArtifact;
 		} catch {
 			resolvedFallbackArtifact = {};
 		}
 		check(
-			(resolvedAfterFailure.details as { status?: string }).status === "fallback" &&
-			resolvedFallbackArtifact.provider?.id === "raw" &&
-			resolvedFallbackArtifact.budget !== undefined &&
-			resolveFallback?.fallbackProvider === "raw" &&
-			resolveFallback.artifact === "raw",
+			(resolvedAfterFailure.details as { status?: string }).status ===
+				"fallback" &&
+				resolvedFallbackArtifact.provider?.id === "raw" &&
+				resolvedFallbackArtifact.budget !== undefined &&
+				resolveFallback?.fallbackProvider === "raw" &&
+				resolveFallback.artifact === "raw",
 			"handle resolution failure returns a raw artifact and records actual fallback",
 		);
 
@@ -241,11 +308,12 @@ export async function runTests(): Promise<void> {
 				handles?: Array<{ provenance?: { treeIdentity?: string } }>;
 			};
 			check(
-				largeArtifact.budget?.maxCharacters === DEFAULT_CONTEXT_BUDGET.maxCharacters &&
-				(largeArtifact.handles?.length ?? 0) > 0 &&
-				largeArtifact.handles?.every(
-					(handle) => handle.provenance?.treeIdentity !== undefined,
-				) === true,
+				largeArtifact.budget?.maxCharacters ===
+					DEFAULT_CONTEXT_BUDGET.maxCharacters &&
+					(largeArtifact.handles?.length ?? 0) > 0 &&
+					largeArtifact.handles?.every(
+						(handle) => handle.provenance?.treeIdentity !== undefined,
+					) === true,
 				"large context query remains valid JSON with budget and provenance",
 			);
 		} catch {
