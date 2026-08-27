@@ -60,11 +60,8 @@ export function runTests(): Promise<void> {
 		);
 		writeFileSync(join(root, "image.dat"), Buffer.from([0, 1, 2, 3, 4]));
 		writeFileSync(join(root, "notes.weird"), "unsupported but visible\n", "utf8");
-		writeFileSync(
-			join(root, "huge.ts"),
-			`export function hiddenBySize(): void {}\n${"x".repeat(700)}`,
-			"utf8",
-		);
+		const hugeContent = `export function hiddenBySize(): void {}\n${"x".repeat(700)}`;
+		writeFileSync(join(root, "huge.ts"), hugeContent, "utf8");
 
 		for (const ignored of [".git", ".jj", "node_modules", "vendor", "dist", "artifacts"]) {
 			mkdirSync(join(root, ignored), { recursive: true });
@@ -150,9 +147,24 @@ export function runTests(): Promise<void> {
 		check(
 			first.entries
 				.filter((entry) => entry.status === "oversized")
-			.every((entry) => entry.contentIdentityScope === "prefix"),
-			"oversized files disclose their bounded identity scope",
+			.every((entry) => entry.contentIdentityScope === "full"),
+			"oversized files disclose their full streamed identity scope",
 		);
+
+		// Mutate only after the parsing prefix while preserving the file length.
+		const changedAfterPrefix = `${hugeContent.slice(0, -1)}y`;
+		check(changedAfterPrefix.length === hugeContent.length, "oversized mutation preserves file length");
+		check(first.limits.maxFileBytes < changedAfterPrefix.length - 1, "oversized mutation is after the parsing prefix");
+		writeFileSync(join(root, "huge.ts"), changedAfterPrefix, "utf8");
+		const oversizedMutation = scanSymbolTree(options);
+		const mutatedHuge = oversizedMutation.entries.find((entry) => entry.path === "huge.ts");
+		const originalHuge = first.entries.find((entry) => entry.path === "huge.ts");
+		check(
+			mutatedHuge?.sizeBytes === originalHuge?.sizeBytes &&
+			mutatedHuge?.contentIdentity !== originalHuge?.contentIdentity,
+			"a same-size mutation after the bounded prefix changes oversized content identity",
+		);
+		check(oversizedMutation.treeIdentity !== first.treeIdentity, "an oversized content mutation changes tree identity");
 
 		for (const forbidden of [
 			".git/",
@@ -182,7 +194,7 @@ export function runTests(): Promise<void> {
 		// mutation changes both the file and aggregate identities.
 		utimesSync(join(root, "src", "a.py"), new Date(1), new Date(1));
 		const timestampOnly = scanSymbolTree(options);
-		check(timestampOnly.treeIdentity === first.treeIdentity, "mtime does not affect identity");
+		check(timestampOnly.treeIdentity === oversizedMutation.treeIdentity, "mtime does not affect identity");
 		writeFileSync(
 			join(root, "src", "a.py"),
 			"class Alpha:\n    pass\n\ndef build_widget():\n    return 'changed'\n",
@@ -194,7 +206,7 @@ export function runTests(): Promise<void> {
 			mutatedPython?.contentIdentity !== python?.contentIdentity,
 			"content mutation changes the relevant file identity",
 		);
-		check(mutated.treeIdentity !== first.treeIdentity, "content mutation changes tree identity");
+		check(mutated.treeIdentity !== oversizedMutation.treeIdentity, "content mutation changes tree identity");
 	} finally {
 		rmSync(parent, { recursive: true, force: true });
 	}

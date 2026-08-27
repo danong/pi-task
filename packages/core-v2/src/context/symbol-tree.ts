@@ -3,8 +3,8 @@
  *
  * The scanner is deliberately independent of jj, models, and network access.
  * It walks only real filesystem entries beneath a canonical repository root,
- * reads at most the configured byte bound per file, and emits a stable tree
- * identity from sorted paths plus bounded content identities. Unsupported,
+ * retains only a configured prefix for parsing, and streams content through a
+ * fixed-size hash so identities cover the complete opened file. Unsupported,
  * binary, oversized, and unreadable files remain visible as explicit entries
  * rather than making the whole index fail.
  */
@@ -12,7 +12,8 @@
 import { createHash } from "node:crypto";
 import {
 	closeSync,
-	lstatSync,
+	constants,
+	fstatSync,
 	openSync,
 	readdirSync,
 	readSync,
@@ -39,11 +40,11 @@ export interface SymbolTreeEntry {
 	/** Stable language label inferred from the file name. */
 	language: string;
 	status: SymbolTreeStatus;
-	/** sha256 over the full file for indexed files, otherwise the bounded prefix. */
+	/** sha256 over the complete opened file, or unavailable for unreadable files. */
 	contentIdentity: string;
 	contentIdentityScope: ContentIdentityScope;
 	sizeBytes: number | null;
-	/** Null when the scanner intentionally did not read the complete file. */
+	/** Null when line metadata is intentionally omitted (oversized, binary, or unreadable). */
 	lineCount: number | null;
 	/** Unique, source-order symbols, capped by the scan limits. */
 	symbols: string[];
@@ -237,24 +238,86 @@ function isBinary(path: string, prefix: Buffer): boolean {
 	);
 }
 
-function sha256(bytes: Buffer): string {
-	return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+const HASH_CHUNK_BYTES = 64 * 1024;
+
+interface HashedContent {
+	prefix: Buffer;
+	contentIdentity: string;
+	totalBytes: number;
 }
 
-/** Read only a bounded prefix. open/read avoids readFileSync's whole-file allocation. */
-function readBounded(path: string, byteLimit: number): Buffer {
-	const fd = openSync(path, "r");
-	try {
-		const out = Buffer.allocUnsafe(byteLimit);
-		let offset = 0;
-		while (offset < byteLimit) {
-			const count = readSync(fd, out, offset, byteLimit - offset, offset);
-			if (count === 0) break;
-			offset += count;
+/**
+ * Hash the complete descriptor contents while retaining only a bounded prefix.
+ * The descriptor is opened once by the caller, so a path replacement cannot
+ * redirect a later read to a different file.
+ */
+function hashContent(fd: number, prefixLimit: number): HashedContent {
+	const hash = createHash("sha256");
+	const prefixChunks: Buffer[] = [];
+	let prefixBytes = 0;
+	let totalBytes = 0;
+	for (;;) {
+		const chunk = Buffer.allocUnsafe(HASH_CHUNK_BYTES);
+		const count = readSync(fd, chunk, 0, chunk.length, null);
+		if (count === 0) break;
+		const bytes = chunk.subarray(0, count);
+		hash.update(bytes);
+		totalBytes += count;
+		if (prefixBytes < prefixLimit) {
+			const retained = bytes.subarray(0, Math.min(bytes.length, prefixLimit - prefixBytes));
+			prefixChunks.push(Buffer.from(retained));
+			prefixBytes += retained.length;
 		}
-		return out.subarray(0, offset);
-	} finally {
+	}
+	return {
+		prefix: Buffer.concat(prefixChunks, prefixBytes),
+		contentIdentity: `sha256:${hash.digest("hex")}`,
+		totalBytes,
+	};
+}
+
+function isNoFollowViolation(error: unknown): boolean {
+	return (
+		typeof error === "object" &&
+		error !== null &&
+		"code" in error &&
+		(error as { code?: unknown }).code === "ELOOP"
+	);
+}
+
+interface OpenedFile {
+	fd: number;
+	sizeBytes: number;
+}
+
+/**
+ * Open and validate one candidate atomically with respect to its final path
+ * component. O_NOFOLLOW blocks a raced final symlink; the descriptor's proc
+ * path check also rejects a parent-directory swap that resolves outside root.
+ */
+function openFileInRoot(root: string, path: string): OpenedFile | null {
+	let fd: number;
+	try {
+		fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+	} catch (error: unknown) {
+		if (isNoFollowViolation(error)) return null;
+		throw error;
+	}
+	try {
+		const stats = fstatSync(fd);
+		if (!stats.isFile()) {
+			closeSync(fd);
+			return null;
+		}
+		const descriptorPath = realpathSync(`/proc/self/fd/${fd}`);
+		if (!isWithinRoot(root, descriptorPath)) {
+			closeSync(fd);
+			return null;
+		}
+		return { fd, sizeBytes: stats.size };
+	} catch (error: unknown) {
 		closeSync(fd);
+		throw error;
 	}
 }
 
@@ -317,23 +380,25 @@ function relativePath(root: string, path: string): string {
 function readEntry(
 	root: string,
 	path: string,
-	sizeBytes: number,
+	fd: number,
+	_sizeBytes: number,
 	limits: SymbolTreeLimits,
 ): SymbolTreeEntry {
 	const relPath = relativePath(root, path);
 	const language = languageFor(relPath);
-	const bytes = readBounded(path, Math.min(sizeBytes, limits.maxFileBytes + 1));
-	const oversized = sizeBytes > limits.maxFileBytes || bytes.length > limits.maxFileBytes;
-	const scope: ContentIdentityScope = oversized ? "prefix" : "full";
+	const hashed = hashContent(fd, limits.maxFileBytes + 1);
+	const bytes = hashed.prefix;
+	const oversized = hashed.totalBytes > limits.maxFileBytes;
+	const scope: ContentIdentityScope = "full";
 	const binary = isBinary(relPath, bytes);
 	if (oversized) {
 		return {
 			path: relPath,
 			language,
 			status: "oversized",
-			contentIdentity: sha256(bytes),
+			contentIdentity: hashed.contentIdentity,
 			contentIdentityScope: scope,
-			sizeBytes,
+			sizeBytes: hashed.totalBytes,
 			lineCount: null,
 			symbols: [],
 		};
@@ -343,9 +408,9 @@ function readEntry(
 			path: relPath,
 			language,
 			status: "binary",
-			contentIdentity: sha256(bytes),
+			contentIdentity: hashed.contentIdentity,
 			contentIdentityScope: scope,
-			sizeBytes,
+			sizeBytes: hashed.totalBytes,
 			lineCount: null,
 			symbols: [],
 		};
@@ -355,9 +420,9 @@ function readEntry(
 			path: relPath,
 			language,
 			status: "unsupported",
-			contentIdentity: sha256(bytes),
+			contentIdentity: hashed.contentIdentity,
 			contentIdentityScope: scope,
-			sizeBytes,
+			sizeBytes: hashed.totalBytes,
 			lineCount: lineCount(bytes),
 			symbols: [],
 		};
@@ -367,9 +432,9 @@ function readEntry(
 		path: relPath,
 		language,
 		status: "indexed",
-		contentIdentity: sha256(bytes),
+		contentIdentity: hashed.contentIdentity,
 		contentIdentityScope: scope,
-		sizeBytes,
+		sizeBytes: hashed.totalBytes,
 		lineCount: lineCount(bytes),
 		symbols: extractSymbols(text, language, limits),
 	};
@@ -402,6 +467,7 @@ function treeIdentity(entries: readonly SymbolTreeEntry[]): string {
 				entry.language,
 				entry.status,
 				entry.contentIdentity,
+				entry.contentIdentityScope,
 				entry.sizeBytes,
 				entry.lineCount,
 				entry.symbols,
@@ -437,18 +503,23 @@ export function scanSymbolTree(options: ScanSymbolTreeOptions): SymbolTree {
 			const fullPath = resolve(directory, child.name);
 			if (!isWithinRoot(root, fullPath) || child.isSymbolicLink()) continue;
 			if (child.isDirectory()) {
-				pending.push(fullPath);
+				try {
+					if (isWithinRoot(root, realpathSync(fullPath))) pending.push(fullPath);
+				} catch {
+					// A directory removed or replaced during traversal is simply absent.
+				}
 				continue;
 			}
 			if (!child.isFile()) continue;
-			let sizeBytes: number | null = null;
+			let opened: OpenedFile | null = null;
 			try {
-				const canonicalPath = realpathSync(fullPath);
-				if (!isWithinRoot(root, canonicalPath)) continue;
-				sizeBytes = lstatSync(fullPath).size;
-				entries.push(readEntry(root, fullPath, sizeBytes, limits));
+				opened = openFileInRoot(root, fullPath);
+				if (opened === null) continue;
+				entries.push(readEntry(root, fullPath, opened.fd, opened.sizeBytes, limits));
 			} catch {
-				entries.push(unreadableEntry(root, fullPath, languageFor(relativePath(root, fullPath)), sizeBytes));
+				entries.push(unreadableEntry(root, fullPath, languageFor(relativePath(root, fullPath)), opened?.sizeBytes ?? null));
+			} finally {
+				if (opened !== null) closeSync(opened.fd);
 			}
 		}
 	}
