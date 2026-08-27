@@ -1,3 +1,5 @@
+> **Archive status:** Historical and non-normative. See [`README.md`](README.md) for the active source of truth.
+
 # pi-task — Phase 1 Handoff
 
 You are implementing **Phase 1** of `pi-task`, a new task-execution engine for
@@ -20,20 +22,20 @@ metrics, the `task` tool) builds on this.
    tool", and "Verification and Review". ("Context Seeding" is background only —
    not built in Phase 1.)
 2. **pi RPC protocol** —
-   `/home/danong/.local/lib/node_modules/@earendil-works/pi-coding-agent/docs/rpc.md`.
+   `$PI_PACKAGE_ROOT/docs/rpc.md`.
    Read it fully. The JSONL framing rules, the command set (`prompt`, `abort`,
    `get_session_stats`), and the event types (`tool_execution_end`,
    `message_end`, `agent_settled`) are essential.
 3. **pi extensions API** —
-   `/home/danong/.local/lib/node_modules/@earendil-works/pi-coding-agent/docs/extensions.md`.
+   `$PI_PACKAGE_ROOT/docs/extensions.md`.
    For `pi.registerTool`, TypeBox parameters, tool-result `terminate: true`, and
    `ctx.shutdown()`.
 4. **Existing code to crib from** —
-   `/home/danong/.pi/agent/extensions/subagent/index.ts` (see `getPiInvocation`,
+   `$PI_AGENT_DIR/extensions/subagent/index.ts` (see `getPiInvocation`,
    the manual JSONL line parser, and the spawn/abort pattern) and
-   `/home/danong/.pi/agent/extensions/memory-store.ts` (another
+   `$PI_AGENT_DIR/extensions/memory-store.ts` (another
    `getPiInvocation`). Reuse these patterns; do not reinvent them.
-5. **jj skill** — `/home/danong/.pi/agent/skills/jj/SKILL.md`. Load it before any
+5. **jj skill** — `$PI_AGENT_DIR/skills/jj/SKILL.md`. Load it before any
    jj/git work.
 
 ## Step 0 — set up the workspace (do this first)
@@ -42,22 +44,22 @@ All Phase 1 work happens in a **jj workspace**, NOT the live global config. This
 protects the config your daily sessions run on.
 
 ```bash
-cd /home/danong/.pi/agent
+cd $PI_AGENT_DIR
 jj workspace add ../pi-task-dev
 ```
 
-The workspace lives at **`/home/danong/.pi/pi-task-dev`**. It shares commits and
+The workspace lives at **`$PI_TASK_WORKSPACE`**. It shares commits and
 the op log with the main repo but has its own working copy.
 
-- Put all new code under `/home/danong/.pi/pi-task-dev/extensions/task/`.
-- **Do not edit anything under `/home/danong/.pi/agent/extensions/`** — that is
+- Put all new code under `$PI_TASK_WORKSPACE/extensions/task/`.
+- **Do not edit anything under `$PI_AGENT_DIR/extensions/`** — that is
   the live config.
 - The shell cwd does **not** persist across bash tool calls. Prefix every bash
-  command with `cd /home/danong/.pi/pi-task-dev && ...`.
+  command with `cd $PI_TASK_WORKSPACE && ...`.
 
 ## Deliverables
 
-Create these under `/home/danong/.pi/pi-task-dev/extensions/task/`:
+Create these under `$PI_TASK_WORKSPACE/extensions/task/`:
 
 ### 1. `schemas/yield.ts` — the typed contract (single source of truth)
 
@@ -167,7 +169,7 @@ A standalone script (e.g. `extensions/task/test-phase1.ts`) that:
 
 Run it with a timeout (it drives a real LLM):
 `timeout 240 bun test-phase1.ts`. The pi package is installed at
-`/home/danong/.local/lib/node_modules/@earendil-works/pi-coding-agent`; if bun
+`$PI_PACKAGE_ROOT`; if bun
 cannot resolve the import, run with the same runtime pi uses or set `NODE_PATH`.
 
 ## Critical technical details (expensive to rediscover)
@@ -185,7 +187,7 @@ cannot resolve the import, run with the same runtime pi uses or set `NODE_PATH`.
    doc's File Structure mentions zod; we deliberately use TypeBox in Phase 1 to
    avoid a duplicate schema. A separate zod schema can come later if needed.)
 5. **`--extension` needs an absolute path** to the workspace's `tools/yield.ts`
-   (`/home/danong/.pi/pi-task-dev/extensions/task/tools/yield.ts`), so the worker
+   (`$PI_TASK_WORKSPACE/extensions/task/tools/yield.ts`), so the worker
    loads the in-progress tool, not anything from the live config.
 6. **Use `--no-session` for the worker** in Phase 1 (no forked review yet). For
    debugging you may temporarily point `--session-dir` at a scratch dir.
@@ -217,9 +219,9 @@ Phase 1 is done when:
   non-zero where expected.
 - Abort (via `signal`) terminates the worker.
 - The smoke test passes against `opencode-go/deepseek-v4-flash`.
-- All code lives in `/home/danong/.pi/pi-task-dev/extensions/task/`, committed
+- All code lives in `$PI_TASK_WORKSPACE/extensions/task/`, committed
   with proper jj messages.
-- The live config (`/home/danong/.pi/agent/extensions/`) is untouched.
+- The live config (`$PI_AGENT_DIR/extensions/`) is untouched.
 
 ## Out of scope for Phase 1 (do NOT build these)
 

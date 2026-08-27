@@ -1,3 +1,5 @@
+> **Archive status:** Historical and non-normative. See [`README.md`](README.md) for the active source of truth.
+
 # Architecture review: pi-task-v2 M2 (workspaces, environments, parallel pipeline)
 
 Adversarial spec-fidelity review of the M2 milestone — environment drivers,

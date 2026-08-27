@@ -1,3 +1,5 @@
+> **Archive status:** Historical and non-normative. See [`README.md`](README.md) for the active source of truth.
+
 # Architecture review: the worker no-yield failure handling
 
 An adversarial review of the three-layer fix for the "worker ended without

@@ -66,7 +66,7 @@ parallelizable work decomposes into parallel `sub_specs` (markdown strings or
 {goal, requirements, verification, context?} objects; spec may be omitted
 when sub_specs is given).
 
-**See [`docs/workflow.md`](docs/workflow.md) for the full workflow** — the
+**See [`docs/old/workflow.md`](docs/old/workflow.md) for the historical workflow** — the
 contract, the flow, template-by-template guidance, the run lifecycle, and the
 quality loops. `/task-stats` summarizes recorded runs (latency, cost, verify
 pass rate) from the agent-dir metrics — all projects, or one with an

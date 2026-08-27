@@ -43,7 +43,7 @@ HOW — plus:
   code; surface an ADR conflict only when the friction the recorded
   decision causes today warrants reopening it.
 - Report format: a markdown report committed at a user-specified path
-  (default `docs/architecture-review.md`), one card per candidate
+  (default `docs/old/architecture-review.md`), one card per candidate
   (files / problem / solution / benefits in terms of locality, leverage,
   and tests), each rated Strong | Worth exploring | Speculative, plus a Top
   recommendation section.

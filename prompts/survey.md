@@ -52,7 +52,7 @@ so the writer and whoever judges the report score candidates the same way:
 ## Report format
 
 The deliverable is a markdown report committed at a user-specified path
-(ask the user; default `docs/architecture-review.md`), containing:
+(ask the user; default `docs/old/architecture-review.md`), containing:
 
 - One card per candidate: **Files** / **Problem** / **Solution** /
   **Benefits** — benefits stated in terms of locality, leverage, and tests.
@@ -67,9 +67,9 @@ The spec's `## Verification` is plain bash, one command per line, each
 exiting 0 when done — the report exists and carries the required sections,
 e.g.:
 
-    test -f docs/architecture-review.md
-    grep -q '^## Candidates' docs/architecture-review.md
-    grep -q '^## Top recommendation' docs/architecture-review.md
+    test -f docs/old/architecture-review.md
+    grep -q '^## Candidates' docs/old/architecture-review.md
+    grep -q '^## Top recommendation' docs/old/architecture-review.md
 
 ## Dispatch
 

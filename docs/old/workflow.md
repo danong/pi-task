@@ -1,3 +1,5 @@
+> **Archive status:** Historical and non-normative. See [`README.md`](README.md) for the active source of truth.
+
 # pi-task workflow
 
 How the agent-facing workflow works: what the conversational agent is

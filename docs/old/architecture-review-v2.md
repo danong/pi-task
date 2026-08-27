@@ -1,3 +1,5 @@
+> **Archive status:** Historical and non-normative. See [`README.md`](README.md) for the active source of truth.
+
 # Architecture review: pi-task-v2 M0+M1 (adversarial spec-fidelity survey)
 
 An adversarial review of everything the v2 subtree claims to implement,

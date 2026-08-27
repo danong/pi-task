@@ -1,3 +1,5 @@
+> **Archive status:** Historical and non-normative. See [`README.md`](README.md) for the active source of truth.
+
 # pi-task — Phase 11 Handoff
 
 You are implementing **Phase 11** of `pi-task`, the task-execution engine for

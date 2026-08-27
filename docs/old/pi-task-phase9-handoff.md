@@ -1,3 +1,5 @@
+> **Archive status:** Historical and non-normative. See [`README.md`](README.md) for the active source of truth.
+
 # pi-task — Phase 9 Handoff
 
 You are implementing **Phase 9** of `pi-task`, a task-execution engine for pi.
@@ -30,7 +32,7 @@ pi-task to the main session:
 
 ## Current state (verified)
 
-- All work lives in the **pi-task-dev workspace**: `/home/danong/.pi/pi-task-dev`
+- All work lives in the **pi-task-dev workspace**: `$PI_TASK_WORKSPACE`
   (a jj workspace over the shared `~/.pi/agent` repo — shared commits + op log,
   own working copy). The live config `~/.pi/agent/extensions/` is **untouched**.
   Both workspaces are clean. (A stale-working-copy incident on the *default*
@@ -113,25 +115,25 @@ pi-task to the main session:
    `sliceRelevant`, `loadRepoMapConfig`), `metrics.ts` (`RunManifest`),
    `worker.ts` (`DEFAULT_WORKER_SYSTEM_PROMPT`).
 5. **pi extensions API** —
-   `/home/danong/.local/lib/node_modules/@earendil-works/pi-coding-agent/docs/extensions.md`:
+   `$PI_PACKAGE_ROOT/docs/extensions.md`:
    `pi.registerTool` (+ `execute(toolCallId, params, signal, onUpdate, ctx)` and
    `renderResult`), `pi.registerFlag` + `pi.getFlag`, `pi.registerCommand`,
    `ctx.ui.setStatus`, and `pi.on("before_agent_start")` with
    `event.systemPromptOptions`.
-6. **jj skill** — `/home/danong/.pi/agent/skills/jj/SKILL.md`. Load before any
+6. **jj skill** — `$PI_AGENT_DIR/skills/jj/SKILL.md`. Load before any
    jj work.
 
 ## Step 0 — get oriented
 
 ```bash
-cd /home/danong/.pi/pi-task-dev
+cd $PI_TASK_WORKSPACE
 jj st                     # should show an empty @ on top of eac839bf
 ```
 
-- Put all new code under `/home/danong/.pi/pi-task-dev/extensions/task/`.
-- Do **not** edit anything under `/home/danong/.pi/agent/extensions/` (live config).
+- Put all new code under `$PI_TASK_WORKSPACE/extensions/task/`.
+- Do **not** edit anything under `$PI_AGENT_DIR/extensions/` (live config).
 - The shell cwd does **not** persist across bash calls — prefix every command
-  with `cd /home/danong/.pi/pi-task-dev && ...`.
+  with `cd $PI_TASK_WORKSPACE && ...`.
 
 ## Parallel decomposition & spec encapsulation — READ CAREFULLY
 
@@ -196,7 +198,7 @@ from its length; ignore/validate any `parallel` arg against it). If only `spec`
 
 ## Deliverables
 
-Create/modify under `/home/danong/.pi/pi-task-dev/extensions/task/`:
+Create/modify under `$PI_TASK_WORKSPACE/extensions/task/`:
 
 ### 1. `index.ts` — extension entry point
 
@@ -315,7 +317,7 @@ Phase 9 is done when:
   working `codebase_map` tool.
 - Single-worker behavior is byte-for-byte unchanged (regression); the full fast
   suite passes (<15s, zero LLM); strict typecheck is clean.
-- All code is in `/home/danong/.pi/pi-task-dev/extensions/task/`, committed with
+- All code is in `$PI_TASK_WORKSPACE/extensions/task/`, committed with
   proper jj messages; the live config is untouched.
 
 ## Out of scope for Phase 9 (do NOT build)

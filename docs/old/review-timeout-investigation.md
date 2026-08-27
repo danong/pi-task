@@ -1,3 +1,5 @@
+> **Archive status:** Historical and non-normative. See [`README.md`](README.md) for the active source of truth.
+
 # Review Timeout Investigation — forked adversarial review hangs
 
 Status: investigation (read-only; no extension code changed). Companion to todo #80.

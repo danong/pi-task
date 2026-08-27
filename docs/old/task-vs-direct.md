@@ -1,3 +1,5 @@
+> **Archive status:** Historical and non-normative. See [`README.md`](README.md) for the active source of truth.
+
 # Task dispatch vs. direct editing: what the data says
 
 A decision aid for the conversational agent (and the human watching it):

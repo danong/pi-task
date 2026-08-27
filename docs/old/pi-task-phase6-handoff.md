@@ -1,3 +1,5 @@
+> **Archive status:** Historical and non-normative. See [`README.md`](README.md) for the active source of truth.
+
 # pi-task — Phase 6 Handoff
 
 You are implementing **Phase 6** of `pi-task`, a task-execution engine for pi.
@@ -21,7 +23,7 @@ tool); Phase 6 is the deterministic mechanics underneath.
 
 ## Current state (verified)
 
-- All work lives in the **pi-task-dev workspace**: `/home/danong/.pi/pi-task-dev`
+- All work lives in the **pi-task-dev workspace**: `$PI_TASK_WORKSPACE`
   (a jj workspace over the shared `~/.pi/agent` repo — shared commits + op
   log, own working copy). The live config `~/.pi/agent/extensions/` is
   **untouched**.
@@ -60,21 +62,21 @@ tool); Phase 6 is the deterministic mechanics underneath.
      verification. Phase 6 adds the parallel branch here.
    - `extensions/task/test-orchestrator.ts` + `test-prewalk.ts` — the smoke
      test conventions (temp `jj git init --colocate` repos, timeouts, models).
-4. **jj skill** — `/home/danong/.pi/agent/skills/jj/SKILL.md`, especially the
+4. **jj skill** — `$PI_AGENT_DIR/skills/jj/SKILL.md`, especially the
    **Workspaces** section. Load it before any jj work. You will live in
    workspace mechanics this phase.
 
 ## Step 0 — get oriented
 
 ```bash
-cd /home/danong/.pi/pi-task-dev
+cd $PI_TASK_WORKSPACE
 jj st                     # should show an empty @ on top of 28acca38
 ```
 
-- Put all new code under `/home/danong/.pi/pi-task-dev/extensions/task/`.
-- Do **not** edit anything under `/home/danong/.pi/agent/extensions/`.
+- Put all new code under `$PI_TASK_WORKSPACE/extensions/task/`.
+- Do **not** edit anything under `$PI_AGENT_DIR/extensions/`.
 - The shell cwd does **not** persist across bash tool calls — prefix every
-  bash command with `cd /home/danong/.pi/pi-task-dev && ...`.
+  bash command with `cd $PI_TASK_WORKSPACE && ...`.
 
 ## Deliverables
 
@@ -205,7 +207,7 @@ Phase 6 is done when:
   tests pass).
 - The mechanics + conflict tests are deterministic and free (no LLM).
 - The parallel smoke test passes against two real workers.
-- All code in `/home/danong/.pi/pi-task-dev/extensions/task/`, committed with
+- All code in `$PI_TASK_WORKSPACE/extensions/task/`, committed with
   proper jj messages. Live config untouched.
 
 ## Out of scope for Phase 6 (do NOT build)

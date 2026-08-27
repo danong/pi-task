@@ -1,3 +1,5 @@
+> **Archive status:** Historical and non-normative. See [`README.md`](README.md) for the active source of truth.
+
 # Review: async/cost-optimization feature set (M1–M4)
 
 Point-in-time adversarial review (2026-08-19) of the channel-aware shapes

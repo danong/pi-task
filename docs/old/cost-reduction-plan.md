@@ -1,3 +1,5 @@
+> **Archive status:** Historical and non-normative. See [`README.md`](README.md) for the active source of truth.
+
 # Cost-Reduction Plan
 
 How a run pays: **turns × (fixed prompt prefix + growing history + reasoning

@@ -1,3 +1,5 @@
+> **Archive status:** Historical and non-normative. See [`README.md`](README.md) for the active source of truth.
+
 # Adversarial spec-fidelity review — M4 (plugin kernel)
 
 Scope reviewed: everything on main since commit `d5a209b5`

@@ -1,5 +1,11 @@
 # pi-task: Typed Task Execution with Prewalk
 
+**Status: Active v1 compatibility and safety contract.** The active v2 source of
+truth is [`pi-task-v2.md`](pi-task-v2.md), with detailed contracts in
+[`pi-task-v2-subsystems.md`](pi-task-v2-subsystems.md). Historical reviews,
+handoffs, investigations, plans, and superseded workflow/testing documents are
+non-normative and indexed in [`old/README.md`](old/README.md).
+
 A task execution engine for pi coding agent sessions. Workers run in isolated
 RPC sessions with schema-validated output, event-driven model swapping, and
 code-enforced workflow guarantees.
@@ -44,7 +50,7 @@ workflow decisions that are better expressed as deterministic code.
 
 > **Agent-facing workflow**: what the conversational agent is supposed to do,
 > the templates (`/plan`, `/build`, `/survey`), the workflow contract, and
-> the run lifecycle are documented in [`workflow.md`](workflow.md). This
+> the run lifecycle are documented in [`old/workflow.md`](old/workflow.md). This
 > section is the implementation architecture underneath it.
 
 ```
@@ -401,7 +407,7 @@ review = true
 wall_timeout_ms = 2700000  # per-tier worker wall, 45 min
 
 # Additional cost levers (wave 1 of the cost-reduction plan —
-# docs/cost-reduction-plan.md):
+# [`old/cost-reduction-plan.md`](old/cost-reduction-plan.md):
 #   [defaults] prewalk_min_requirements = 3  # skip the prewalk for tasks
 #       with FEWER requirements than this (start straight on execute model)
 #   [budget.*] checklist = false              # loose the checklist ritual on
@@ -1179,7 +1185,7 @@ against pi's RPC surface; see `review.ts`, `prune.ts`, `personas.ts`):
   `ForkReviewOptions.firstEventTimeoutMs` / `.noProgressTimeoutMs`; the
   wall via `ExecuteTaskOptions.reviewWallTimeoutMs` (config:
   `[defaults] review_wall_timeout_ms`). Root
-  cause and evidence: docs/review-timeout-investigation.md.
+  cause and evidence: [`old/review-timeout-investigation.md`](old/review-timeout-investigation.md).
 - **Scope limits.** Review is single-worker in Phase 7 (the fix loop operates
   on one working copy; parallel + review warns and proceeds verify-only).
   Review defaults OFF — `ExecuteTaskOptions.review` is the per-call switch;
@@ -1701,7 +1707,7 @@ and can be shipped incrementally.
 
 ## Testing
 
-The suite is split by cost and hermeticity (see `docs/pi-task-testing-spec.md`
+The suite is split by cost and hermeticity (see [`old/pi-task-testing-spec.md`](old/pi-task-testing-spec.md)
 for the full contract):
 
 - **Fast hermetic suite** — `timeout 120 npx tsx extensions/task/test.ts`.
@@ -1831,7 +1837,7 @@ its workspace into the main repo, issue #83) holds.
 The agent dir is bound READ-ONLY (before the cwd rw bind, in mount order)
 so a parallel worker cannot escape its jj workspace by writing into the
 main repo through the agent dir — the isolation gap found in the issue #83
-reproduction, where a worker wrote `/home/danong/.pi/agent/a.txt` via an
+reproduction, where a worker wrote `$PI_AGENT_DIR/a.txt` via an
 absolute path. EXCEPTION (todo #89): pi's own runtime-state paths inside the
 agent dir (`PI_RUNTIME_STATE_PATHS` in sandbox.ts — `settings.json`,
 `trust.json`, `models-store.json`, `sessions/`, `cache/`, `results/`, `tmp/`,

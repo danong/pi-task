@@ -1,3 +1,5 @@
+> **Archive status:** Historical and non-normative. See [`README.md`](README.md) for the active source of truth.
+
 # pi-task — Test Suite Restructuring Spec (Phase 6.5)
 
 ## Mission
@@ -200,16 +202,16 @@ fully deterministic.
 
 ## 6. Worker constraints (IMPORTANT — the implementing agent)
 
-- Work **only** in `/home/danong/.pi/pi-task-dev` — the pi-task-dev jj workspace (a workspace
+- Work **only** in `$PI_TASK_WORKSPACE` — the pi-task-dev jj workspace (a workspace
   over the shared `~/.pi/agent` repo: shared commits + op log, its own working copy).
-- **Do NOT modify anything under `/home/danong/.pi/agent/`** (the live config) or the main
+- **Do NOT modify anything under `$PI_AGENT_DIR/`** (the live config) or the main
   working copy. **Do NOT touch the `main` bookmark, do NOT push, do NOT rebase.**
 - Commit **in this workspace's `@` chain** with jj: load the jj skill first; commit format
   `jj commit -m "type(scope): summary\n\nBody.\n\n#PI"`; `jj commit` starts the next empty `@`
   — do not run `jj new` after. Current top of chain: `e729a232` (phase 6). The spec doc
   (`docs/pi-task-testing-spec.md`) is part of the work and is committed with the implementation.
 - The shell cwd does not persist across tool calls — prefix every bash command with
-  `cd /home/danong/.pi/pi-task-dev && ...`.
+  `cd $PI_TASK_WORKSPACE && ...`.
 
 ## 7. Acceptance criteria
 
@@ -221,14 +223,14 @@ fully deterministic.
 - Strict typecheck clean (recipe: scratch tsconfig — module `ESNext`, `target: "ES2022"` (default
   target errors on Set/Map iteration, TS2802), moduleResolution
   `bundler`, `allowImportingTsExtensions`, `noEmit`, `skipLibCheck`, `strict`,
-  `typeRoots: ["/home/danong/.local/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/@types"]`,
+  `typeRoots: ["$PI_PACKAGE_ROOT/node_modules/@types"]`,
   `types: ["node"]`, and `paths` mapping `typebox` /
   `@earendil-works/pi-ai` / `@earendil-works/pi-coding-agent` to their locations under
-  `/home/danong/.local/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/`; run via
+  `$PI_PACKAGE_ROOT/node_modules/`; run via
   `npx -y -p typescript@5.9.3 tsc -p <scratch-tsconfig>` — recreate it at `/tmp`).
 - `docs/pi-task-design.md` updated: short "Testing" note (fast hermetic suite + one manual e2e;
   where each behavior is verified; no hardcoded counts — point at the test files).
-- All code in `/home/danong/.pi/pi-task-dev/extensions/task/`, live config untouched, jj commits
+- All code in `$PI_TASK_WORKSPACE/extensions/task/`, live config untouched, jj commits
   per logical chunk.
 
 ## 8. Suggested order

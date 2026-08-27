@@ -1,3 +1,5 @@
+> **Archive status:** Historical and non-normative. See [`README.md`](README.md) for the active source of truth.
+
 # pi-task — Phase 10 Handoff
 
 You are implementing **Phase 10** of `pi-task`, the task-execution engine for
@@ -60,10 +62,10 @@ touch the live config (`~/.pi/agent/extensions/` etc.), do not advance
 
 ## Current state (verified)
 
-- All work lives in the **pi-task-dev workspace**: `/home/danong/.pi/pi-task-dev`
+- All work lives in the **pi-task-dev workspace**: `$PI_TASK_WORKSPACE`
   (a jj workspace over the shared `~/.pi/agent` repo). The live config is
   **untouched**. `@` is the empty "phase 10" commit; the shell cwd does not
-  persist across bash calls — prefix commands with `cd /home/danong/.pi/pi-task-dev &&`.
+  persist across bash calls — prefix commands with `cd $PI_TASK_WORKSPACE &&`.
 - **Feature branch**: `main` is at `72d625ce` (change `xmmwmprqvyuz`,
   "docs(pi-task): add phase 1 handoff doc"), **not advanced, not pushed**.
   Newest → oldest since `main` (verify with
@@ -108,12 +110,12 @@ touch the live config (`~/.pi/agent/extensions/` etc.), do not advance
    to crib), `extensions/task/orchestrator.ts` (`ExecuteTaskOptions`,
    `TaskResult`), `extensions/task/metrics.ts` (`buildRunManifest` input
    `config.budget`), `extensions/task/schemas/spec.ts` (`parseSpec`).
-5. **jj skill** — `/home/danong/.pi/agent/skills/jj/SKILL.md`. Load before
+5. **jj skill** — `$PI_AGENT_DIR/skills/jj/SKILL.md`. Load before
    any jj work.
 
 ## Deliverables
 
-All under `/home/danong/.pi/pi-task-dev/` unless stated.
+All under `$PI_TASK_WORKSPACE/` unless stated.
 
 ### 1. `config/task.toml` + `extensions/task/config.ts` (loader)
 

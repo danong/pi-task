@@ -1,3 +1,5 @@
+> **Archive status:** Historical and non-normative. See [`README.md`](README.md) for the active source of truth.
+
 # Architecture review (cheap): pi-task — VCS-churn hotspot scan
 
 A cheap hotspot survey of the pi-task codebase looking for deepening
