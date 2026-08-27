@@ -159,6 +159,29 @@ must not change authoritative state. Transforms and observers emit their own
 provider identity and ordering so an operator can explain how a result was
 produced.
 
+### Completed M1 observability behavior
+
+M1 ships this contract as a bounded trace artifact with a versioned,
+provider-neutral event vocabulary. It records observed turns as well as
+lifecycle, tool, context, model, usage, verification, artifact, and recovery
+activity, without requiring transcripts or private reasoning. Usage is
+explicitly `measured` or `unavailable`; a zero value with the latter status is
+not an observed performance result. Versioned baseline trace fixtures are
+stored with the core-v2 test evidence. They are evidence inputs for validating
+parsing, derivation, and reporting, not performance claims or model defaults.
+
+The provider-neutral report command consumes validated trace files or stored
+records:
+
+```sh
+mise run bench-report -- --traces-dir <trace-directory> --label <label>
+```
+
+It reports accepted outcomes, cost when measured, turns, tool activity,
+repeated reads, context and elapsed values when available, verification and
+acceptance failures, and unavailable metrics. It does not fill missing values
+from assumptions.
+
 ## 6. Plugins and ordered transforms
 
 Plugin loading is explicit and configuration-selected. A plugin declares its
@@ -220,15 +243,40 @@ mise run v2 -- --spec ./task.md --project-dir . --model provider/model
 `packages/core-v2/src/cli.ts` is only an interface adapter: it validates the
 file and arguments, requires a non-empty model from `--model` or
 `PI_TASK_V2_MODEL` (CLI precedence), selects the typed providers, renders
-gateway/session progress, and delivers the receipt. The `<provider/model>`
-example is a placeholder, not a product default. `src/daemon/isolated.ts`
-selects exactly one canonical task, worker, and workspace in the shared daemon
-workspace pipeline. The `JujutsuWorkspaceDriver` owns isolation, integration,
-cleanup, and recovery; `parallel.ts` owns the provider-neutral composition
-flow for both isolated and multi-worker modes; the environment driver owns
-verification; and the ledger/gateway/session contracts own durability and
-events. The shell
-contains no jj commands or workspace lifecycle policy.
+gateway/session progress, and delivers the receipt and trace. The
+`<provider/model>` example is a placeholder, not a product default.
+`src/daemon/isolated.ts` selects exactly one canonical task, worker, and
+workspace in the shared daemon workspace pipeline. The
+`JujutsuWorkspaceDriver` owns isolation, engine-derived VCS finalization,
+integration, cleanup, and recovery; `parallel.ts` owns the provider-neutral
+composition flow for both isolated and multi-worker modes; the environment
+driver owns verification; and the ledger/gateway/session contracts own
+durability and events. The shell contains no jj commands or workspace
+lifecycle policy.
+
+The CLI requires an explicit artifact policy in the task markdown:
+
+```markdown
+## Artifact Policy
+- Required: reports/result.json
+- Change required
+```
+
+Use `- Intentional no-change` when a passing verification is expected with no
+integrated change. Policy paths are repository-relative. Strict ingress
+validation rejects missing, empty, unsafe, duplicate, contradictory, or
+unrecognized entries. Post-integration acceptance mechanically compares
+required and claimed paths with the integrated tree, checks the engine-derived
+identity and verification result, and requires receipt and trace delivery.
+Rejection and recovery evidence is typed, and any failed acceptance or
+delivery is non-ship. This does not prove semantic user intent beyond declared
+artifacts and verification.
+
+The M3 worker protocol is requirement-sensitive: multi-requirement specs get
+the checklist tool, while a single-requirement spec does not. Completion is a
+one-shot typed `yield` with `files_changed`, `summary`, and `deviations`; the
+engine owns VCS finalization and verification after that call. Real-model
+efficiency improvement has not yet been measured.
 
 The slice is deliberately limited to one task and one worker. It uses external
 user-state defaults keyed by project (and `XDG_STATE_HOME` when set), writes a
@@ -237,7 +285,16 @@ contract. `packages/core-v2/test/test-cli.ts` is the hermetic evidence: fake
 session, real temporary jj repository, real verification, typed progress,
 receipt delivery, success cleanup, and verification-failure recovery.
 
-## 10. Evidence and migration
+## 10. Remaining M4–M6 scope
+
+M4–M6 are not part of the completed M1–M3 MVP contract. Remaining scope is
+supporting durable interfaces and sequential typed parent/child continuation,
+measuring and productizing broader workflow/scheduling and migration cutover,
+and running the repeated real-model proof needed for quality, efficiency,
+intervention, and scale decisions. Existing enabling modules do not by
+themselves establish those guarantees.
+
+## 11. Evidence and migration
 
 Every proposed optimization starts with a baseline and a falsifiable
 acceptance check. Run repeated trials, measure accepted-result quality, cost,

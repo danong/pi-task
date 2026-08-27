@@ -86,35 +86,64 @@ export async function fetchIfRemote(projectDir: string): Promise<void> {
 	await execJj(["git", "fetch"], projectDir);
 }
 
-function parseWorkspaceList(
+export interface WorkspaceRevision {
+	changeId: string;
+	commitId: string;
+}
+
+/** Parse the deliberately tab-delimited `jj workspace list -T` output. */
+export function parseMachineWorkspaceList(
 	stdout: string,
-): Map<string, { changeId: string; commitId: string }> {
-	const result = new Map<string, { changeId: string; commitId: string }>();
-	for (const line of stdout.split("\n")) {
-		const match = /^(\S+):\s+(\S+)\s+(\S+)/.exec(line);
-		if (match && match[1] && match[2] && match[3]) {
-			result.set(match[1], { changeId: match[2], commitId: match[3] });
-		}
+): Map<string, WorkspaceRevision> {
+	const result = new Map<string, WorkspaceRevision>();
+	for (const rawLine of stdout.split("\n")) {
+		const line = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
+		const fields = line.split("\t");
+		if (
+			fields.length !== 3 ||
+			fields[0] === undefined ||
+			fields[1] === undefined ||
+			fields[2] === undefined ||
+			!/^[a-z0-9]{32}$/.test(fields[1]) ||
+			!/^[0-9a-f]{40}$/.test(fields[2])
+		)
+			continue;
+		result.set(fields[0], { changeId: fields[1], commitId: fields[2] });
 	}
 	return result;
 }
 
-/** A workspace's working-copy COMMIT id via `jj workspace list` (workspace
- *  names are NOT revsets). Tight timeoutMs allowed for the failure path. */
+const MACHINE_WORKSPACE_TEMPLATE =
+	'self.name() ++ "\\t" ++ self.target().change_id() ++ "\\t" ++ self.target().commit_id() ++ "\\n"';
+
+/** A workspace's working-copy revision via machine-readable jj output. */
+export async function workspaceRevision(
+	projectDir: string,
+	name: string,
+	opts?: { timeoutMs?: number },
+): Promise<WorkspaceRevision> {
+	const result = await execJj(
+		["workspace", "list", "-T", MACHINE_WORKSPACE_TEMPLATE, "--ignore-working-copy"],
+		projectDir,
+		opts,
+	);
+	if (result.code !== 0)
+		throw new Error(
+			`jj workspace list failed (${result.code}): ${result.stderr.trim()}`,
+		);
+	const ws = parseMachineWorkspaceList(result.stdout).get(name);
+	if (!ws)
+		throw new Error(`Workspace "${name}" not found in jj workspace list`);
+	return ws;
+}
+
+/** A workspace's working-copy COMMIT id via machine-readable jj output. */
 export async function workspaceCommitId(
 	projectDir: string,
 	name: string,
 	opts?: { timeoutMs?: number },
 ): Promise<string> {
-	const result = await execJj(["workspace", "list"], projectDir, opts);
-	if (result.code !== 0)
-		throw new Error(
-			`jj workspace list failed (${result.code}): ${result.stderr.trim()}`,
-		);
-	const ws = parseWorkspaceList(result.stdout).get(name);
-	if (!ws)
-		throw new Error(`Workspace "${name}" not found in jj workspace list`);
-	return ws.commitId;
+	return (await workspaceRevision(projectDir, name, opts)).commitId;
 }
 
 /** Change id → current commit id. Divergent / hidden changes fail LOUDLY —
@@ -158,6 +187,42 @@ export async function resolveCommitId(
 		);
 	}
 	return id;
+}
+
+/** Resolve one revision to both jj identities using a template, never human
+ *  log output. The caller supplies an explicit revision such as @-. */
+export async function revisionIdentity(
+	projectDir: string,
+	revision: string,
+): Promise<WorkspaceRevision> {
+	const result = await execJj(
+		[
+			"log",
+			"-r",
+			revision,
+			"-T",
+			'commit_id ++ "\\t" ++ change_id ++ "\\n"',
+			"--no-graph",
+			"--ignore-working-copy",
+		],
+		projectDir,
+	);
+	if (result.code !== 0)
+		throw new Error(
+			`jj log -r ${revision} failed (${result.code}): ${result.stderr.trim()}`,
+		);
+	const fields = result.stdout.trimEnd().split("\t");
+	if (
+		fields.length !== 2 ||
+		fields[0] === undefined ||
+		fields[1] === undefined ||
+		!/^[0-9a-f]{40}$/.test(fields[0]) ||
+		!/^[a-z0-9]{32}$/.test(fields[1])
+	)
+		throw new Error(
+			`jj log -r ${revision}: expected one machine-readable commit/change pair`,
+		);
+	return { commitId: fields[0], changeId: fields[1] };
 }
 
 /** The task base's CHANGE id (@- of the main working copy at task start). */
@@ -244,6 +309,56 @@ export async function createAiTaskBase(
 	return idResult.stdout.trim();
 }
 
+/** Commit a worker's snapshotted edits with the engine identity.
+ *
+ * The worker workspace already has a working-copy commit when this runs. A
+ * `jj commit` alone snapshots that existing commit and therefore keeps the
+ * identity it was created with. Create the destination with the temporary
+ * identity first, move the snapshotted delta into it, then snapshot the
+ * working tree there. The temporary source is abandoned by `jj squash`; any
+ * model-created parent commit remains untouched.
+ */
+export async function commitWorkspaceEdits(
+	projectDir: string,
+	identityFile: string,
+	message: string,
+	author?: { name: string; email: string },
+): Promise<void> {
+	const config =
+		author === undefined
+			? []
+			: [
+					"--config",
+					`user.name=${JSON.stringify(author.name)}`,
+					"--config",
+					`user.email=${JSON.stringify(author.email)}`,
+				];
+	const newResult = await execJj(
+			[...config, "--config-file", identityFile, "new", "@"],
+			projectDir,
+	);
+	if (newResult.code !== 0)
+		throw new Error(
+			`jj new (engine finalization identity) failed (${newResult.code}): ${newResult.stderr.trim()}`,
+		);
+	const squashResult = await execJj(
+			["squash", "--from", "@-", "--into", "@", "-m", message],
+			projectDir,
+	);
+	if (squashResult.code !== 0)
+		throw new Error(
+			`jj squash (engine finalization) failed (${squashResult.code}): ${squashResult.stderr.trim()}`,
+		);
+	const commitResult = await execJj(
+			[...config, "--config-file", identityFile, "commit", "-m", message],
+			projectDir,
+	);
+	if (commitResult.code !== 0)
+		throw new Error(
+			`jj commit (engine finalization) failed (${commitResult.code}): ${commitResult.stderr.trim()}`,
+		);
+}
+
 /** Create one worker workspace rooted at the current base. Returns its dir. */
 export async function createWorkerWorkspace(
 	projectDir: string,
@@ -305,6 +420,9 @@ export interface CombineOutcome {
 	commitId: string;
 	conflicts: string[];
 	filesChanged: number;
+	changedPaths: string[];
+	presentFiles: string[];
+	deletedFiles: string[];
 }
 
 const UNION_TOOL = "union";
@@ -408,10 +526,14 @@ export async function mergeWorkspacesAtomic(
 	into: string,
 ): Promise<CombineOutcome> {
 	if (workspaceNames.length === 0) {
+		const commitId = await resolveCommitId(projectDir, into);
 		return {
-			commitId: await resolveCommitId(projectDir, into),
+			commitId,
 			conflicts: [],
 			filesChanged: 0,
+			changedPaths: [],
+			presentFiles: await filesAtRevision(projectDir, commitId),
+			deletedFiles: [],
 		};
 	}
 	const baseCommit = await resolveCommitId(projectDir, into);
@@ -430,12 +552,12 @@ export async function mergeWorkspacesAtomic(
 	}
 	await assertWorkspacesConsumed(projectDir, workspaceNames);
 	const newBase = await resolveCommitId(projectDir, into);
-	const filesChanged = (await diffSummary(projectDir, baseCommit, newBase))
-		.length;
+	const evidence = await changedPathEvidence(projectDir, baseCommit, newBase);
 	return {
 		commitId: newBase,
 		conflicts: await detectChangeConflicts(projectDir, into),
-		filesChanged,
+		filesChanged: evidence.changedPaths.length,
+		...evidence,
 	};
 }
 
@@ -455,6 +577,94 @@ export function parseSummaryChanges(lines: string[]): WorkspaceFileChange[] {
 		changes.push({ kind: match[1], file: rename?.[2] ?? match[2] });
 	}
 	return changes;
+}
+
+const MACHINE_DIFF_TEMPLATE =
+	'self.status_char() ++ "\\t" ++ self.path() ++ "\\n"';
+
+/** Parse only the tab-delimited status/path records emitted by the machine
+ *  diff template. Human `jj status` or `jj diff --summary` prose is ignored. */
+export function parseMachineDiffPaths(lines: string[]): string[] {
+	return parseMachineDiffEntries(lines).map((entry) => entry.path);
+}
+
+interface MachineDiffEntry {
+	status: string;
+	path: string;
+}
+
+function parseMachineDiffEntries(lines: string[]): MachineDiffEntry[] {
+	const entries: MachineDiffEntry[] = [];
+	for (const rawLine of lines) {
+		const line = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
+		const match = /^([MADCR])\t(.+)$/.exec(line);
+		if (match?.[1] !== undefined && match[2] !== undefined)
+			entries.push({ status: match[1], path: match[2] });
+	}
+	return entries;
+}
+
+/** Return repository-relative changed paths between explicit revisions. The
+ *  default is read-only; snapshotWorkingCopy is used only to capture worker
+ *  edits before the engine commits them. */
+async function changedPathEntriesBetween(
+	projectDir: string,
+	from: string,
+	to: string,
+	opts?: { snapshotWorkingCopy?: boolean },
+): Promise<MachineDiffEntry[]> {
+	const args = [
+		"diff",
+		"--from",
+		from,
+		"--to",
+		to,
+		"-T",
+		MACHINE_DIFF_TEMPLATE,
+	];
+	if (!opts?.snapshotWorkingCopy) args.push("--ignore-working-copy");
+	const result = await execJj(args, projectDir);
+	if (result.code !== 0)
+		throw new Error(
+			`jj diff --from ${from} --to ${to} failed (${result.code}): ${result.stderr.trim()}`,
+		);
+	return parseMachineDiffEntries(result.stdout.split("\n"));
+}
+
+export async function changedPathsBetween(
+	projectDir: string,
+	from: string,
+	to: string,
+	opts?: { snapshotWorkingCopy?: boolean },
+): Promise<string[]> {
+	return (await changedPathEntriesBetween(projectDir, from, to, opts)).map(
+		(entry) => entry.path,
+	);
+}
+
+async function filesAtRevision(projectDir: string, revision: string): Promise<string[]> {
+	const result = await execJj(
+		["file", "list", "-r", revision, "--ignore-working-copy"],
+		projectDir,
+	);
+	if (result.code !== 0)
+		throw new Error(
+			`jj file list -r ${revision} failed (${result.code}): ${result.stderr.trim()}`,
+		);
+	return result.stdout.split("\\n").map((path) => path.trim()).filter(Boolean).sort();
+}
+
+export async function changedPathEvidence(
+	projectDir: string,
+	from: string,
+	to: string,
+): Promise<Pick<CombineOutcome, "changedPaths" | "presentFiles" | "deletedFiles">> {
+	const entries = await changedPathEntriesBetween(projectDir, from, to);
+	return {
+		changedPaths: entries.map((entry) => entry.path),
+		presentFiles: await filesAtRevision(projectDir, to),
+		deletedFiles: entries.filter((entry) => entry.status === "D").map((entry) => entry.path),
+	};
 }
 
 export async function workspaceFileChanges(

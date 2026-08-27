@@ -8,6 +8,8 @@
 import { pathToFileURL } from "node:url";
 
 import { runTests as runArtifactTests } from "./test-artifacts.ts";
+import { runTests as runAcceptanceTests } from "./test-acceptance.ts";
+import { runTests as runBenchmarkTests } from "./test-benchmark.ts";
 import { runTests as runBundleTests } from "./test-bundle.ts";
 import { runTests as runContractTests } from "./test-contracts.ts";
 import { runTests as runContinuationTests } from "./test-continuation.ts";
@@ -27,6 +29,7 @@ import { runTests as runLifecycleCollectorPluginTests } from "./test-plugins-lif
 import { runTests as runHandoffCapPluginTests } from "./test-plugins-handoff-cap.ts";
 import { runTests as runRouterTests } from "./test-router.ts";
 import { runTests as runSurfacesTests } from "./test-surfaces.ts";
+import { runTests as runTraceTests } from "./test-trace.ts";
 import { runTests as runVerifyRunTests } from "./test-verify-run.ts";
 import { runTests as runWatchdogDriverTests } from "./test-watchdog-driver.ts";
 import { runTests as runWatchdogTests } from "./test-watchdogs.ts";
@@ -35,6 +38,7 @@ import { runTests as runWorkflowBuildTests } from "./test-workflow-build.ts";
 import { runTests as runWorkflowReceiptsTests } from "./test-workflow-receipts.ts";
 import { runTests as runWorkflowSurveyTests } from "./test-workflow-survey.ts";
 import { runTests as runParityM5Tests } from "./test-parity-m5.ts";
+import { runTests as runWorkerProtocolTests } from "./test-worker-protocol.ts";
 
 const SUITES: Array<{ name: string; run: () => Promise<void> }> = [
 	{ name: "contracts", run: runContractTests },
@@ -45,11 +49,14 @@ const SUITES: Array<{ name: string; run: () => Promise<void> }> = [
 	{ name: "router", run: runRouterTests },
 	{ name: "verify-run", run: runVerifyRunTests },
 	{ name: "artifacts", run: runArtifactTests },
+	{ name: "acceptance", run: runAcceptanceTests },
+	{ name: "benchmark", run: runBenchmarkTests },
 	{ name: "watchdogs", run: runWatchdogTests },
 	{ name: "watchdog-driver", run: runWatchdogDriverTests },
 	{ name: "environments", run: runEnvironmentTests },
 	{ name: "gateway", run: runGatewayTests },
 	{ name: "surfaces", run: runSurfacesTests },
+	{ name: "trace", run: runTraceTests },
 	{ name: "workflow-plan", run: runWorkflowPlanTests },
 	{ name: "workflow-build", run: runWorkflowBuildTests },
 	{ name: "workflow-receipts", run: runWorkflowReceiptsTests },
@@ -65,6 +72,7 @@ const SUITES: Array<{ name: string; run: () => Promise<void> }> = [
 	{ name: "prewalk", run: runPrewalkTests },
 	{ name: "review-fork", run: runReviewForkTests },
 	{ name: "daemon", run: runDaemonTests },
+	{ name: "worker-protocol", run: runWorkerProtocolTests },
 ];
 
 export async function runAll(): Promise<void> {

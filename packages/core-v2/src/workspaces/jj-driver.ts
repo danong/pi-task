@@ -29,16 +29,22 @@ import type {
 	IntegrationMode,
 	WorkspaceContext,
 	WorkspaceDriver,
+	WorkspaceFinalization,
 } from "../contracts/index.ts";
 import {
 	assertCleanWorkingCopy,
 	assertMerged,
+	changedPathEvidence,
+	changedPathsBetween,
+	commitWorkspaceEdits,
 	createAiTaskBase,
 	createBookmarkAt,
 	createWorkerWorkspace,
 	execJj,
 	fetchIfRemote,
 	removeWorkspace,
+	resolveCommitId,
+	revisionIdentity,
 	writeIdentityFile,
 } from "./jj.ts";
 
@@ -121,6 +127,50 @@ export class JujutsuWorkspaceDriver implements WorkspaceDriver {
 		return context;
 	}
 
+	/** Finalize a worker without trusting model-reported VCS evidence. A
+	 * normal jj diff snapshots pending edits; only those edits receive an
+	 * engine-authored commit. Existing model commits remain untouched. */
+	async finalizeWorkspace(
+		context: WorkspaceContext,
+		baseChangeId: string,
+	): Promise<WorkspaceFinalization> {
+		const pendingPaths = await changedPathsBetween(
+			context.hostPath,
+			"@-",
+			"@",
+			{ snapshotWorkingCopy: true },
+		);
+		if (pendingPaths.length > 0) {
+			const identityFile = writeIdentityFile(
+				this.#opts.authorName,
+				this.#opts.authorEmail,
+			);
+			await commitWorkspaceEdits(
+				context.hostPath,
+				identityFile,
+				`engine: finalize ${context.taskId}`,
+				{ name: this.#opts.authorName, email: this.#opts.authorEmail },
+			);
+		}
+
+		const tip = await revisionIdentity(context.hostPath, "@-");
+		const baseCommit = await resolveCommitId(
+			this.#opts.projectDir,
+			baseChangeId,
+		);
+		const evidence = await changedPathEvidence(
+			context.hostPath,
+			baseCommit,
+			tip.commitId,
+		);
+		return {
+			changeId: tip.changeId,
+			commitId: tip.commitId,
+			...evidence,
+			hasChanges: evidence.changedPaths.length > 0,
+		};
+	}
+
 	/**
 	 * Single-workspace merge (contract method): for task-base mode this is
 	 * the atomic combine of ONE workspace into the base; conflicts are
@@ -157,7 +207,9 @@ export class JujutsuWorkspaceDriver implements WorkspaceDriver {
 
 	/** AI-authored empty base parented on @- (task-base mode). */
 	async prepareIntegrationBase(goal: string): Promise<string> {
-		if (this.#baseChangeId !== undefined) return this.#baseChangeId;
+		// A driver can be reused for warm attempts. The integration base is
+		// attempt-scoped, so never reuse a prior run's change id after the main
+		// working copy has been materialized.
 		if (!this.#prepared) await this.prepare();
 		const identityFile = writeIdentityFile(
 			this.#opts.authorName,

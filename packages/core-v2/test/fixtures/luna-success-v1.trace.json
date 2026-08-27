@@ -1,0 +1,229 @@
+{
+  "version": 1,
+  "runId": "fixture-luna-success-v1",
+  "taskId": "fixture-luna-task-v1",
+  "startedAt": "2026-01-01T00:00:00.000Z",
+  "endedAt": "2026-01-01T00:00:02.500Z",
+  "events": [
+    {
+      "version": 1,
+      "sequence": 1,
+      "at": "2026-01-01T00:00:00.000Z",
+      "taskId": "fixture-luna-task-v1",
+      "runId": "fixture-luna-success-v1",
+      "phase": "task",
+      "type": "task.queued"
+    },
+    {
+      "version": 1,
+      "sequence": 2,
+      "at": "2026-01-01T00:00:00.100Z",
+      "taskId": "fixture-luna-task-v1",
+      "runId": "fixture-luna-success-v1",
+      "phase": "task",
+      "type": "task.routed",
+      "provider": "luna",
+      "config": "luna",
+      "detail": { "planMode": "prewalk" }
+    },
+    {
+      "version": 1,
+      "sequence": 3,
+      "at": "2026-01-01T00:00:00.200Z",
+      "taskId": "fixture-luna-task-v1",
+      "runId": "fixture-luna-success-v1",
+      "sessionId": "fixture-luna-session-v1",
+      "phase": "session",
+      "type": "session.spawned",
+      "provider": "luna"
+    },
+    {
+      "version": 1,
+      "sequence": 4,
+      "at": "2026-01-01T00:00:00.300Z",
+      "taskId": "fixture-luna-task-v1",
+      "runId": "fixture-luna-success-v1",
+      "sessionId": "fixture-luna-session-v1",
+      "phase": "turn",
+      "type": "turn.started",
+      "provider": "luna"
+    },
+    {
+      "version": 1,
+      "sequence": 5,
+      "at": "2026-01-01T00:00:00.350Z",
+      "taskId": "fixture-luna-task-v1",
+      "runId": "fixture-luna-success-v1",
+      "sessionId": "fixture-luna-session-v1",
+      "phase": "context",
+      "type": "context.injected",
+      "provider": "luna",
+      "detail": { "tokens": 120 }
+    },
+    {
+      "version": 1,
+      "sequence": 6,
+      "at": "2026-01-01T00:00:00.500Z",
+      "taskId": "fixture-luna-task-v1",
+      "runId": "fixture-luna-success-v1",
+      "sessionId": "fixture-luna-session-v1",
+      "phase": "tool",
+      "type": "tool.started",
+      "provider": "luna",
+      "detail": { "toolName": "read", "path": "src/main.ts" }
+    },
+    {
+      "version": 1,
+      "sequence": 7,
+      "at": "2026-01-01T00:00:00.600Z",
+      "taskId": "fixture-luna-task-v1",
+      "runId": "fixture-luna-success-v1",
+      "sessionId": "fixture-luna-session-v1",
+      "phase": "tool",
+      "type": "tool.ended",
+      "provider": "luna",
+      "detail": { "toolName": "read" }
+    },
+    {
+      "version": 1,
+      "sequence": 8,
+      "at": "2026-01-01T00:00:00.700Z",
+      "taskId": "fixture-luna-task-v1",
+      "runId": "fixture-luna-success-v1",
+      "sessionId": "fixture-luna-session-v1",
+      "phase": "tool",
+      "type": "tool.started",
+      "provider": "luna",
+      "detail": { "toolName": "read", "path": "src/main.ts" }
+    },
+    {
+      "version": 1,
+      "sequence": 9,
+      "at": "2026-01-01T00:00:00.800Z",
+      "taskId": "fixture-luna-task-v1",
+      "runId": "fixture-luna-success-v1",
+      "sessionId": "fixture-luna-session-v1",
+      "phase": "tool",
+      "type": "tool.ended",
+      "provider": "luna",
+      "detail": { "toolName": "read" }
+    },
+    {
+      "version": 1,
+      "sequence": 10,
+      "at": "2026-01-01T00:00:00.900Z",
+      "taskId": "fixture-luna-task-v1",
+      "runId": "fixture-luna-success-v1",
+      "sessionId": "fixture-luna-session-v1",
+      "phase": "tool",
+      "type": "tool.started",
+      "provider": "luna",
+      "detail": { "toolName": "bash", "command": "npm test" }
+    },
+    {
+      "version": 1,
+      "sequence": 11,
+      "at": "2026-01-01T00:00:01.200Z",
+      "taskId": "fixture-luna-task-v1",
+      "runId": "fixture-luna-success-v1",
+      "sessionId": "fixture-luna-session-v1",
+      "phase": "tool",
+      "type": "tool.ended",
+      "provider": "luna",
+      "detail": { "toolName": "bash" }
+    },
+    {
+      "version": 1,
+      "sequence": 12,
+      "at": "2026-01-01T00:00:01.300Z",
+      "taskId": "fixture-luna-task-v1",
+      "runId": "fixture-luna-success-v1",
+      "sessionId": "fixture-luna-session-v1",
+      "phase": "turn",
+      "type": "turn.ended",
+      "provider": "luna"
+    },
+    {
+      "version": 1,
+      "sequence": 13,
+      "at": "2026-01-01T00:00:01.500Z",
+      "taskId": "fixture-luna-task-v1",
+      "runId": "fixture-luna-success-v1",
+      "sessionId": "fixture-luna-session-v1",
+      "phase": "turn",
+      "type": "turn.started",
+      "provider": "luna"
+    },
+    {
+      "version": 1,
+      "sequence": 14,
+      "at": "2026-01-01T00:00:02.000Z",
+      "taskId": "fixture-luna-task-v1",
+      "runId": "fixture-luna-success-v1",
+      "sessionId": "fixture-luna-session-v1",
+      "phase": "turn",
+      "type": "turn.ended",
+      "provider": "luna"
+    },
+    {
+      "version": 1,
+      "sequence": 15,
+      "at": "2026-01-01T00:00:02.100Z",
+      "taskId": "fixture-luna-task-v1",
+      "runId": "fixture-luna-success-v1",
+      "phase": "usage",
+      "type": "usage.observed",
+      "provider": "luna",
+      "detail": {
+        "status": "measured",
+        "costUsd": 0.0125,
+        "inputTokens": 900,
+        "outputTokens": 250,
+        "cacheReadTokens": 100,
+        "cacheWriteTokens": 20
+      }
+    },
+    {
+      "version": 1,
+      "sequence": 16,
+      "at": "2026-01-01T00:00:02.200Z",
+      "taskId": "fixture-luna-task-v1",
+      "runId": "fixture-luna-success-v1",
+      "phase": "verification",
+      "type": "verification.completed",
+      "provider": "luna",
+      "detail": { "passed": true }
+    },
+    {
+      "version": 1,
+      "sequence": 17,
+      "at": "2026-01-01T00:00:02.300Z",
+      "taskId": "fixture-luna-task-v1",
+      "runId": "fixture-luna-success-v1",
+      "phase": "artifact",
+      "type": "artifact.accepted",
+      "provider": "luna",
+      "detail": { "verdict": "ship" }
+    },
+    {
+      "version": 1,
+      "sequence": 18,
+      "at": "2026-01-01T00:00:02.500Z",
+      "taskId": "fixture-luna-task-v1",
+      "runId": "fixture-luna-success-v1",
+      "phase": "task",
+      "type": "task.completed",
+      "provider": "luna",
+      "detail": { "verdict": "ship" }
+    }
+  ],
+  "usage": {
+    "status": "measured",
+    "costUsd": 0.0125,
+    "inputTokens": 900,
+    "outputTokens": 250,
+    "cacheReadTokens": 100,
+    "cacheWriteTokens": 20
+  },
+  "outcome": "ship"
+}

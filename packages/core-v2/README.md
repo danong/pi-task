@@ -7,6 +7,56 @@ type-checked island deliberately **excluded** from the v1 engine under
 `extensions/`, whose procedural modules are intentionally out of scope for
 the strict gate.
 
+## Current M1–M3 MVP status
+
+M1–M3 are complete as an evidence-backed MVP foundation. M1 supplies the
+versioned and bounded provider-neutral trace contract, observed turn events,
+explicit `measured`/`unavailable` usage status, and versioned baseline trace
+fixtures. Fixtures under `test/fixtures/` are evidence inputs for testing
+trace derivation and reporting; they are not performance claims or model
+defaults.
+
+M2 makes `## Artifact Policy` mandatory at the CLI ingress. After integration,
+the engine mechanically checks required artifacts, changed paths, the
+engine-derived VCS identity, verification, and receipt/trace delivery. Typed
+rejection and recovery evidence produces a non-ship outcome when acceptance or
+delivery fails. Acceptance does not prove user intent beyond declared artifacts
+and verification.
+
+M3 makes checklist registration sensitive to requirement count, uses one-shot
+`yield` with `files_changed`, `summary`, and `deviations`, and keeps VCS
+finalization and verification engine-owned. Real-model efficiency improvement
+has not yet been measured. The current runnable interface is:
+
+```sh
+mise run v2 -- --spec ./task.md --project-dir . --model provider/model
+```
+
+The model is a required placeholder value, not a provider default; an explicit
+model or `PI_TASK_V2_MODEL` is needed. A spec must include:
+
+```markdown
+## Artifact Policy
+- Required: reports/result.json
+- Change required
+```
+
+Use `- Intentional no-change` for an explicitly verified no-diff task. Paths
+must be repository-relative. The CLI's user-state artifact directory contains
+receipt, trace, and failure/recovery artifacts; its returned trace path names a
+`<run-id>.trace.json` file. Render a provider-neutral report with:
+
+```sh
+mise run bench-report -- --traces-dir <trace-directory> --label <label>
+```
+
+M3 grounding evaluation is dry by default (`mise run eval-grounding`) and
+writes real-run evidence, when requested with `-- --run`, under the selected
+metrics directory as `eval-grounding/records.jsonl` and `summary.md`. Remaining
+M4–M6 scope covers durable interfaces and parent/child execution, broader
+workflow/migration cutover, and repeated real-model proof and scale work; any
+enabling code does not make those product guarantees part of this MVP.
+
 ## Layout
 
 - `src/contracts/` — the six kernel seams and their typed boundary payloads
@@ -84,14 +134,14 @@ the strict gate.
     rejecting stats() read — or a spawn failure with no session at all —
     zeroes the usage fields instead of failing the run (`USAGE_UNAVAILABLE`).
     Receipts stay ≈150 tokens (§5.6): flat numeric fields only.
-- `test/e2e-parity.ts` — the M1 exit gate: one real single-worker run on
-  `openrouter/stealth/ox-alpha` against a temp jj repo, asserting ship
+- `test/e2e-parity.ts` — the M1 exit gate: one real single-worker run using
+  an explicitly configured model against a temp jj repo, asserting ship
   receipt + verification + ledger rows. Manual/network gate — NOT part of
   `mise run test`; run it with
   `timeout 1200 npx tsx packages/core-v2/test/e2e-parity.ts`.
-- `test/e2e-parallel.ts` — the M2 exit gate: TWO real ox-alpha workers
-  through the real jj driver in a temp jj repo (disjoint files, atomic
-  combine, aggregate receipt). Same manual-gate rules:
+- `test/e2e-parallel.ts` — the M2 exit gate: multiple real workers using an
+  explicitly configured model through the real jj driver in a temp jj repo
+  (disjoint files, atomic combine, aggregate receipt). Same manual-gate rules:
   `timeout 1800 npx tsx packages/core-v2/test/e2e-parallel.ts`.
 - `src/guards/` — M1.3 operational hardening (FR-7/FR-8):
   - `watchdogs.ts` — pure watchdog decisions over observed session events
@@ -203,10 +253,11 @@ Everything below is hermetic (zero LLM, zero network); run in the repo root.
     `<metrics-dir>/eval-grounding/` (`records.jsonl` + `summary.md`);
     exit code 3 flags an NFR-4 deterministic-prefix violation.
 - **Parity e2e (manual, real LLM)** — `timeout 1200 npx tsx packages/core-v2/test/e2e-parity.ts`
-  - One real single-worker `runTask` on openrouter/stealth/ox-alpha against
-    a temp jj repo; asserts ship verdict, committed file, and ledger rows.
-    Skips with exit 0 when no OpenRouter auth is configured. On failure the
-    workspace, ledger, and failure artifact are kept for diagnosis.
+  - One real single-worker `runTask` using an explicitly configured model
+    against a temp jj repo; asserts ship verdict, committed file, and ledger
+    rows. Skips with exit 0 when the required provider authentication is not
+    configured. On failure the workspace, ledger, and failure artifact are
+    kept for diagnosis.
 
 ### Bench runner (suite-03 baselines)
 

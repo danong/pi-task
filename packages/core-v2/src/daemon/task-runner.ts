@@ -45,11 +45,16 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync } from "node:fs";
 
 import type {
+	ArtifactPolicy,
 	ExecutionBundle,
 	HandoffBundle,
 	TaskReceipt,
 	Yield,
 } from "../contracts/index.ts";
+import {
+	parseArtifactPolicy,
+	parseArtifactPolicyStrict,
+} from "../contracts/artifact-policy.ts";
 import { writeFailureArtifact } from "../guards/artifacts.ts";
 import {
 	attachWatchdogs,
@@ -74,6 +79,7 @@ import {
 	type SessionHost,
 	type SessionHostEvent,
 } from "../sessions/host.ts";
+import { getRequirementTrackingPolicy } from "../sessions/tools.ts";
 import {
 	singleRunFailureHygiene,
 	serializeSingleRunRecovery,
@@ -107,11 +113,13 @@ const DEFAULT_AI_AUTHOR_EMAIL = "noreply@pi-task-v2.local";
  * session ever spawned. Accounting never fails a run.
  */
 export const USAGE_UNAVAILABLE = 0;
+export type UsageStatus = "measured" | "unavailable";
 
 /** Measured session usage as it lands on a receipt, plus the COR inputs
  *  the receipt itself does not carry (cacheWrite feeds the denominator;
  *  groundingTokens feeds per-worker sums in the parallel aggregator). */
 export interface UsageSnapshot {
+	status: UsageStatus;
 	costUsd: number;
 	inputTokens: number;
 	outputTokens: number;
@@ -154,6 +162,7 @@ export function estimateGroundingTokens(
 /** All-zero snapshot for runs with no measurable session. */
 export function emptyUsage(): UsageSnapshot {
 	return {
+		status: "unavailable",
 		costUsd: USAGE_UNAVAILABLE,
 		inputTokens: 0,
 		outputTokens: 0,
@@ -176,6 +185,7 @@ export async function collectUsage(
 	try {
 		const stats = await handle.stats();
 		return {
+			status: "measured",
 			costUsd: stats.cost,
 			inputTokens: stats.tokens.input,
 			outputTokens: stats.tokens.output,
@@ -193,6 +203,10 @@ export async function collectUsage(
  *  over summed total input — never average the per-worker ratios. */
 export function sumUsage(usages: readonly UsageSnapshot[]): UsageSnapshot {
 	const total = emptyUsage();
+	total.status =
+		usages.length > 0 && usages.every((u) => u.status === "measured")
+			? "measured"
+			: "unavailable";
 	for (const u of usages) {
 		total.costUsd += u.costUsd;
 		total.inputTokens += u.inputTokens;
@@ -218,7 +232,12 @@ export function receiptUsageFields(
 	usage: UsageSnapshot,
 ): Pick<
 	TaskReceipt,
-	"costUsd" | "inputTokens" | "outputTokens" | "cacheReadTokens" | "cor"
+	| "costUsd"
+	| "inputTokens"
+	| "outputTokens"
+	| "cacheReadTokens"
+	| "cor"
+	| "usageStatus"
 > {
 	return {
 		costUsd: usage.costUsd,
@@ -226,6 +245,7 @@ export function receiptUsageFields(
 		outputTokens: usage.outputTokens,
 		cacheReadTokens: usage.cacheReadTokens,
 		cor: usage.cor,
+		usageStatus: usage.status,
 	};
 }
 
@@ -241,15 +261,25 @@ export interface ParsedTaskSpec {
 	goal: string;
 	requirements: string[];
 	verificationCommands: string[];
+	artifactPolicy: ArtifactPolicy;
+}
+
+export interface ParseTaskSpecOptions {
+	/** Strict is the CLI-facing mode; legacy is safe for existing libraries. */
+	artifactPolicyMode?: "legacy" | "strict";
 }
 
 /**
  * Parse the Goal / Requirements / Verification sections from a task spec.
  * Requirements are non-empty bullet/numbered lines under `## Requirements`;
  * verification commands are non-empty lines under `## Verification` with a
- * leading bullet stripped.
+ * leading bullet stripped. Existing library callers use the documented safe
+ * legacy policy fallback; the CLI-facing adapter can select strict mode.
  */
-export function parseTaskSpec(specMarkdown: string): ParsedTaskSpec {
+export function parseTaskSpec(
+	specMarkdown: string,
+	options: ParseTaskSpecOptions = {},
+): ParsedTaskSpec {
 	const sections = new Map<string, string[]>();
 	let current: string | undefined;
 	for (const line of specMarkdown.split("\n")) {
@@ -279,22 +309,44 @@ export function parseTaskSpec(specMarkdown: string): ParsedTaskSpec {
 		throw new SpecValidationError("requirements");
 	if (commandLines.length === 0) throw new SpecValidationError("verification");
 
+	const artifactPolicy =
+		options.artifactPolicyMode === "strict"
+			? parseArtifactPolicyStrict(specMarkdown)
+			: parseArtifactPolicy(specMarkdown);
 	return {
 		goal: firstGoal,
 		requirements: requirementLines,
 		verificationCommands: commandLines,
+		artifactPolicy,
 	};
 }
 
-/** The worker system prompt: byte-stable pure function of the spec (R5). */
-export function buildWorkerSystemPrompt(specMarkdown: string): string {
+/** Strict task-spec entry point reserved for CLI-facing validation. */
+export function parseTaskSpecForCli(specMarkdown: string): ParsedTaskSpec {
+	return parseTaskSpec(specMarkdown, { artifactPolicyMode: "strict" });
+}
+
+/**
+ * The worker system prompt: byte-stable pure function of the spec (R5).
+ * The optional count lets already-parsed pipeline callers avoid reparsing;
+ * direct callers still get the policy from the spec boundary.
+ */
+export function buildWorkerSystemPrompt(
+	specMarkdown: string,
+	requirementCount = parseTaskSpec(specMarkdown).requirements.length,
+): string {
+	const tracking = getRequirementTrackingPolicy(requirementCount);
 	return [
 		"You are a focused coding-task worker.",
 		"Complete every requirement of the task spec below inside the current working directory.",
-		"Use your tools to inspect and edit files and to run commands.",
-		"When every requirement is met and commits are made, call the yield tool with",
-		"files_changed, summary, commit_ids, and deviations (empty list if none).",
+		"Use your tools to inspect and edit files; shell remains available for ordinary work.",
+		"Normal completion is exactly one final call to the yield tool.",
+		"Yield changed-file claims in files_changed, a concise summary, and deviations (empty list if none).",
+		"The deterministic engine code owns VCS finalization and verification after yield.",
+		"Do not make VCS operations or verification commands part of the standard completion protocol.",
+		"Legacy VCS claims may be omitted; they are never engine evidence.",
 		"Do not call yield before the work is done.",
+		...tracking.promptInstructions,
 		"",
 		"## Task spec",
 		"",
@@ -666,6 +718,7 @@ async function runWithStore(
 			modelId: prewalkActive ? options.prewalk!.modelId : options.model,
 			cwd: options.cwd,
 			systemPrompt,
+			requirementCount: parsed.requirements.length,
 			...(options.sessionTimeoutMs === undefined
 				? {}
 				: { timeoutMs: options.sessionTimeoutMs }),
@@ -830,7 +883,9 @@ async function runWithStore(
 				taskId,
 				verdict: "failed",
 				filesChanged: yieldPayload.files_changed.length,
-				commitIds: yieldPayload.commit_ids,
+				// This single-workspace runner has no provider finalization seam;
+				// model VCS claims therefore never become receipt evidence.
+				commitIds: [],
 				turns: observation.turns,
 				...receiptUsageFields(usage),
 				bundleHit: bundleUsed || bundleMissRecorded ? false : null,
@@ -875,7 +930,9 @@ async function runWithStore(
 			taskId,
 			verdict: "ship",
 			filesChanged: yieldPayload.files_changed.length,
-			commitIds: yieldPayload.commit_ids,
+			// This single-workspace runner has no provider finalization seam;
+			// model VCS claims therefore never become receipt evidence.
+			commitIds: [],
 			turns: observation.turns,
 			...receiptUsageFields(usage),
 			bundleHit: shippedBundleHit,
@@ -886,13 +943,13 @@ async function runWithStore(
 	};
 }
 
-/** The user turn driving the worker: spec echo + yield reminder. Pure. */
-function buildWorkerPromptText(parsed: ParsedTaskSpec): string {
+/** The user turn driving the worker: task requirements + yield boundary. Pure. */
+export function buildWorkerPromptText(parsed: ParsedTaskSpec): string {
 	return [
 		`Goal: ${parsed.goal}`,
 		`Requirements (${parsed.requirements.length}):`,
 		...parsed.requirements.map((r, i) => `${i + 1}. ${r}`),
-		`When done, call yield. Verification that must pass afterwards:`,
-		...parsed.verificationCommands.map((c) => `- ${c}`),
+		"When requirements are complete, make exactly one final yield call with files_changed, summary, and deviations.",
+		"The deterministic engine owns VCS finalization and verification after yield.",
 	].join("\n");
 }

@@ -27,6 +27,10 @@ run = "npx tsx extensions/task/test.ts && npx tsx packages/core-v2/test/run-all.
 description = "Run one pi-task-v2 task in an isolated jj workspace"
 run = "npx tsx packages/core-v2/src/cli.ts"
 
+[tasks.bench-report]
+description = "Render a trace benchmark report (pass --trace/--traces-dir/--records and --label)"
+run = "npx tsx packages/core-v2/src/bench/report.ts"
+
 [tasks.typecheck]
 description = "Type gate — strict tsc over both engines (core-v2 FR-11 + v1 extensions)"
 run = "npx tsc --noEmit -p packages/core-v2/tsconfig.json && npx tsc --noEmit -p tsconfig.json"

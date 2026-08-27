@@ -1,0 +1,91 @@
+{
+  "version": 1,
+  "runId": "fixture-free-router-failure-v1",
+  "taskId": "fixture-free-router-task-v1",
+  "startedAt": "2026-01-01T00:00:00.000Z",
+  "endedAt": "2026-01-01T00:00:01.000Z",
+  "events": [
+    {
+      "version": 1,
+      "sequence": 1,
+      "at": "2026-01-01T00:00:00.000Z",
+      "taskId": "fixture-free-router-task-v1",
+      "runId": "fixture-free-router-failure-v1",
+      "phase": "task",
+      "type": "task.queued"
+    },
+    {
+      "version": 1,
+      "sequence": 2,
+      "at": "2026-01-01T00:00:00.100Z",
+      "taskId": "fixture-free-router-task-v1",
+      "runId": "fixture-free-router-failure-v1",
+      "phase": "task",
+      "type": "task.routed",
+      "provider": "free-router",
+      "config": "free-router",
+      "detail": { "planMode": "cold" }
+    },
+    {
+      "version": 1,
+      "sequence": 3,
+      "at": "2026-01-01T00:00:00.200Z",
+      "taskId": "fixture-free-router-task-v1",
+      "runId": "fixture-free-router-failure-v1",
+      "sessionId": "fixture-free-router-session-v1",
+      "phase": "session",
+      "type": "session.spawned",
+      "provider": "free-router"
+    },
+    {
+      "version": 1,
+      "sequence": 4,
+      "at": "2026-01-01T00:00:00.900Z",
+      "taskId": "fixture-free-router-task-v1",
+      "runId": "fixture-free-router-failure-v1",
+      "sessionId": "fixture-free-router-session-v1",
+      "phase": "session",
+      "type": "session.ended",
+      "provider": "free-router",
+      "detail": { "outcome": "exhausted" }
+    },
+    {
+      "version": 1,
+      "sequence": 5,
+      "at": "2026-01-01T00:00:00.950Z",
+      "taskId": "fixture-free-router-task-v1",
+      "runId": "fixture-free-router-failure-v1",
+      "phase": "usage",
+      "type": "usage.observed",
+      "provider": "free-router",
+      "detail": {
+        "status": "unavailable",
+        "costUsd": 0,
+        "inputTokens": 0,
+        "outputTokens": 0,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0
+      }
+    },
+    {
+      "version": 1,
+      "sequence": 6,
+      "at": "2026-01-01T00:00:01.000Z",
+      "taskId": "fixture-free-router-task-v1",
+      "runId": "fixture-free-router-failure-v1",
+      "phase": "failure",
+      "type": "task.failed",
+      "provider": "free-router",
+      "detail": { "cause": "worker exhausted before a turn" }
+    }
+  ],
+  "usage": {
+    "status": "unavailable",
+    "costUsd": 0,
+    "inputTokens": 0,
+    "outputTokens": 0,
+    "cacheReadTokens": 0,
+    "cacheWriteTokens": 0
+  },
+  "outcome": "failed"
+}

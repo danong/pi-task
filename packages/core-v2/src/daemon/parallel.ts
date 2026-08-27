@@ -23,7 +23,10 @@ import type {
 	TaskBaseWorkspaceDriver,
 	WorkspaceContext,
 	WorkspaceDriver,
+	WorkspaceFinalization,
+	Yield,
 } from "../contracts/index.ts";
+import { acceptArtifacts } from "../contracts/index.ts";
 import type { TaskReceipt } from "../contracts/index.ts";
 import { writeFailureArtifact } from "../guards/artifacts.ts";
 import {
@@ -46,6 +49,7 @@ import { HostEnvironmentDriver } from "../environments/drivers.ts";
 import { verifyThroughEnvironment } from "../verify/adapter.ts";
 import { createSessionHost, type SessionHost } from "../sessions/host.ts";
 import {
+	buildWorkerPromptText,
 	buildWorkerSystemPrompt,
 	collectUsage,
 	deriveTaskId,
@@ -172,10 +176,7 @@ async function runWithStore(
 	const singleTask = options.singleTask === true;
 	const familyBase = singleTask
 		? deriveTaskId(options.subTasks[0]!, options.projectDir)
-		: deriveTaskId(
-				parsed.map((p) => p.goal).join("\n"),
-				options.projectDir,
-			);
+		: deriveTaskId(parsed.map((p) => p.goal).join("\n"), options.projectDir);
 
 	// M5: task-base runs REQUIRE a TaskBaseWorkspaceDriver — a driver
 	// lacking prepareIntegrationBase/combine/materialize fails TYPED here
@@ -233,7 +234,23 @@ async function runWithStore(
 			store.setTaskStatus(workerIds[i]!, "executing");
 			gateway.emit({ type: "task.queued", taskId: workerIds[i]! });
 		}
-		const context = await options.workspaceDriver.createWorkspace(workerIds[i]!);
+	}
+
+	// Provision: fetch/guards, then the AI-authored base — only after the
+	// ledger accepted this attempt (a doomed run cannot litter the repo).
+	await options.workspaceDriver.prepare?.();
+	let baseChangeId: string | undefined;
+	if (taskBase) {
+		baseChangeId = await taskBase.prepareIntegrationBase(
+			parsed[0]?.goal ?? "parallel task",
+		);
+	}
+	// Create workspaces from this attempt's base. A reused provider may leave
+	// the main working copy on an empty child of the previous merged base.
+	for (let i = 0; i < options.subTasks.length; i += 1) {
+		const context = await options.workspaceDriver.createWorkspace(
+			workerIds[i]!,
+		);
 		contexts.push(context);
 		store.insertWorkspace({
 			id: `${workerIds[i]}-workspace`,
@@ -246,16 +263,6 @@ async function runWithStore(
 			branchName: context.branchName,
 		});
 		store.setWorkspaceStatus(`${workerIds[i]}-workspace`, "active");
-	}
-
-	// Provision: fetch/guards, then the AI-authored base — only after the
-	// ledger accepted this attempt (a doomed run cannot litter the repo).
-	await options.workspaceDriver.prepare?.();
-	let baseChangeId: string | undefined;
-	if (taskBase) {
-		baseChangeId = await taskBase.prepareIntegrationBase(
-			parsed[0]?.goal ?? "parallel task",
-		);
 	}
 
 	for (const ctx of contexts) {
@@ -279,7 +286,11 @@ async function runWithStore(
 				role: `worker-${i}`,
 				modelId: options.model,
 				cwd: contexts[i]!.hostPath,
-				systemPrompt: buildWorkerSystemPrompt(options.subTasks[i]!),
+				systemPrompt: buildWorkerSystemPrompt(
+					options.subTasks[i]!,
+					parsed[i]!.requirements.length,
+				),
+				requirementCount: parsed[i]!.requirements.length,
 				...(options.sessionTimeoutMs === undefined
 					? {}
 					: { timeoutMs: options.sessionTimeoutMs }),
@@ -309,14 +320,7 @@ async function runWithStore(
 		}),
 	);
 
-	const promptTexts = parsed.map((p) =>
-		[
-			`Goal: ${p.goal}`,
-			`Requirements (${p.requirements.length}):`,
-			...p.requirements.map((r, i) => `${i + 1}. ${r}`),
-			"When done, call yield.",
-		].join("\n"),
-	);
+	const promptTexts = parsed.map((p) => buildWorkerPromptText(p));
 
 	const promptResults = await Promise.allSettled(
 		handles.map((h, i) => h.prompt(promptTexts[i]!)),
@@ -324,27 +328,75 @@ async function runWithStore(
 	// NFR-3: capture every attempt's measured usage while its session is
 	// still live — even failed attempts get their real numbers; a
 	// rejecting stats() zeroes inside collectUsage.
-	const groundings = options.subTasks.map((spec) =>
-		estimateGroundingTokens(buildWorkerSystemPrompt(spec), spec),
+	const groundings = options.subTasks.map((spec, i) =>
+		estimateGroundingTokens(
+			buildWorkerSystemPrompt(spec, parsed[i]!.requirements.length),
+			spec,
+		),
 	);
 	const usages = await Promise.all(
 		handles.map((h, i) => collectUsage(h, groundings[i]!)),
 	);
+	// Turn starts are lifecycle observations, not a derived usage metric. Keep
+	// them on every aggregate outcome even when stats() is unavailable.
+	const observedTurns = observations.reduce(
+		(total, observation) => total + observation.turns,
+		0,
+	);
 	for (const h of handles) h.close();
 	for (const w of watchdogHandles) w.dispose();
+
+	// Finalization is provider-owned evidence. It runs before any integration
+	// operation, so model commit/path claims never become the source of truth.
+	// Providers without this optional seam retain the legacy claim-based
+	// fallback; this is deliberately limited to compatibility with old/fake
+	// providers and is never used when the provider supplies evidence.
+	const finalizations: Array<WorkspaceFinalization | undefined> = contexts.map(
+		() => undefined,
+	);
+	const finalizationErrors: Array<string | undefined> = contexts.map(
+		() => undefined,
+	);
+	if (baseChangeId !== undefined && options.workspaceDriver.finalizeWorkspace) {
+		const finalized = await Promise.allSettled(
+			contexts.map((context) =>
+				options.workspaceDriver.finalizeWorkspace!(context, baseChangeId),
+			),
+		);
+		for (let i = 0; i < finalized.length; i += 1) {
+			const result = finalized[i]!;
+			if (result.status === "fulfilled") finalizations[i] = result.value;
+			else
+				finalizationErrors[i] =
+					result.reason instanceof Error
+						? result.reason.message
+						: String(result.reason);
+		}
+	}
+
+	const yieldPayloads: Array<Yield | undefined> = handles.map((handle, i) =>
+		promptResults[i]?.status === "fulfilled" ? handle.result : undefined,
+	);
 
 	// Per-worker receipts: failed attempts named first.
 	const perWorker: TaskReceipt[] = contexts.map((ctx, i) => {
 		const settled = promptResults[i]!;
-		const yieldPayload =
-			settled.status === "fulfilled" ? handles[i]?.result : undefined;
+		const yieldPayload = yieldPayloads[i];
 		const obs = observations[i]!;
-		if (settled.status === "rejected" || obs.watchdogAbort || !yieldPayload) {
-			const cause = obs.watchdogAbort
-				? `worker ${i} watchdog abort: ${obs.watchdogAbort.reason}`
-				: settled.status === "rejected"
-					? `worker ${i} prompt failed: ${String(settled.reason)}`
-					: `worker ${i} settled without yield`;
+		if (
+			settled.status === "rejected" ||
+			obs.watchdogAbort ||
+			!yieldPayload ||
+			finalizationErrors[i] !== undefined
+		) {
+			const cause =
+				finalizationErrors[i] !== undefined
+					? `worker ${i} finalization failed: ${finalizationErrors[i]}`
+					: obs.watchdogAbort
+						? `worker ${i} watchdog abort: ${obs.watchdogAbort.reason}`
+						: settled.status === "rejected"
+							? `worker ${i} prompt failed: ${String(settled.reason)}`
+							: `worker ${i} settled without yield`;
 			writeFailureArtifact({
 				artifactsDir: options.artifactsDir,
 				runId: ctx.taskId,
@@ -358,11 +410,14 @@ async function runWithStore(
 			});
 			return makeReceipt(ctx.taskId, "failed", 0, [], obs.turns, usages[i]);
 		}
+		const finalization = finalizations[i];
 		const receipt = makeReceipt(
 			ctx.taskId,
 			"ship",
-			yieldPayload.files_changed.length,
-			yieldPayload.commit_ids,
+			finalization?.changedPaths.length ?? yieldPayload.files_changed.length,
+			finalization === undefined
+				? yieldPayload.commit_ids
+				: [finalization.commitId],
 			obs.turns,
 			usages[i],
 		);
@@ -437,7 +492,7 @@ async function runWithStore(
 				anyFailed ? "failed" : "ship",
 				0,
 				published,
-				observations.reduce((a, o) => a + o.turns, 0),
+				observedTurns,
 				sumUsage(usages),
 			),
 			perWorker,
@@ -530,7 +585,14 @@ async function runWithStore(
 			detail: { cause },
 		});
 		return {
-			aggregate: makeReceipt(aggregateId, "failed", 0, [], 0, sumUsage(usages)),
+			aggregate: makeReceipt(
+				aggregateId,
+				"failed",
+				0,
+				[],
+				observedTurns,
+				sumUsage(usages),
+			),
 			perWorker,
 			conflicts: [],
 		};
@@ -585,7 +647,7 @@ async function runWithStore(
 				"escalate",
 				combineOutcome.filesChanged,
 				[combineOutcome.commitId],
-				0,
+				observedTurns,
 				sumUsage(usages),
 			),
 			perWorker,
@@ -626,6 +688,54 @@ async function runWithStore(
 		);
 	}
 
+	// Content acceptance consumes only provider evidence after integration. A
+	// combine implementation from before this seam has no path evidence, so
+	// legacy/fake providers fall back to their yield claims and combine count.
+	// The real jj provider supplies all three authoritative lists, including D.
+	const finalizedChangedPaths = [
+		...new Set(finalizations.flatMap((f) => f?.changedPaths ?? [])),
+	].sort();
+	const authoritativeChangedPaths =
+		combineOutcome.changedPaths ??
+		(finalizedChangedPaths.length > 0 || finalizations.some(Boolean)
+			? finalizedChangedPaths
+			: [
+					...new Set(yieldPayloads.flatMap((y) => y?.files_changed ?? [])),
+				].sort());
+	const authoritativePresentFiles =
+		combineOutcome.presentFiles ??
+		[...new Set(finalizations.flatMap((f) => f?.presentFiles ?? []))].sort();
+	const authoritativeDeletedFiles =
+		combineOutcome.deletedFiles ??
+		[...new Set(finalizations.flatMap((f) => f?.deletedFiles ?? []))].sort();
+	const claimedFiles = [
+		...new Set(yieldPayloads.flatMap((y) => y?.files_changed ?? [])),
+	].sort();
+	const contentAcceptance = acceptArtifacts({
+		policy: parsed[0]!.artifactPolicy,
+		claimedFiles,
+		actualFiles: authoritativeChangedPaths,
+		presentFiles:
+			authoritativePresentFiles.length > 0
+				? authoritativePresentFiles
+				: authoritativeChangedPaths,
+		deletedFiles: authoritativeDeletedFiles,
+		hasIntegratedChange:
+			combineOutcome.changedPaths !== undefined
+				? authoritativeChangedPaths.length > 0
+				: combineOutcome.filesChanged > 0 ||
+					authoritativeChangedPaths.length > 0,
+		commitId: combineOutcome.commitId,
+		verificationPassed: verification.passed,
+	});
+	const contentRejected =
+		!anyFailed && failures.length === 0 && !contentAcceptance.accepted;
+	const contentFailureCause = contentRejected
+		? `content acceptance rejected: ${contentAcceptance.reasons
+				.map((reason) => `${reason.code}: ${reason.detail}`)
+				.join("; ")}`
+		: undefined;
+
 	// Gate-ordered cleanup (v1 semantics): healthy workspaces are removed
 	// only after the consistency gate AND verification passed. Failed or
 	// escalated runs PRESERVE their workspaces and name them in the artifact.
@@ -636,11 +746,17 @@ async function runWithStore(
 		}
 	};
 
-	if (anyFailed || failures.length > 0) {
+	if (anyFailed || failures.length > 0 || contentRejected) {
+		const finalizationFailureDetail = finalizationErrors
+			.filter((error): error is string => error !== undefined)
+			.join("; ");
 		const cause =
-			failures.length > 0
+			contentFailureCause ??
+			(failures.length > 0
 				? `verification failed: ${failures.join("; ")}`
-				: "one or more workers failed";
+				: finalizationFailureDetail.length > 0
+					? `one or more workers failed: ${finalizationFailureDetail}`
+					: "one or more workers failed");
 		for (const ctx of contexts)
 			store.setWorkspaceStatus(`${ctx.taskId}-workspace`, "orphaned");
 		writeFailureArtifact({
@@ -661,19 +777,16 @@ async function runWithStore(
 			taskId: aggregateId,
 			sessionId: `${aggregateId}-worker`,
 			detail: {
-				cause:
-					failures.length > 0
-						? "verification failed"
-						: "one or more workers failed",
+				cause: cause,
 			},
 		});
 		return {
 			aggregate: makeReceipt(
 				aggregateId,
 				"failed",
-				combineOutcome.filesChanged,
+				authoritativeChangedPaths.length,
 				[combineOutcome.commitId],
-				0,
+				observedTurns,
 				sumUsage(usages),
 			),
 			perWorker,
@@ -701,9 +814,9 @@ async function runWithStore(
 		aggregate: makeReceipt(
 			aggregateId,
 			"ship",
-			perWorker.reduce((a, r) => a + r.filesChanged, 0),
+			authoritativeChangedPaths.length,
 			[combineOutcome.commitId],
-			observations.reduce((a, o) => a + o.turns, 0),
+			observedTurns,
 			sumUsage(usages),
 		),
 		perWorker,

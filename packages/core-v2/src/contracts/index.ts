@@ -15,3 +15,6 @@ export * from "./context-compressor.ts";
 export * from "./verification-driver.ts";
 export * from "./task-plugin.ts";
 export * from "./control-surface.ts";
+export * from "./trace.ts";
+export * from "./artifact-policy.ts";
+export * from "./acceptance.ts";

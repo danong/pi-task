@@ -19,6 +19,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { JujutsuWorkspaceDriver } from "../src/workspaces/jj-driver.ts";
+import { parseMachineDiffPaths } from "../src/workspaces/jj.ts";
 
 function newRepo(dir: string): void {
 	mkdirSync(dir, { recursive: true });
@@ -215,6 +216,77 @@ export async function runTests(): Promise<void> {
 				"binary conflict escalates through the real union ladder (git merge-file exits 255)",
 			);
 		}
+
+		// ─── Workspace finalization: engine-owned jj evidence ─────────────
+		{
+			const repo = join(dir, "finalize");
+			newRepo(repo);
+			const driver = new JujutsuWorkspaceDriver({
+				projectDir: repo,
+				authorName: "engine-finalizer",
+				authorEmail: "engine-finalizer@example.test",
+			});
+			const base = await driver.prepareIntegrationBase("finalize worker");
+			const ws = await driver.createWorkspace("finalize");
+			writeFileSync(join(ws.hostPath, "new.txt"), "new\n", "utf-8");
+			rmSync(join(ws.hostPath, "README.md"));
+
+			const finalized = await driver.finalizeWorkspace(ws, base);
+			check(finalized.hasChanges, "uncommitted edits are real changes");
+			check(
+				finalized.changedPaths.includes("new.txt") &&
+					finalized.changedPaths.includes("README.md"),
+				"finalization reports additions and deletions relative to the base",
+			);
+			check(
+				/^[0-9a-f]{40}$/.test(finalized.commitId) &&
+				/^[a-z]{32}$/.test(finalized.changeId),
+				"finalization returns engine-derived commit and change ids",
+			);
+			const author = execSync(
+				`jj log -r ${finalized.commitId} --no-graph -T 'author.email()'`,
+				{ cwd: repo, encoding: "utf-8" },
+			);
+			check(
+				author.trim() === driver.authorEmail,
+				"uncommitted edits are committed with the engine identity",
+			);
+		}
+		{
+			const repo = join(dir, "finalize-committed");
+			newRepo(repo);
+			const driver = new JujutsuWorkspaceDriver({ projectDir: repo });
+			const base = await driver.prepareIntegrationBase("preserve commit");
+			const ws = await driver.createWorkspace("committed");
+			writeFileSync(join(ws.hostPath, "kept.txt"), "kept\n", "utf-8");
+			workerCommit(ws.hostPath, "model commit");
+			const modelTip = execSync("jj log -r @- --no-graph -T commit_id", {
+				cwd: ws.hostPath,
+				encoding: "utf-8",
+			}).trim();
+			const finalized = await driver.finalizeWorkspace(ws, base);
+			check(finalized.commitId === modelTip, "model-created commit is preserved");
+			check(
+				finalized.hasChanges && finalized.changedPaths.includes("kept.txt"),
+				"already-committed work is reported authoritatively",
+			);
+		}
+		{
+			const repo = join(dir, "finalize-empty");
+			newRepo(repo);
+			const driver = new JujutsuWorkspaceDriver({ projectDir: repo });
+			const base = await driver.prepareIntegrationBase("empty worker");
+			const ws = await driver.createWorkspace("empty");
+			const finalized = await driver.finalizeWorkspace(ws, base);
+			check(!finalized.hasChanges, "empty worker has no real changes");
+			check(finalized.changedPaths.length === 0, "empty worker has no changed paths");
+			check(/^[0-9a-f]{40}$/.test(finalized.commitId), "empty worker still has a tip id");
+		}
+		check(
+			parseMachineDiffPaths(["Working copy: stale", "M\tkept.txt"]).join() ===
+				"kept.txt",
+			"machine diff parser ignores human status prose",
+		);
 
 		// ─── Feature-branch mode: bookmarks, no squash ───────────────────
 		{

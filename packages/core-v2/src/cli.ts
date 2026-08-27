@@ -16,12 +16,27 @@ import type {
 	TaskGateway,
 	WorkspaceDriver,
 } from "./contracts/index.ts";
+import {
+	TraceCollector,
+	finalizeArtifactAcceptance,
+	traceEventFromGateway,
+	writeTraceArtifact,
+	type TraceWriteResult,
+} from "./contracts/index.ts";
+import {
+	buildWorkerSystemPrompt,
+	deriveTaskId,
+	estimateGroundingTokens,
+	resolveAttemptId,
+} from "./daemon/task-runner.ts";
 import { InMemoryTaskGateway } from "./gateway/index.ts";
 import { writeReceiptArtifact } from "./guards/receipts.ts";
+import { writeFailureArtifact } from "./guards/artifacts.ts";
 import { startDaemon } from "./daemon/start.ts";
 import { runIsolatedTask } from "./daemon/isolated.ts";
-import { parseTaskSpec } from "./daemon/task-runner.ts";
+import { parseTaskSpecForCli } from "./daemon/task-runner.ts";
 import { JujutsuWorkspaceDriver } from "./workspaces/jj-driver.ts";
+import { LedgerStore } from "./ledger/store.ts";
 import type { SessionHost, SessionHostEvent } from "./sessions/host.ts";
 import type { TaskLifecycleEvent } from "./contracts/gateway-events.ts";
 
@@ -68,6 +83,7 @@ export interface CliResult {
 	exitCode: number;
 	receipt?: Awaited<ReturnType<typeof runIsolatedTask>>["receipt"];
 	receiptPath?: string;
+	tracePath?: string;
 	error?: string;
 }
 
@@ -295,6 +311,97 @@ function validationError(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
 }
 
+function recordSessionEvent(
+	trace: TraceCollector,
+	event: SessionHostEvent,
+	turnState: { active: boolean },
+): void {
+	if (event.type === "turnStart") {
+		if (turnState.active) trace.record({ type: "turn.ended", phase: "turn", taskId: trace.taskId });
+		turnState.active = true;
+		trace.record({ type: "turn.started", phase: "turn", taskId: trace.taskId });
+		return;
+	}
+	if (event.type === "toolStart" || event.type === "toolEnd") {
+		trace.record({
+			type: event.type === "toolStart" ? "tool.started" : "tool.ended",
+			phase: "tool",
+			taskId: trace.taskId,
+			sessionId: `${trace.taskId}-worker`,
+			detail: { toolName: event.toolName, toolCallId: event.toolCallId, ...(event.type === "toolEnd" ? { isError: event.isError } : {}) },
+		});
+		return;
+	}
+	if (event.type === "settled" || event.type === "yielded" || event.type === "error") {
+		if (turnState.active) {
+			trace.record({ type: "turn.ended", phase: "turn", taskId: trace.taskId });
+			turnState.active = false;
+		}
+	}
+	if (event.type === "error") {
+		trace.record({ type: "failure", phase: "session", taskId: trace.taskId, sessionId: `${trace.taskId}-worker`, detail: { message: event.message, code: event.code } });
+	} else if (event.type === "yielded") {
+		trace.record({ type: "session.ended", phase: "session", taskId: trace.taskId, sessionId: `${trace.taskId}-worker`, detail: { outcome: "yielded" } });
+	} else if (event.type === "settled") {
+		trace.record({ type: "session.ended", phase: "session", taskId: trace.taskId, sessionId: `${trace.taskId}-worker`, detail: { outcome: "settled" } });
+	}
+}
+
+function createCliTrace(
+	taskId: string,
+	model: string,
+	specMarkdown: string,
+): TraceCollector {
+	const trace = new TraceCollector(taskId, taskId);
+	const provider = model.split("/")[0]?.trim() || "unknown";
+	trace.record({
+		type: "model.assigned",
+		phase: "model",
+		taskId,
+		provider,
+		config: model.trim(),
+		detail: { modelId: model },
+	});
+	const systemPrompt = buildWorkerSystemPrompt(specMarkdown);
+	trace.record({
+		type: "context.injected",
+		phase: "context",
+		taskId,
+		detail: {
+			source: "worker-system-prompt",
+			bytes: Buffer.byteLength(systemPrompt + specMarkdown, "utf8"),
+			tokens: estimateGroundingTokens(systemPrompt, specMarkdown),
+		},
+	});
+	return trace;
+}
+
+/** Write once to establish the artifact, then record delivery and rewrite it.
+ * The first snapshot is always failed: if the final rewrite cannot be
+ * delivered, the durable trace cannot falsely claim that a task shipped. */
+function finishTrace(
+	trace: TraceCollector,
+	artifactsDir: string,
+	outcome: "ship" | "failed" | "escalate",
+): TraceWriteResult {
+	const initial = writeTraceArtifact(trace.finish("failed"), artifactsDir);
+	if (!initial.ok) return initial;
+	try {
+		trace.record({
+			type: "trace.delivered",
+			phase: "artifact",
+			taskId: trace.taskId,
+			detail: { delivered: true },
+		});
+	} catch (error) {
+		return {
+			ok: false,
+			error: error instanceof Error ? error.message : String(error),
+		};
+	}
+	return writeTraceArtifact(trace.finish(outcome), artifactsDir);
+}
+
 /** Execute the adapter without calling process.exit; suitable for tests. */
 export async function runCli(
 	argv: readonly string[],
@@ -328,7 +435,10 @@ export async function runCli(
 			throw new CliUsageError("--spec is required");
 		const specPath = resolvePath(args.specPath);
 		specMarkdown = readFileSync(specPath, "utf8");
-		parseTaskSpec(specMarkdown);
+		// Strict policy validation is the CLI ingress boundary. Keep it before
+		// path resolution for runtime state and before daemon/workspace/session
+		// construction so providers cannot observe an invalid task input.
+		parseTaskSpecForCli(specMarkdown);
 	} catch (error) {
 		const message = validationError(error);
 		writeError(`error: ${message}`);
@@ -336,71 +446,157 @@ export async function runCli(
 	}
 
 	const paths = pathsFor(args, projectDir);
+	const familyId = deriveTaskId(specMarkdown, projectDir);
+	let trace: TraceCollector | undefined;
+	let traceTaskId = familyId;
+	let daemon: Awaited<ReturnType<typeof startDaemon>> | undefined;
+	const deliverFailureTrace = (cause: string): CliResult => {
+		trace ??= createCliTrace(traceTaskId, args.model, specMarkdown);
+		trace.record({ type: "failure", phase: "task", taskId: trace.taskId, detail: { message: cause } });
+		trace.record({ type: "task.failed", phase: "task", taskId: trace.taskId, detail: { cause } });
+		const failurePath = writeFailureArtifact({ artifactsDir: paths.artifactsDir, runId: trace.taskId, cause });
+		const traceDelivery = finishTrace(trace, paths.artifactsDir, "failed");
+		if (failurePath === undefined) writeError("error: failure artifact delivery failed");
+		if (traceDelivery.error !== undefined) writeError(`error: trace artifact delivery failed: ${traceDelivery.error}`);
+		const deliveryError = traceDelivery.error === undefined
+			? undefined
+			: `trace artifact delivery failed: ${traceDelivery.error}`;
+		return {
+			exitCode: failurePath === undefined || deliveryError !== undefined ? CLI_ARTIFACT_EXIT : CLI_TASK_EXIT,
+			error: deliveryError ?? cause,
+			...(traceDelivery.path === undefined ? {} : { tracePath: traceDelivery.path }),
+		};
+	};
 	try {
 		mkdirSync(dirname(paths.dbPath), { recursive: true });
-		const daemonStarter = dependencies.startDaemon ?? startDaemon;
-		const daemon = await daemonStarter(paths.dbPath, { projectDir });
+		// Resolve the attempt before daemon/workspace/provider setup so even a
+		// setup failure can use the same first/warm-ledger identity as a run.
+		const identityStore = new LedgerStore(paths.dbPath);
 		try {
-			const workspaceDriver =
-				dependencies.workspaceDriver ??
-				new JujutsuWorkspaceDriver({ projectDir });
-			if (!(await workspaceDriver.isSupported()))
-				throw new Error(
-					"jj is unavailable or project-dir is not a jj repository",
-				);
-			const gateway =
-				dependencies.gateway ??
-				new InMemoryTaskGateway({ store: daemon.store });
-			const unsubscribe = gateway.on("*", (event) =>
-				write(renderProgress(event)),
-			);
-			write(`starting v2 task in ${projectDir}`);
-			try {
-				const result = await runIsolatedTask({
-					specMarkdown,
-					projectDir,
-					artifactsDir: paths.artifactsDir,
-					dbPath: paths.dbPath,
-					model: args.model,
-					workspaceDriver,
-					...(dependencies.environmentDriver === undefined
-						? {}
-						: { environmentDriver: dependencies.environmentDriver }),
-					...(dependencies.host === undefined
-						? {}
-						: { host: dependencies.host }),
-					gateway,
-					onEvent: (event) => write(renderProgress(event)),
-				});
-				const receiptPath = writeReceiptArtifact(
-					result.receipt,
-					paths.artifactsDir,
-				);
-				if (receiptPath === undefined) {
-					const message = "receipt artifact delivery failed";
-					writeError(`error: ${message}`);
-					return {
-						exitCode: CLI_ARTIFACT_EXIT,
-						receipt: result.receipt,
-						error: message,
-					};
-				}
-				write(`receipt: ${JSON.stringify(result.receipt)}`);
-				return {
-					exitCode: cliExitCode(result.receipt.verdict, result.conflicts),
-					receipt: result.receipt,
-					receiptPath,
-				};
-			} finally {
-				unsubscribe();
-			}
+			traceTaskId = resolveAttemptId(identityStore, familyId);
 		} finally {
-			daemon.store.close();
+			identityStore.close();
+		}
+		trace = createCliTrace(traceTaskId, args.model, specMarkdown);
+		const daemonStarter = dependencies.startDaemon ?? startDaemon;
+		daemon = await daemonStarter(paths.dbPath, { projectDir });
+		const daemonAttemptId = resolveAttemptId(daemon.store, familyId);
+		if (daemonAttemptId !== traceTaskId)
+			throw new Error(`attempt identity changed during daemon setup: ${traceTaskId} -> ${daemonAttemptId}`);
+		const workspaceDriver = dependencies.workspaceDriver ?? new JujutsuWorkspaceDriver({ projectDir });
+		if (!(await workspaceDriver.isSupported())) throw new Error("jj is unavailable or project-dir is not a jj repository");
+		const gateway = dependencies.gateway ?? new InMemoryTaskGateway({ store: daemon.store });
+		const tracedGateway: TaskGateway = {
+			emit: (event) => {
+				gateway.emit(event);
+				trace!.record(traceEventFromGateway(event, trace!.runId));
+			},
+			on: (pattern, handler) => gateway.on(pattern, handler),
+			getTaskState: (taskId) => gateway.getTaskState(taskId),
+			getManifest: (taskId) => gateway.getManifest(taskId),
+		};
+		const unsubscribe = gateway.on("*", (event) => write(renderProgress(event)));
+		const turnState = { active: false };
+		write(`starting v2 task in ${projectDir}`);
+		try {
+			const result = await runIsolatedTask({
+				specMarkdown,
+				projectDir,
+				artifactsDir: paths.artifactsDir,
+				dbPath: paths.dbPath,
+				model: args.model,
+				workspaceDriver,
+				...(dependencies.environmentDriver === undefined ? {} : { environmentDriver: dependencies.environmentDriver }),
+				...(dependencies.host === undefined ? {} : { host: dependencies.host }),
+				gateway: tracedGateway,
+				onEvent: (event) => { write(renderProgress(event)); recordSessionEvent(trace!, event, turnState); },
+			});
+			const receipt = result.receipt;
+			if (receipt.taskId !== trace.taskId) throw new Error(`trace task identity ${trace.taskId} disagrees with receipt ${receipt.taskId}`);
+			trace.setUsage({ status: receipt.usageStatus === "measured" ? "measured" : "unavailable", costUsd: receipt.costUsd, inputTokens: receipt.inputTokens, outputTokens: receipt.outputTokens, cacheReadTokens: receipt.cacheReadTokens, cacheWriteTokens: 0 });
+
+			// Establish a truthful non-ship receipt first. It is upgraded only
+			// after the trace has also been durably delivered, preventing a
+			// trace failure from leaving a shipped receipt behind.
+			const provisionalReceipt = receipt.verdict === "ship"
+				? { ...receipt, verdict: "failed" as const }
+				: receipt;
+			const receiptPath = writeReceiptArtifact(provisionalReceipt, paths.artifactsDir);
+			const receiptDelivered = receiptPath !== undefined;
+			trace.record({ type: "receipt.delivered", phase: "artifact", taskId: trace.taskId, detail: { delivered: receiptDelivered } });
+			if (!receiptDelivered) {
+				writeError("error: receipt artifact delivery failed");
+				trace.record({ type: "failure", phase: "artifact", taskId: trace.taskId, detail: { message: "receipt artifact delivery failed" } });
+				trace.record({ type: "task.failed", phase: "task", taskId: trace.taskId, detail: { cause: "receipt artifact delivery failed" } });
+			}
+
+			// Content acceptance is owned by the runner and deliberately remains
+			// semantic-free here. This finalization stage adds only transport
+			// facts; a task ships iff the runner shipped and both artifacts exist.
+			const traceOutcome = receipt.verdict === "ship"
+				? (receiptDelivered ? "ship" : "failed")
+				: receipt.verdict;
+			const traceDelivery = finishTrace(trace, paths.artifactsDir, traceOutcome);
+			const finalized = finalizeArtifactAcceptance(
+				{ accepted: true, reasons: [], actualFiles: [], ...(receipt.commitIds[0] === undefined ? {} : { commitId: receipt.commitIds[0] }) },
+				{ receiptDelivered, traceDelivered: traceDelivery.ok },
+			);
+			const deliveryError = [
+				...(receiptDelivered ? [] : [`receipt artifact delivery failed at ${paths.artifactsDir}`]),
+				...(traceDelivery.ok ? [] : [`trace artifact delivery failed: ${traceDelivery.error ?? "unknown error"}`]),
+			].join("; ");
+			const contentAccepted = receipt.verdict === "ship";
+			const ships = contentAccepted && finalized.accepted;
+			const finalReceipt = ships ? receipt : { ...receipt, verdict: "failed" as const };
+			if (traceDelivery.error !== undefined)
+				writeError(`error: trace artifact delivery failed: ${traceDelivery.error}`);
+
+			if (!ships && (!contentAccepted || !finalized.accepted)) {
+				const deliveryReasons = finalized.reasons
+					.filter((reason) => reason.code === "receipt_missing" || reason.code === "trace_missing")
+					.map((reason) => `${reason.code}: ${reason.detail}`);
+				if (deliveryReasons.length > 0) {
+					writeFailureArtifact({
+						artifactsDir: paths.artifactsDir,
+						runId: trace.taskId,
+						cause: `artifact delivery failed after content acceptance: ${deliveryError || deliveryReasons.join("; ")}`,
+					});
+				}
+			}
+			if (!ships && (!receiptDelivered || !traceDelivery.ok)) {
+				return {
+					exitCode: CLI_ARTIFACT_EXIT,
+					receipt: finalReceipt,
+					...(receiptPath === undefined ? {} : { receiptPath }),
+					...(traceDelivery.path === undefined ? {} : { tracePath: traceDelivery.path }),
+					error: deliveryError || "artifact delivery failed",
+				};
+			}
+			if (receiptPath === undefined) {
+				return { exitCode: CLI_ARTIFACT_EXIT, receipt: finalReceipt, error: "receipt artifact delivery failed" };
+			}
+			// Replace the provisional receipt only after both delivery checks
+			// passed. A failed rewrite leaves the already durable failed receipt.
+			const deliveredReceiptPath = ships
+				? writeReceiptArtifact(finalReceipt, paths.artifactsDir)
+				: receiptPath;
+			if (deliveredReceiptPath === undefined) {
+				writeFailureArtifact({ artifactsDir: paths.artifactsDir, runId: trace.taskId, cause: "receipt artifact delivery failed during finalization" });
+				return { exitCode: CLI_ARTIFACT_EXIT, receipt: { ...receipt, verdict: "failed" as const }, error: "receipt artifact delivery failed during finalization" };
+			}
+			write(`receipt: ${JSON.stringify(finalReceipt)}`);
+			return { exitCode: cliExitCode(finalReceipt.verdict, result.conflicts), receipt: finalReceipt, receiptPath: deliveredReceiptPath, ...(traceDelivery.path === undefined ? {} : { tracePath: traceDelivery.path }) };
+		} catch (error) {
+			const message = validationError(error);
+			return deliverFailureTrace(message);
+		} finally {
+			unsubscribe();
 		}
 	} catch (error) {
 		const message = validationError(error);
-		writeError(`error: ${message}`);
-		return { exitCode: CLI_TASK_EXIT, error: message };
+		return deliverFailureTrace(message);
+	} finally {
+		if (daemon !== undefined) daemon.store.close();
 	}
 }
 

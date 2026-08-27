@@ -244,6 +244,10 @@ export async function runTests(): Promise<void> {
 				`cor equals grounding / total input for known fixture sizes (got ${result.receipt.cor}, want ${expectedCor})`,
 			);
 			check(result.verificationPassed === true, "verification passed");
+			check(
+				result.receipt.commitIds.length === 0,
+				"single-worker receipt does not treat model VCS claims as engine evidence",
+			);
 			check(existsSync(join(workDir, "hello.txt")), "worker file written");
 
 			const store = new LedgerStore(join(dir, "success.db"));

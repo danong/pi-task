@@ -29,6 +29,22 @@ export interface WorkspaceContext {
 /** How finished worker work integrates back (config-selected). */
 export type IntegrationMode = "task-base" | "feature-branch";
 
+/** Engine-owned evidence for one finalized worker workspace. */
+export interface WorkspaceFinalization {
+	/** Stable jj change id for the committed worker tip. */
+	changeId: string;
+	/** Authoritative jj commit id for the committed worker tip. */
+	commitId: string;
+	/** Repository-relative paths changed from the task base, including deletions. */
+	changedPaths: readonly string[];
+	/** Whether the worker produced any tree changes relative to the task base. */
+	hasChanges: boolean;
+	/** Provider-observed paths present in the finalized worker tree. */
+	presentFiles?: readonly string[];
+	/** Provider-observed paths deleted by the worker. */
+	deletedFiles?: readonly string[];
+}
+
 /** Result of an atomic combine across all workers' workspaces. */
 export interface CombineOutcome {
 	/** The merged base's COMMIT id (post-squash). */
@@ -38,6 +54,12 @@ export interface CombineOutcome {
 	/** Files the combine changed vs the pre-merge base — the honest
 	 *  filesChanged for aggregate receipts (review M4). */
 	filesChanged: number;
+	/** Provider-observed integrated paths, including deletions. */
+	changedPaths?: readonly string[];
+	/** Provider-observed paths present in the integrated tree. */
+	presentFiles?: readonly string[];
+	/** Provider-observed paths deleted from the integration base. */
+	deletedFiles?: readonly string[];
 }
 
 export interface WorkspaceDriver {
@@ -61,6 +83,13 @@ export interface WorkspaceDriver {
 	 * escalation path is signalled via `conflicts` when the union
 	 * resolution cannot auto-resolve. Failed merges PRESERVE the workspace.
 	 */
+	/** Finalize worker edits and return provider-owned VCS evidence. Providers
+	 *  that support this seam snapshot/commit edits without requiring model VCS
+	 *  commands; callers must not infer evidence from the worker yield. */
+	finalizeWorkspace?(
+		context: WorkspaceContext,
+		baseChangeId: string,
+	): Promise<WorkspaceFinalization>;
 	mergeWorkspace(
 		context: WorkspaceContext,
 	): Promise<{ success: boolean; conflicts?: string[] }>;

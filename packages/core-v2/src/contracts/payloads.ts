@@ -79,7 +79,9 @@ export type HandoffBundle = z.infer<typeof HandoffBundleSchema>;
 export const YieldSchema = z.object({
 	files_changed: z.array(z.string()),
 	summary: z.string(),
-	commit_ids: z.array(z.string()),
+	/** Optional model claim retained for legacy/fake session compatibility.
+	 *  Engine-owned VCS evidence is supplied by the workspace finalizer. */
+	commit_ids: z.array(z.string()).default([]),
 	// empty when none; feeds fork_deviation_rate telemetry (§5.4).
 	deviations: z.array(z.string()),
 });
@@ -111,6 +113,9 @@ export const TaskReceiptSchema = z.object({
 	cacheReadTokens: z.number(),
 	/** groundingTokens ÷ totalInputTokens (0 when nothing was billed). */
 	cor: z.number(),
+	/** Numeric zero remains compatible with older consumers; this field says
+	 * whether zero means measured zero or unavailable usage. */
+	usageStatus: z.enum(["measured", "unavailable"]).optional(),
 	/** mode-(b) telemetry: null = bundle not used. */
 	bundleHit: z.boolean().nullable(),
 });

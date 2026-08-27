@@ -71,7 +71,7 @@ class FakeHandle implements SessionHandle {
 		return Promise.resolve().then(() => {
 			writeFileSync(
 				this.file,
-				this.file.endsWith("a.txt") ? "A" : "B",
+				`${this.file.endsWith("a.txt") ? "A" : "B"}-${this.workerIndex}`,
 				"utf-8",
 			);
 			// Workers commit their work (jj snapshots on command): without this,
@@ -241,6 +241,9 @@ export async function runTests(): Promise<void> {
 			const { JujutsuWorkspaceDriver } =
 				await import("../src/workspaces/jj-driver.ts");
 			const dbPath = join(dir, "rerun.db");
+			const driver = new JujutsuWorkspaceDriver({ projectDir: repo });
+			const rerunCalls = { value: 0 };
+			const rerunHost = scriptedHost(["a.txt", "b.txt"], rerunCalls);
 			const runOnce = () =>
 				runParallelTask({
 					subTasks: [SPEC_A, SPEC_B],
@@ -248,11 +251,12 @@ export async function runTests(): Promise<void> {
 					artifactsDir: join(dir, "artifacts-rerun"),
 					dbPath,
 					model: "openrouter/stealth/ox-alpha",
-					workspaceDriver: new JujutsuWorkspaceDriver({ projectDir: repo }),
-					host: scriptedHost(["a.txt", "b.txt"], { value: 0 }),
+					workspaceDriver: driver,
+					host: rerunHost,
 				});
-			// Runs 1–2: FRESH driver + fresh DB each — both the jj-level wall
-			// (workspace names) and the ledger-level wall (PKs) must yield.
+			// Reuse one provider instance across attempts: the provider must
+			// refresh its integration base for each run, while the ledger still
+			// allocates distinct attempt ids.
 			const first = await runOnce();
 			const second = await runOnce();
 			check(

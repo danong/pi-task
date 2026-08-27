@@ -190,14 +190,12 @@ benchmarks and tests; the active conformance expectations are in
 [pi-task-v2-subsystems.md](pi-task-v2-subsystems.md). Claims about quality,
 cost, or time belong to measured records rather than this design document.
 
-## Shipped foundation milestone
+## Completed M1–M3 MVP foundation
 
-The completed M0–M5 work is treated as **one shipped foundation milestone**:
-the code now provides the kernel contracts, daemon runner, session/watchdog
-pipeline, durable ledger direction, jj isolation and parallel combine, typed
-plugin/gateway seams, failure artifacts, and the existing test harness. This
-statement records the architectural baseline; it is not a product-success
-claim and does not make parallel execution an MVP dependency.
+M1–M3 are complete as an evidence-backed MVP foundation. This records shipped
+contracts and test/evidence coverage, not a product-success claim. Parallel
+execution, grounding modes, and optional enabling modules do not make a real-
+model efficiency or quality claim for the MVP.
 
 The source-of-truth implementation paths include:
 
@@ -224,19 +222,20 @@ command:
 mise run v2 -- --spec ./task.md --project-dir . --model provider/model
 ```
 
-The command accepts a markdown file containing `Goal`, `Requirements`, and
-`Verification`, validates it before provider work, boots `startDaemon()` for
-ledger reconciliation, and executes one canonical task with one worker and one
-workspace through `daemon/isolated.ts`. The model must be supplied as a
-non-empty `--model <provider/model>` value or `PI_TASK_V2_MODEL`; the CLI value
-wins when both are present. The placeholder in the example is not a product
-default. The default `JujutsuWorkspaceDriver` provisions an
-isolated workspace, integrates successful changes with the task-base semantics,
-and runs verification on the integrated project tree. Progress is rendered
-from typed gateway and session events only. A compact receipt is printed and
-atomically delivered as a receipt artifact; failed runs retain the existing
-failure/recovery artifact contract. State and artifacts default to the user
-state location (keyed by project, honoring `XDG_STATE_HOME`) rather than the
+The command accepts a markdown file containing `Goal`, `Requirements`,
+`Verification`, and the required `Artifact Policy` section. It validates the
+policy before provider work, boots `startDaemon()` for ledger reconciliation,
+and executes one canonical task with one worker and one workspace through
+`daemon/isolated.ts`. The model must be supplied as a non-empty
+`--model <provider/model>` value or `PI_TASK_V2_MODEL`; the CLI value wins when
+both are present. The placeholder in the example is not a product default.
+The default `JujutsuWorkspaceDriver` provisions an isolated workspace,
+performs engine-derived VCS finalization, integrates successful changes with
+task-base semantics, and runs verification on the integrated project tree.
+Progress is rendered from typed gateway and session events only. A compact
+receipt and versioned trace are atomically delivered; failed runs retain typed
+failure/recovery evidence. State and artifacts default to the user state
+location (keyed by project, honoring `XDG_STATE_HOME`) rather than the
 checkout.
 
 Ownership is intentionally narrow: `src/cli.ts` parses/validates arguments,
@@ -249,37 +248,72 @@ contracts. The slice is limited to a
 single task and worker: cancellation, scheduling, child dispatch, remote
 surfaces, and multi-worker user commands remain deferred.
 
-Hermetic evidence is in `packages/core-v2/test/test-cli.ts` and is registered
-in `packages/core-v2/test/run-all.ts`. It uses a fake `SessionHost` with a real
-temporary jj repository and real verification to prove isolated editing,
-integration, progress, receipt delivery, verification failure, and cleanup or
-recovery behavior. Run `npx tsx packages/core-v2/test/test-cli.ts` for that
-slice; the real model e2e remains a separate manual gate.
+A CLI spec declares mechanically checkable delivery policy, for example:
 
-## Evidence-gated MVP roadmap
+```markdown
+## Artifact Policy
+- Required: reports/result.json
+- Change required
+```
 
-The next milestones are gates, not promises of feature volume. Each milestone
-must publish its trace, benchmark result, and conformance evidence before the
-following capability becomes a dependency.
+Use `- Intentional no-change` only when verification is expected to pass with
+no integrated change. Required paths must be repository-relative. Strict
+ingress rejects missing, empty, unsafe, duplicate, contradictory, or unknown
+policy entries. Post-integration acceptance compares required and claimed
+paths with the actual tree, checks the engine-derived commit identity and the
+verification result, and then requires receipt and trace delivery. Rejection
+reasons are typed and recovery artifacts preserve what can be recovered. This
+mechanical gate does not prove semantic user intent beyond declared artifacts
+and verification.
 
-1. **Runnable engine:** one command starts a usable engine with at least one
-   shell or bridge interface. A real task can be submitted, observed,
-   cancelled, recovered, verified, and receipted without a conversational
-   operator manually stitching processes together.
-2. **Durable observability baseline:** provider-neutral traces survive normal
-   surface disconnects and record enough lifecycle, context, usage, cost, and
-   artifact evidence to establish baseline benchmarks.
-3. **Sequential typed children:** parent/child relationships, structured
-   artifacts, bounded handoffs, and recovery are durable. Passing an entire
-   transcript is not an acceptable shortcut.
-4. **Context experiment:** run the candidate retrieval/compilation experiment
-   against raw exploration, v1, and baseline v2. Promote it only when
-   accepted-result quality per dollar and minute improves; otherwise record the
-   failure and keep the simpler path.
-5. **MVP proof gate:** repeated benchmark trials show accepted-result quality,
-   cost, time, and intervention are understood and acceptable for the target
-   tasks. v1 parity is required to avoid regressions, but parity alone cannot
-   open this gate.
+M3's worker protocol is requirement-sensitive: a checklist is enabled for
+multi-requirement specs, while a single-requirement spec avoids that ceremony.
+The worker makes exactly one typed `yield` call with `files_changed`, `summary`,
+and `deviations`; engine code owns VCS finalization and verification after the
+yield. Real-model efficiency improvement has not yet been measured.
+
+Hermetic evidence is in `packages/core-v2/test/`, including versioned trace
+fixtures under `packages/core-v2/test/fixtures/`, and is registered in
+`packages/core-v2/test/run-all.ts`. It uses fake sessions with real temporary
+jj repositories and real verification to prove protocol, isolation,
+acceptance, trace delivery, and recovery behavior. These fixtures are evidence
+inputs, not performance claims or model defaults. Run
+`npx tsx packages/core-v2/test/test-cli.ts` for the CLI slice; the real-model
+e2e remains a separate manual gate.
+
+Render provider-neutral benchmark output from validated trace artifacts with:
+
+```sh
+mise run bench-report -- --traces-dir <trace-directory> --label <label>
+```
+
+The report records accepted outcomes, cost when measured, observed turns, tool
+calls, repeated reads, context and elapsed metrics when available, and
+verification/acceptance failures. Missing measurements remain `unavailable`;
+the report does not infer them.
+
+## Remaining M4–M6 scope and proof gates
+
+M1–M3 establish the runnable, observable, mechanically accepted single-worker
+foundation. M4–M6 remain follow-on scope and are gates, not promises of feature
+volume:
+
+- **M4 — durable interfaces and typed continuation:** make durable surface
+  behavior, cancellation/recovery across disconnects, and sequential
+  parent/child tasks with bounded handoffs part of the supported product path.
+  Passing an entire transcript is not an acceptable shortcut.
+- **M5 — workflow and migration cutover:** measure demand for workflow graphs,
+  scheduling and parallel dispatch, then complete inventory → shadow → flip →
+  delete migration only after conformance and parity evidence. Existing
+  enabling modules are not evidence that this product scope is complete.
+- **M6 — MVP proof and scale decisions:** run repeated real-model trials over
+  accepted-result quality, cost, time, intervention, context use, and failure
+  recovery; then decide which context, quality, remote, or scale capabilities
+  earn promotion. Real-model efficiency improvement has not yet been measured.
+
+Each gate must publish canonical traces, benchmark results, and conformance
+ evidence. No model/provider default or snapshot number is implied by the
+fixtures or by a dry evaluation plan.
 
 ## Safe migration loop
 

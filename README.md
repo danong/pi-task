@@ -46,6 +46,78 @@ argument/input validation, progress rendering, and receipt delivery;
 and gateway remain the execution owners. Cancellation, multiple workers,
 parallel scheduling, and remote interfaces are not part of this slice.
 
+### v2 MVP status: M1–M3
+
+M1–M3 are the completed evidence-backed MVP foundation. M1 provides a
+versioned, bounded, provider-neutral trace artifact with lifecycle, observed
+turns, tool activity, verification, delivery, and failure events. Usage is
+explicitly marked `measured` or `unavailable`; zero-valued usage is not a
+performance measurement when the status is unavailable. Versioned baseline
+trace fixtures live with the core-v2 test evidence. They are evidence inputs
+for exercising derivation and reporting, not performance claims or model
+defaults.
+
+M2 adds the required `## Artifact Policy` section to CLI specs. The strict
+ingress parser accepts repository-relative required files and an explicit
+change mode, then post-integration mechanical acceptance checks declared
+artifacts, changed paths, engine-derived jj identity, and verification. VCS
+finalization is engine-owned rather than a model claim. Typed rejection and
+recovery evidence, including receipt/trace delivery failures, makes a result
+non-ship when delivery or acceptance fails. This gate cannot prove user intent
+beyond declared artifacts and verification.
+
+M3 adds requirement-sensitive checklist use (only multi-requirement tasks need
+it), a one-shot typed `yield` containing `files_changed`, `summary`, and
+`deviations`, and engine-owned VCS finalization and verification. Real-model
+efficiency improvement has not yet been measured; the grounding harness and
+trace reports provide measurement infrastructure, not a result claim.
+
+A minimal spec policy is:
+
+```markdown
+## Artifact Policy
+- Required: reports/result.json
+- Change required
+```
+
+For a verified no-diff task, use `- Intentional no-change` instead. Paths must
+be repository-relative and the CLI rejects missing, contradictory, duplicate,
+unsafe, or unrecognized policy entries. The current runnable command is:
+
+```sh
+mise run v2 -- --spec ./task.md --project-dir . --model provider/model
+```
+
+The model value is a placeholder, not a product default; use an explicit model
+or `PI_TASK_V2_MODEL`. The CLI returns the receipt and trace artifact paths.
+The default user-state artifact directory contains `<run-id>.trace.json`, the
+receipt, and failure/recovery evidence without requiring repository-local
+state. Render a provider-neutral report from trace artifacts with:
+
+```sh
+mise run bench-report -- --traces-dir <trace-directory> --label <label>
+```
+
+The report derives accepted outcome, cost when measured, turns, tool calls,
+repeated reads, context, elapsed time, verification/acceptance failures, and
+unavailable metrics from validated traces. M3's grounding comparison is a
+separate dry-by-default command:
+
+```sh
+mise run eval-grounding
+mise run eval-grounding -- --run
+```
+
+The first command makes no LLM calls; real runs require the configured model
+and network. Evidence is written under the selected metrics directory in
+`eval-grounding/records.jsonl` and `eval-grounding/summary.md`.
+
+M4–M6 remain follow-on scope rather than claims of MVP proof: durable
+interfaces and typed parent/child execution, broader workflow scheduling and
+migration/cutover, and the repeated real-model proof plus scale/quality work
+that follows it. Some enabling code may exist, but those capabilities are not
+this MVP's measured product guarantee.
+
 The repo ships `.pi/settings.json` registering itself as a project package
 (`"packages": [".."]`), so any trusted checkout auto-installs — the `task`
 tool, `/task-budget`, `/goals`, `/task-stats` and `/task-status` commands,

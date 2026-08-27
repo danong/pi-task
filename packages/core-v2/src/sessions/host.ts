@@ -31,13 +31,18 @@ import {
 import type {
 	AgentSession,
 	AgentSessionEvent,
+	ResourceLoader,
 	SessionStats,
 } from "@earendil-works/pi-coding-agent";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 
 import type { Yield } from "../contracts/index.ts";
-import { makeChecklistTool, makeYieldTool } from "./tools.ts";
-import type { ChecklistState } from "./tools.ts";
+import {
+	getRequirementTrackingPolicy,
+	makeChecklistTool,
+	makeYieldTool,
+} from "./tools.ts";
+import type { ChecklistState, RequirementTrackingPolicy } from "./tools.ts";
 
 /** Default per-prompt wall-clock bound (R2 "timeout bounds"). */
 export const DEFAULT_WALL_TIMEOUT_MS = 10 * 60 * 1000;
@@ -69,16 +74,25 @@ export interface SessionHostConfig {
 	/** System prompt the session uses (replaces the pi default). */
 	systemPrompt: string;
 	/**
+	 * Parsed requirement count used to select the worker protocol. When
+	 * omitted, the legacy multi-requirement protocol is retained for direct
+	 * host callers; task runners always provide the parsed count.
+	 */
+	requirementCount?: number;
+	/**
 	 * Tool allowlist restricting the tools the model may call. Built-in tool
 	 * names (read/bash/edit/write) plus the custom tools registered by this
-	 * package. Defaults to all built-ins plus yield and checklist.
+	 * package. Defaults to all built-ins plus yield and the selected checklist.
 	 */
 	tools?: string[];
 	/** Per-prompt wall-clock timeout in ms. Defaults to ten minutes. */
 	timeoutMs?: number;
 }
 
-/** Default tool allowlist: the four built-ins plus the two custom tools. */
+/** Default requirement count for callers that predate the protocol field. */
+export const DEFAULT_REQUIREMENT_COUNT = 2;
+
+/** Default tool allowlist: the seven built-ins plus the custom tools. */
 export const DEFAULT_TOOLS = [
 	"read",
 	"grep",
@@ -90,6 +104,29 @@ export const DEFAULT_TOOLS = [
 	"yield",
 	"checklist",
 ];
+
+function selectWorkerToolsForPolicy(
+	requestedTools: readonly string[],
+	policy: RequirementTrackingPolicy,
+): string[] {
+	const withoutChecklist = requestedTools.filter(
+		(tool) => tool !== "checklist",
+	);
+	return policy.checklistEnabled
+		? [...withoutChecklist, "checklist"]
+		: withoutChecklist;
+}
+
+/** Select the allowlist mandated by the parsed requirement count. */
+export function selectWorkerTools(
+	requirementCount: number,
+	requestedTools: readonly string[] = DEFAULT_TOOLS,
+): string[] {
+	return selectWorkerToolsForPolicy(
+		requestedTools,
+		getRequirementTrackingPolicy(requirementCount),
+	);
+}
 
 /** Settle/turn/tool lifecycle event the host streams to listeners. */
 export type SessionHostEvent =
@@ -133,6 +170,14 @@ export interface SessionHost {
 	spawn(config: SessionHostConfig): Promise<SessionHandle>;
 }
 
+/** Injectable SDK seams used by hermetic host-protocol tests. */
+export interface SessionHostDependencies {
+	resolveCliModel?: typeof resolveCliModel;
+	hasConfiguredAuth?: (runtime: ModelRuntime, provider: string) => boolean;
+	buildSessionLoader?: (cwd: string, systemPrompt: string) => ResourceLoader;
+	createAgentSession?: typeof createAgentSession;
+}
+
 /**
  * Build the deterministic resource loader feeding the session's system
  * prompt: custom prompt plus no extensions/skills/packages/themes/context
@@ -158,16 +203,24 @@ export function buildSessionLoader(
 /** Concrete SessionHost backed by a shared ModelRuntime. */
 export class DefaultSessionHost implements SessionHost {
 	readonly #modelRuntime: ModelRuntime | undefined;
+	readonly #dependencies: SessionHostDependencies;
 
-	constructor(modelRuntime?: ModelRuntime) {
+	constructor(
+		modelRuntime?: ModelRuntime,
+		dependencies: SessionHostDependencies = {},
+	) {
 		this.#modelRuntime = modelRuntime;
+		this.#dependencies = dependencies;
 	}
 
 	async spawn(config: SessionHostConfig): Promise<SessionHandle> {
 		const runtime = this.#modelRuntime ?? (await ModelRuntime.create());
+		const policy = getRequirementTrackingPolicy(
+			config.requirementCount ?? DEFAULT_REQUIREMENT_COUNT,
+		);
 
 		// R4 — typed, never-silent model resolution.
-		const resolved = resolveCliModel({
+		const resolved = (this.#dependencies.resolveCliModel ?? resolveCliModel)({
 			cliModel: config.modelId,
 			modelRuntime: runtime,
 		});
@@ -180,7 +233,10 @@ export class DefaultSessionHost implements SessionHost {
 		}
 		const model = resolved.model;
 
-		if (!runtime.hasConfiguredAuth(model.provider)) {
+		const hasConfiguredAuth =
+			this.#dependencies.hasConfiguredAuth ??
+			((candidate, provider) => candidate.hasConfiguredAuth(provider));
+		if (!hasConfiguredAuth(runtime, model.provider)) {
 			throw new SessionHostError(
 				"missing_auth",
 				`No credentials configured for provider "${model.provider}".`,
@@ -193,24 +249,29 @@ export class DefaultSessionHost implements SessionHost {
 		};
 		const yielder: { payload: Yield | undefined } = { payload: undefined };
 
-		const loader = buildSessionLoader(config.cwd, config.systemPrompt);
+		const loader = (
+			this.#dependencies.buildSessionLoader ?? buildSessionLoader
+		)(config.cwd, config.systemPrompt);
 		await loader.reload();
 
 		const agentDir = getAgentDir();
-		const { session } = await createAgentSession({
+		const customTools = [
+			makeYieldTool(config.cwd, {
+				onYield: (payload) => {
+					yielder.payload = payload;
+				},
+			}),
+			...(policy.checklistEnabled ? [makeChecklistTool(checklistStore)] : []),
+		];
+		const createSession =
+			this.#dependencies.createAgentSession ?? createAgentSession;
+		const { session } = await createSession({
 			cwd: config.cwd,
 			agentDir,
 			model,
 			modelRuntime: runtime,
-			tools: [...(config.tools ?? DEFAULT_TOOLS)],
-			customTools: [
-				makeYieldTool(config.cwd, {
-					onYield: (payload) => {
-						yielder.payload = payload;
-					},
-				}),
-				makeChecklistTool(checklistStore),
-			],
+			tools: selectWorkerToolsForPolicy(config.tools ?? DEFAULT_TOOLS, policy),
+			customTools,
 			sessionManager: SessionManager.inMemory(config.cwd),
 			resourceLoader: loader,
 		});

@@ -28,6 +28,36 @@ import { Type } from "typebox";
 import { YieldSchema } from "../contracts/index.ts";
 import type { Yield } from "../contracts/index.ts";
 
+/**
+ * Complexity-sensitive worker protocol. A checklist adds useful structure for
+ * multi-requirement tasks but is unnecessary ceremony for a single one.
+ */
+export interface RequirementTrackingPolicy {
+	readonly requirementCount: number;
+	readonly checklistEnabled: boolean;
+	readonly promptInstructions: readonly string[];
+}
+
+/** Select the worker tracking protocol from the parsed requirement count. */
+export function getRequirementTrackingPolicy(
+	requirementCount: number,
+): RequirementTrackingPolicy {
+	if (!Number.isInteger(requirementCount) || requirementCount < 1) {
+		throw new RangeError("requirementCount must be a positive integer");
+	}
+	const checklistEnabled = requirementCount > 1;
+	return {
+		requirementCount,
+		checklistEnabled,
+		promptInstructions: checklistEnabled
+			? [
+					"Because this task has multiple requirements, you must use the checklist tool for structured requirement tracking.",
+					"Initialize it with every requirement, mark each item done as you complete it, and check status before yielding.",
+				]
+			: [],
+	};
+}
+
 /** TypeBox parameter schema mirrored from the canonical zod YieldSchema. */
 export const YIELD_PARAMS_SCHEMA = Type.Object({
 	files_changed: Type.Array(Type.String(), {
@@ -37,9 +67,12 @@ export const YIELD_PARAMS_SCHEMA = Type.Object({
 	summary: Type.String({
 		description: "One-paragraph description of the changes made",
 	}),
-	commit_ids: Type.Array(Type.String(), {
-		description: "jj commit IDs created during this session",
-	}),
+	commit_ids: Type.Optional(
+		Type.Array(Type.String(), {
+			description:
+				"Legacy VCS claims; deterministic engine code owns authoritative evidence",
+		}),
+	),
 	deviations: Type.Array(Type.String(), {
 		description: "Any deviations from the spec (empty array if none)",
 	}),
@@ -66,6 +99,7 @@ export function toRepoRelative(cwd: string, p: string): string {
 
 /** Build the engine-side `yield` tool bound to the given host callbacks. */
 export function makeYieldTool(cwd: string, callbacks: YieldCallbacks) {
+	let yielded = false;
 	// Details carry the contract-valid Yield on success, or validation
 	// issues when the model's payload fails the schema.
 	return defineTool<typeof YIELD_PARAMS_SCHEMA, Yield | { issues: unknown }>({
@@ -73,7 +107,9 @@ export function makeYieldTool(cwd: string, callbacks: YieldCallbacks) {
 		label: "Yield",
 		description:
 			"Return your typed result and terminate the session. " +
-			"Call this when all requirements are complete and verification has passed. " +
+			"Call this once when model work is complete; include changed-file claims, " +
+			"a concise summary, and deviations. Deterministic engine code owns " +
+			"VCS finalization and verification after yield. " +
 			"This is your final action — the session ends after yield.",
 		parameters: YIELD_PARAMS_SCHEMA,
 		executionMode: "sequential",
@@ -82,7 +118,18 @@ export function makeYieldTool(cwd: string, callbacks: YieldCallbacks) {
 			_toolCallId: string,
 			params: YieldParams,
 		): Promise<AgentToolResult<Yield | { issues: unknown }>> {
-			const parsed = YieldSchema.safeParse(params);
+			if (yielded) {
+				return Promise.resolve({
+					content: [{ type: "text", text: "Yield was already accepted." }],
+					details: { issues: ["yield may only be called once"] },
+				});
+			}
+			const parsed = YieldSchema.safeParse({
+				...params,
+				// Keep the canonical payload compatible with legacy/fake sessions
+				// while allowing the model to omit VCS claims entirely.
+				commit_ids: params.commit_ids ?? [],
+			});
 			if (!parsed.success) {
 				return Promise.resolve({
 					content: [
@@ -100,6 +147,7 @@ export function makeYieldTool(cwd: string, callbacks: YieldCallbacks) {
 					toRepoRelative(cwd, p),
 				),
 			};
+			yielded = true;
 			callbacks.onYield(payload);
 			return Promise.resolve({
 				content: [
