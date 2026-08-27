@@ -33,14 +33,17 @@ measured task demand and merge/intervention data. Sequential typed children are
 the MVP path and must not be bypassed by a program layer that passes
 transcripts.
 
-### Context memory and indexing
+### Context memory and richer indexing
 
-Cross-task episodic memory, persistent content-hash indexes, richer semantic
-retrieval, and learned routing may follow the first context experiment. They
-must remain provenance-bearing, freshness-checked, budgeted, and removable.
-A memory entry is state delivered through an explicit context provider, never
-ambient prompt text. Do not select a storage or embedding technology until the
-benchmark explains its benefit.
+The MVP context control plane includes local content-addressed storage for its
+own immutable context artifacts, plans, and checkpoints; that is durability and
+cache correctness, not a semantic-memory product. Cross-task episodic memory,
+richer persistent indexes, semantic retrieval, and learned ranking remain
+deferred. They must be provenance-bearing, freshness-checked, sensitivity-
+scoped, budgeted, and removable. A memory entry is delivered through an
+explicit acquisition capability and selected by the kernel context plan, never
+ambient prompt text. Do not select an embedding or external index technology
+until benchmark evidence explains its benefit.
 
 ### Quality and review expansion
 
@@ -59,11 +62,14 @@ semantics.
 
 ### Economic automation
 
-Dynamic model routing, live latency/pricing optimization, batch generation,
-and provider-specific cache strategies are deferred until durable usage traces
-and baselines exist. Configuration can select a model or lane today; automatic
-selection must earn its complexity against cost per accepted result, not token
-cost alone.
+Dynamic model routing, live latency/pricing optimization, and batch generation
+are deferred until durable usage traces and baselines exist. The MVP may model
+provider cache capabilities and emit provider-neutral cache plans because
+correct context assembly depends on truthful costs and stable prefixes; learned
+routing and provider-specific optimization policy remain deferred.
+Configuration can select a model or lane today. Automatic selection must earn
+its complexity against cost per accepted result, not token cost or cache-hit
+rate alone.
 
 ## Guardrails for future work
 

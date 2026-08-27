@@ -6,6 +6,15 @@ truth is [`pi-task-v2.md`](pi-task-v2.md), with detailed contracts in
 handoffs, investigations, plans, and superseded workflow/testing documents are
 non-normative and indexed in [`old/README.md`](old/README.md).
 
+The v1 principle “context continuity beats handoff” describes this engine's
+same-session prewalk tradeoff; it is not a v2 architecture constraint. Same-
+session continuity can preserve semantic input while still losing cache
+affinity across models, retaining low-value transcript material, and failing to
+produce resumable state. V2 generalizes context management into acquisition
+capabilities, kernel-owned context plans, cache-aware execution epochs, and
+durable checkpoints. Model swapping remains an optional policy within that
+system.
+
 A task execution engine for pi coding agent sessions. Workers run in isolated
 RPC sessions with schema-validated output, event-driven model swapping, and
 code-enforced workflow guarantees.

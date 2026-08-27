@@ -58,10 +58,18 @@ Explicit capability providers own replaceable effects and domain knowledge:
 - VCS and workspace isolation;
 - project environment and command execution;
 - model/session hosting;
-- context source, retrieval, compilation, and working memory;
+- context sources, indexes, retrieval, ranking, and bounded materialization;
 - verification;
 - artifact storage and delivery;
 - user and automation interfaces.
+
+The context **control plane** remains a kernel responsibility: it validates
+provider output, allocates economic/window/attention budgets, assembles stable
+prompt segments, records cache plans and actual usage, and owns execution epochs
+and durable checkpoints. Providers may propose context artifacts; they may not
+inject arbitrary prompt text or bypass kernel budgets. This division keeps
+retrieval replaceable without making correctness, cache affinity, or resumption
+provider-specific.
 
 A provider is selected by configuration and is called through a typed contract.
 An **ordered transform** may change a typed payload at a named boundary and is
@@ -112,36 +120,54 @@ MVP task impossible.
 
 ## Context engineering
 
-Context is explicit and measurable. The runtime exposes separate capabilities
-for:
+Context management is an information lifecycle, not a synonym for a long model
+transcript. It has distinct responsibilities:
 
-- **source:** repository files, symbols, tests, task history, and verified
-  project facts;
-- **retrieval:** lexical, structural, and optionally semantic selection;
-- **compilation:** turn selected source into outlines, slices, bundles, or
-  task-specific views;
-- **working memory:** bounded task state, parent/child receipts, and handoffs;
-- **provenance:** source paths, revisions, selectors, freshness, and why an
-  item was included;
-- **token budget:** estimates and actual usage assigned to context inputs;
-- **feedback:** acceptance, misses, repeated reads, corrections, and routing
-  telemetry.
+- **information acquisition:** sources, indexes, diagnostics, lexical or
+  structural retrieval, and bounded materialization;
+- **context planning:** select evidence against explicit information needs and
+  allocate economic, context-window, and attention budgets;
+- **assembly:** render deterministic segments with provenance, freshness,
+  sensitivity, and stable identities;
+- **execution epochs:** run a model against one context plan while keeping the
+  mutable interaction tail small;
+- **working state:** persist requirement status, evidence references,
+  decisions, unresolved questions, verification state, and next actions
+  without private chain-of-thought;
+- **feedback:** connect selection and cache evidence to reads, edits,
+  verification, acceptance, cost, time, and intervention.
+
+A cached token can be cheaper while still consuming context-window and
+attention capacity. The engine therefore treats local artifact reuse,
+provider prompt-prefix caching, in-session prefix reuse, and environment caches
+as different mechanisms. Cache behavior can influence a plan but cannot make
+stale or low-value context correct. Model/provider adapters report their cache
+capabilities and actual cache reads/writes when available; unavailable segment
+attribution remains explicitly unavailable.
+
+Prompt-bound context is assembled from immutable, content-addressed artifacts.
+Stable kernel/tool and repository segments precede task-specific evidence;
+working state and recent interaction remain a bounded mutable tail. When the
+tail becomes stale, noisy, too large, or tied to an unsuitable model, the
+engine persists a typed checkpoint and begins a new execution epoch. A model
+swap is one possible epoch policy, not a kernel milestone or a guarantee of
+cache continuity. Planning by a stronger model, when selected, must produce a
+bounded plan artifact rather than leaving its useful work only in a transcript.
 
 High-information tools should answer questions such as “where is this symbol
 implemented?”, “what calls it?”, “which verification covers this behavior?”,
-or “what changed since the last accepted receipt?”. They should support
-progressive disclosure: a compact index first, then a symbol/tree view, then
-selected source, with full-file access when needed. `bash`, `read`, and `grep`
-remain escape hatches for unknown or unusual repositories; they are not the
-target cognition interface.
+or “what changed since the last accepted receipt?”. They use progressive
+disclosure: repository capsule, handles, outlines, selected ranges, and only
+then full source. `bash`, `read`, and search remain escape hatches for unknown
+or unusual repositories; they are not the target cognition interface.
 
-The first context experiment is a candidate, not a mandate: a symbol graph/tree
-combined with hybrid lexical/semantic retrieval. Compare it with v1's
-LLM-generated codebase map and with raw exploration. Do not assume embeddings,
-a vector store, or a particular index technology before measurement shows that
-it helps. A candidate survives only if repeated trials improve accepted-result
-quality for a justified cost/time envelope; an honest negative result is useful
-and remains in the benchmark record.
+The shipped deterministic symbol tree is an **information-acquisition
+candidate**. It supplies bounded, provenance-bearing file and symbol handles
+and a query tool. It does not by itself solve context planning, prompt cache
+affinity, working-state persistence, epoch transitions, or resumption. Compare
+it with v1's generated map and raw exploration. Retain, revise, or delete it
+from measured accepted-result evidence; do not infer an overall context-system
+win from hermetic provider conformance.
 
 ## Observability contract
 
@@ -292,31 +318,80 @@ calls, repeated reads, context and elapsed metrics when available, and
 verification/acceptance failures. Missing measurements remain `unavailable`;
 the report does not infer them.
 
-## M4 context experiment complete; M5–M6 deferred
+## Roadmap baseline
 
-M4 ships an opt-in context capability in the runnable v2 CLI. `raw` is the
-correct default no-injection baseline; `--context symbol-tree` scans and retrieves
-bounded progressive-disclosure handles before session spawn, and exposes a
-bounded query/resolve worker tool. Both retain ordinary read/search/bash
-escape hatches. Canonical `context.selected`, `context.injected`, and
-`context.omitted` events record provider/version, source tree identity,
-provenance, counts, omissions, and estimated size. Provider failures are typed
-in trace evidence and degrade to raw without failing otherwise-correct work.
+### M4 — context subsystem
 
-`mise run context-eval` renders a provider-neutral zero-model dry plan and
-`mise run context-report -- <trace-jsonl>` derives comparison data from
-canonical artifacts/traces. The harness includes raw, the v1 deterministic map
-shape as a recorded baseline adapter, and symbol-tree; it preserves unavailable
-cost, repeated-read/tool/turn activity, acceptance, neutral/negative results,
-and source trace identities. The report automatically adapts legacy traces that
-lack v2 selection evidence to the v1 map baseline, and session retrieval errors
-fall back to raw with canonical evidence. It deliberately claims no unmeasured
-quality or cost advantage. M5 workflow/migration work and M6 repeated proof/scale
-decisions remain deferred and are not implemented here.
+M4 is in progress. Its information-acquisition experiment is implemented and
+hermetically conforming: `--context symbol-tree` supplies bounded handles and a
+query/resolve tool, while `raw` remains the no-injection baseline. Canonical
+context events and the dry/report commands preserve provider identity,
+provenance, omissions, size, activity, acceptance, unavailable measurements,
+and neutral or negative outcomes. No real-model quality or cost advantage has
+been established.
 
-Each gate must publish canonical traces, benchmark results, and conformance
- evidence. No model/provider default or snapshot number is implied by the
-fixtures or by a dry evaluation plan.
+M4 is complete only when the engine also has a provider-neutral context control
+plane: immutable artifact references, separate economic/window/attention
+budgets, deterministic cache-oriented segments, core-enforced materialization
+limits, typed working checkpoints, and execution-epoch transitions. The symbol
+tree remains one removable acquisition provider behind that control plane.
+Raw execution must remain correct when it is deleted or unavailable.
+
+### M5 — sequential composition and self-hosting
+
+M5 builds typed sequential child tasks on M4 artifacts. A child gets its own
+spec, workspace snapshot, context plan, and relevant parent checkpoint—not a
+transcript. It returns changes, evidence references, verification, context
+discoveries, and a receipt. Parent/child edges, interruption, recovery, and
+bounded continuation are durable.
+
+M5's exit is a usable bootstrap loop, not merely ledger tables: the ordinary
+pi task surface can select v2, v2 can complete focused changes to this
+repository, interrupted work can continue from workspace plus structured
+state, and accepted results pass the repository's real gates with canonical
+receipts/traces. V1 remains available until repeated dogfood evidence supports
+a migration decision.
+
+### M6 — scope intentionally open
+
+M6 has no approved implementation scope. Cutover policy, additional surfaces,
+scale, and broader autonomy will be discussed after the M5 bootstrap gate.
+Existing enabling modules do not pre-decide that discussion.
+
+Each milestone gate publishes canonical traces, benchmark evidence, and
+conformance results. No model/provider default or performance claim is implied
+by fixtures or dry evaluation plans.
+
+## Planning discipline and retrospective
+
+The roadmap drifted because milestone labels mixed different kinds of progress:
+a kernel foundation, a candidate implementation, hermetic conformance, and a
+measured product outcome were all described as “complete.” Broad worker specs
+also allowed unresolved architecture choices to be settled during
+implementation, while v1 parity and prewalk vocabulary pulled v2 toward
+transcript continuity. Evaluation was repeatedly placed after promotion rather
+than used to decide promotion.
+
+Future planning follows these rules:
+
+- define one externally observable outcome and exit gate before implementation;
+- record architecture decisions before dispatching cross-cutting code;
+- label prototypes, conforming implementations, validated experiments, and
+  adopted defaults distinctly;
+- keep information acquisition, context lifecycle, workflow composition, and
+  product cutover as separate capabilities even when one milestone exercises
+  several of them;
+- use small implementation tasks under a stable main-session design rather
+  than asking a worker to discover milestone scope;
+- require a runnable self-hosting increment at each roadmap boundary, not only
+  internal schemas or dry harnesses;
+- treat negative evidence and deletion as successful experiment outcomes;
+- change a milestone only through an explicit edit to this active roadmap,
+  including the reason and effect on the bootstrap gate.
+
+These rules favor fewer, evidence-bearing milestones over frequent relabeling.
+The implementation remains authoritative for what is shipped; this roadmap is
+a commitment about what “done” means.
 
 ## Safe migration loop
 

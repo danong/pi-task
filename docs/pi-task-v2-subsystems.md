@@ -16,7 +16,7 @@ these capabilities separate so locality and deletion are testable:
 | VCS/workspaces | isolate, combine/publish, preserve failed work           | choose, sequence, gate, recover           |
 | Environments   | resolve project runtime and execute commands             | bound, cancel, and record calls           |
 | Sessions       | host model sessions and expose typed events              | schedule, stop, retry, and enforce yields |
-| Context        | source, retrieve, compile, and score context             | apply budgets and boundary schemas        |
+| Context        | source, index, retrieve, rank, and materialize evidence  | plan, budget, validate, assemble, checkpoint, and trace context |
 | Verification   | run checks and return evidence                           | decide completion from the contract       |
 | Artifacts      | persist manifests, receipts, failures, and recovery data | require delivery and link it to a run     |
 | Interfaces     | accept commands and stream canonical events              | authorize lifecycle operations            |
@@ -97,39 +97,83 @@ accepts cancellation, and retrieves receipts. Interfaces are adapters, not
 session owners. A disconnect cannot cancel a durable task unless the command
 explicitly requests cancellation.
 
-## 4. Context pipeline
+## 4. Context control plane and acquisition capabilities
 
-Context is a typed pipeline with measurable stages:
+Context has a kernel-owned lifecycle and provider-owned information stages:
 
 ```text
-source → retrieve → compile → budget → inject → execute → feedback
+snapshot → acquire candidates → plan → materialize → assemble epoch
+         → execute → checkpoint or finish → feedback
 ```
 
-- **Source** exposes repository structure, symbols, files, tests, task ledger
-  facts, and verified prior artifacts.
-- **Retrieve** combines lexical and structural selection and may add semantic
-  signals when a configured experiment supports them.
-- **Compile** produces progressive-disclosure views: index/tree, symbol
-  outline, selected ranges, and only then full source. It attaches provenance
-  and freshness.
-- **Budget** predicts and records context tokens, reserves room for work, and
-  reports what was omitted. It never hides the escape-hatch tools.
-- **Inject** places the selected context into a deterministic, versioned
-  boundary payload.
-- **Feedback** records repeated reads, misses, acceptance, cost, time, and
-  intervention so routing and retrieval can be evaluated.
+### Kernel control plane
 
-The first candidate experiment is a symbol graph/tree plus hybrid
-lexical/semantic retrieval. Its index technology is intentionally open. The
-comparison must include v1's LLM-generated codebase map, baseline v2, and raw
-exploration; embeddings are neither required nor presumed. A context provider
-must support a no-index/raw fallback and report when its selection was stale or
-missed the changed files.
+The kernel owns the behavior that must remain correct when every optional
+acquisition provider is removed:
+
+- derive explicit information needs from the validated task and working state;
+- validate provenance, freshness, sensitivity, and content identity;
+- allocate separate economic, context-window, and attention budgets;
+- select and deduplicate provider candidates under hard materialization caps;
+- assemble deterministic prompt segments and keep volatile ledger fields out;
+- plan cache-affine prefixes from gateway capabilities without requiring a
+  provider cache for correctness;
+- externalize large tool results as artifact references;
+- persist bounded working checkpoints and begin a new execution epoch when the
+  current tail is stale, noisy, over budget, or tied to a changed model;
+- record actual usage and acceptance feedback without inventing unavailable
+  cache attribution.
+
+A context provider never writes directly into a prompt. Provider output is
+schema-validated and bounded again at the model/tool boundary. Raw execution is
+an empty context plan with ordinary escape-hatch tools, not an implementation
+that imports every optional acquisition backend.
+
+### Acquisition capabilities
+
+Explicit capabilities include, but are not limited to:
+
+- **Source:** exposes a revision-pinned snapshot of repository structure,
+  files, tests, diagnostics, task artifacts, or verified project facts.
+- **Index:** derives content-addressed symbol, syntax, relationship, or other
+  searchable facts.
+- **Retrieve/rank:** proposes handles against information needs using lexical,
+  structural, diagnostic, or optional semantic signals.
+- **Materialize:** resolves handles into bounded outlines or exact ranges; full
+  files remain deliberate reads.
+- **Artifact storage:** stores immutable source views, context plans, and
+  checkpoints by identity; storage backends cannot alter their semantics.
+
+The built-in symbol tree is the first source/index/retrieval candidate. It is
+an information-gathering tool, not the context lifecycle owner. Its comparison
+includes v1's generated map and raw exploration. Embeddings and external vector
+stores remain optional experiments, not architectural assumptions.
+
+### Cache and epoch model
+
+Local artifact reuse, provider prompt-prefix caching, and in-session prefix
+reuse have separate identities and evidence. A model adapter describes cache
+support, compatibility, pricing, and attribution when known. The kernel emits a
+provider-neutral cache plan; the adapter maps that plan to provider-specific
+controls. Model changes never assume cache transfer.
+
+Prompt segments are ordered from stable to volatile: kernel/tool contract,
+repository capsule, task evidence, working checkpoint, then recent interaction.
+All prompt-bound serialization is deterministic. A cache hit may reduce cost or
+latency but does not reduce context-window use or attention dilution, so cached
+material still has to earn inclusion.
+
+An execution epoch binds one model/cache profile to one context plan and a
+bounded mutable tail. Before an epoch ends, the engine persists structured
+working state such as requirement status, evidence references, decisions,
+open questions, verification state, and next actions. It does not persist or
+require private chain-of-thought. A continuation or child starts from artifacts
+and checkpoint state rather than replaying an unbounded transcript.
 
 High-information tools make relationships and relevant slices cheap to ask
-for. `bash`, `read`, and `grep` remain escape hatches for discovery and unusual
-repos. Progressive disclosure is the target interface, not the removal of
-those tools.
+for. `bash`, `read`, and search remain escape hatches for discovery and unusual
+repositories. Progressive disclosure is the target interface, not the removal
+of those tools.
 
 ## 5. Canonical observability contract
 
@@ -285,32 +329,41 @@ contract. `packages/core-v2/test/test-cli.ts` is the hermetic evidence: fake
 session, real temporary jj repository, real verification, typed progress,
 receipt delivery, success cleanup, and verification-failure recovery.
 
-## 10. M4 context provider and evaluation; M5–M6 deferred
+## 10. Roadmap status and bootstrap gates
 
-M4 context conformance is shipped as an opt-in experiment. The typed context
-capability is implemented by the raw/no-injection provider and the deterministic
-symbol-tree provider, selected by the CLI's `--context` option. The kernel compiles one bounded initial artifact from the
-validated goal and requirements before session spawn, injects handles only,
-and adds a bounded query/resolve tool without removing read/search/bash. The
-CLI records explicit `raw` or `symbol-tree` selection. Scan/retrieval failure
-records a typed fallback and continues with raw.
+### M4 status
 
-The canonical context events record provider/version, source tree identity,
-selected and omitted counts, provenance, and estimated size. The hermetic
-comparison harness derives context volume, selected handles, reads, context
-tool calls, repeated reads, turns, measured or unavailable cost, and acceptance
-from traces. It compares raw, a v1 deterministic-map baseline adapter, and
-symbol-tree while retaining neutral/negative outcomes and trace identities;
-it does not claim an unmeasured win. `mise run context-eval` is the dry plan
-and `mise run context-report -- <trace-jsonl>` is the evidence-only report.
-The report selects the v1 map baseline adapter for legacy traces that lack the
-v2 selection event. If a session retrieval call fails, the context tool switches
-to raw, returns bounded raw evidence, and emits canonical `context.omitted`
-fallback evidence.
+The deterministic symbol-tree acquisition candidate is implemented as an
+opt-in experiment. The CLI records `raw` or `symbol-tree` selection, injects
+bounded handles, and exposes bounded query/resolve behavior without removing
+ordinary exploration tools. Scan or retrieval failure records typed evidence
+and degrades to raw. The comparison harness derives context volume, selected
+handles, reads, tool activity, repeated reads, turns, measured or unavailable
+cost, and acceptance while retaining neutral and negative results.
 
-M5 workflow/migration cutover and M6 repeated real-model proof and scale
-selection remain deferred. Existing enabling modules do not establish those
-future guarantees.
+This proves acquisition-provider mechanics, not completion of the context
+subsystem. The current `ContextProvider` contract is a prototype seam to be
+split or adapted behind the kernel control plane described above. M4 remains
+open until context plans, immutable artifact references, multidimensional
+budgets, cache-oriented assembly, working checkpoints, and execution epochs
+have boundary schemas, deletion behavior, and runnable evidence.
+
+### M5 status
+
+M5 remains unimplemented. It adds durable sequential parent/child composition
+using M4 context plans and checkpoints rather than transcripts. Conformance
+must cover child workspace isolation, bounded handoff and return artifacts,
+parent integration, interruption/recovery, provider deletion, and canonical
+receipts/traces.
+
+The product gate is self-hosting: the normal pi task surface can choose v2 and
+use it for focused work on this repository; continuation reuses workspace and
+structured state; accepted output passes the repository's actual verification
+and artifact policy. Internal ledger rows alone do not satisfy the gate.
+
+M6 scope is intentionally undecided until this bootstrap loop is demonstrated
+and discussed. Existing remote, parallel, plugin, or benchmark foundations do
+not imply a cutover or scale decision.
 
 ## 11. Evidence and migration
 

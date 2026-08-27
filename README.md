@@ -1,16 +1,18 @@
 # pi-task
 
 A task-execution engine for the [pi coding agent](https://pi.dev): isolated
-worker sessions, bwrap sandboxing, typed schema-validated yields, budget tiers,
-and adversarial review. The user-facing experience is like other coding
+worker sessions, typed schema-validated results, durable evidence, and
+context-efficient execution. The user-facing experience is like other coding
 harnesses: you chat, and the conversational agent decides whether to edit
 directly or dispatch work to workers.
 
-The engine is enforced by code rather than by the LLM: task completion and test
-passes are gated by typed contracts and real bash exit codes; a strong model
-plans, then the session swaps to a fast model on the first edit; parallel
-workers run in isolated jj workspaces and are merged back with conflicts
-surfaced. See `docs/pi-task-design.md` for the full design.
+The repository contains the production v1 engine and the v2 bootstrap path.
+V1 includes prewalk model swapping, sandboxing, review, and parallel jj
+workspaces; its compatibility contract is `docs/pi-task-design.md`. V2 treats
+model swapping as one optional execution policy inside a broader context
+lifecycle built from acquisition providers, explicit context plans, cache-aware
+prompt segments, working checkpoints, and accepted-artifact evidence. Its
+active contract is `docs/pi-task-v2.md`.
 
 ## Install
 
@@ -46,7 +48,7 @@ argument/input validation, progress rendering, and receipt delivery;
 and gateway remain the execution owners. Cancellation, multiple workers,
 parallel scheduling, and remote interfaces are not part of this slice.
 
-### v2 MVP status: M1–M3
+### v2 status: M1–M3 foundation and M4 acquisition prototype
 
 M1–M3 are the completed evidence-backed MVP foundation. M1 provides a
 versioned, bounded, provider-neutral trace artifact with lifecycle, observed
@@ -112,16 +114,23 @@ The first command makes no LLM calls; real runs require the configured model
 and network. Evidence is written under the selected metrics directory in
 `eval-grounding/records.jsonl` and `eval-grounding/summary.md`.
 
-M4 context is complete as an opt-in, evidence-producing experiment: the v2 CLI
-selects `raw` (the default) or `symbol-tree` with `--context`, injects bounded progressive-
+M4's first information-acquisition candidate is implemented as an opt-in,
+evidence-producing prototype. The v2 CLI selects `raw` (the default) or
+`symbol-tree` with `--context`; symbol-tree injects bounded progressive-
 disclosure handles, exposes the bounded `context` worker tool, and records
 provider, tree identity, selection, omission, and size evidence. Index or
-retrieval failure, including a failed in-session context query, falls back
-explicitly to raw exploration and records canonical fallback evidence. `mise run
-context-eval` is a hermetic dry plan; `mise run context-report -- <jsonl>` reports
-canonical trace comparisons, automatically adapting traces without v2 selection
-evidence as the recorded v1 map baseline. Unavailable and negative outcomes are
-preserved; no real-model quality or cost win is claimed. M5 and M6 remain deferred scope.
+retrieval failure, including a failed in-session query, falls back explicitly
+to raw exploration and records canonical fallback evidence. `mise run
+context-eval` is a hermetic dry plan; `mise run context-report -- <jsonl>`
+derives comparisons while preserving unavailable and negative outcomes.
+
+M4 is not yet complete: the remaining context control plane must own immutable
+artifact references, economic/window/attention budgets, cache-oriented prompt
+assembly, working checkpoints, and execution epochs. M5 then adds typed
+sequential children and must demonstrate a usable v2 self-hosting loop. M6
+scope is intentionally open until that bootstrap gate is discussed. See the
+active v2 contract for the stable exit criteria; no real-model quality or cost
+win is currently claimed.
 
 The repo ships `.pi/settings.json` registering itself as a project package
 (`"packages": [".."]`), so any trusted checkout auto-installs — the `task`

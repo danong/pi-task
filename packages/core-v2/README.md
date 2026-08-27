@@ -7,7 +7,7 @@ type-checked island deliberately **excluded** from the v1 engine under
 `extensions/`, whose procedural modules are intentionally out of scope for
 the strict gate.
 
-## Current M1–M3 MVP status
+## Current foundation and context-prototype status
 
 M1–M3 are complete as an evidence-backed MVP foundation. M1 supplies the
 versioned and bounded provider-neutral trace contract, observed turn events,
@@ -54,16 +54,23 @@ M3 grounding evaluation is dry by default (`mise run eval-grounding`) and
 writes real-run evidence, when requested with `-- --run`, under the selected
 metrics directory as `eval-grounding/records.jsonl` and `summary.md`.
 
-M4 context is complete as an opt-in experiment. The CLI selects `raw` (default)
-or `symbol-tree` via `--context`; the latter compiles bounded handles before spawn and provides
-the bounded `context` query/resolve tool while preserving read/search/bash.
+M4's deterministic symbol-tree information-acquisition candidate is implemented
+as an opt-in experiment. The CLI selects `raw` (default) or `symbol-tree` via
+`--context`; the latter compiles bounded handles before spawn and provides the
+bounded `context` query/resolve tool while preserving ordinary exploration.
 Provider identity, tree identity, provenance, omissions, and estimated size are
 recorded in canonical trace events. Index and in-session retrieval failures
-explicitly fall back to raw and emit fallback evidence. Use `mise run context-eval`
-for the zero-model dry plan and `mise run context-report -- <trace-jsonl>` for an
-evidence-only comparison; traces without v2 selection evidence are recorded as
-the v1 map baseline. The harness makes no quality or cost claim without measured
-real-model traces. M5/M6 remain deferred.
+explicitly fall back to raw and emit fallback evidence. Use `mise run
+context-eval` for the zero-model dry plan and `mise run context-report --
+<trace-jsonl>` for an evidence-only comparison. The harness makes no quality or
+cost claim without measured real-model traces.
+
+This is an acquisition prototype, not a complete context lifecycle. The M4 exit
+gate additionally requires kernel-owned context plans, immutable artifact
+references, separate economic/window/attention budgets, cache-oriented prompt
+assembly, structured checkpoints, and execution epochs. M5 will build typed
+sequential children and a usable self-hosting path on those contracts. M6 scope
+remains intentionally open.
 
 ## Layout
 
