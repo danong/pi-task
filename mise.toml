@@ -23,6 +23,10 @@ run = "npx tsx --version && npx tsx extensions/task/test-config.ts"
 description = "Run the full hermetic test suite (zero LLM calls): v1 + core-v2"
 run = "npx tsx extensions/task/test.ts && npx tsx packages/core-v2/test/run-all.ts"
 
+[tasks.v2]
+description = "Run one pi-task-v2 task in an isolated jj workspace"
+run = "npx tsx packages/core-v2/src/cli.ts"
+
 [tasks.typecheck]
 description = "Type gate — strict tsc over both engines (core-v2 FR-11 + v1 extensions)"
 run = "npx tsc --noEmit -p packages/core-v2/tsconfig.json && npx tsc --noEmit -p tsconfig.json"

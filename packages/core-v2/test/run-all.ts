@@ -11,6 +11,7 @@ import { runTests as runArtifactTests } from "./test-artifacts.ts";
 import { runTests as runBundleTests } from "./test-bundle.ts";
 import { runTests as runContractTests } from "./test-contracts.ts";
 import { runTests as runContinuationTests } from "./test-continuation.ts";
+import { runTests as runCliTests } from "./test-cli.ts";
 import { runTests as runDaemonTests } from "./test-daemon.ts";
 import { runTests as runEnvironmentTests } from "./test-environments.ts";
 import { runTests as runFailureHygieneTests } from "./test-failure-hygiene.ts";
@@ -39,6 +40,7 @@ const SUITES: Array<{ name: string; run: () => Promise<void> }> = [
 	{ name: "contracts", run: runContractTests },
 	{ name: "bundle", run: runBundleTests },
 	{ name: "continuation", run: runContinuationTests },
+	{ name: "cli", run: runCliTests },
 	{ name: "ledger", run: runLedgerTests },
 	{ name: "router", run: runRouterTests },
 	{ name: "verify-run", run: runVerifyRunTests },

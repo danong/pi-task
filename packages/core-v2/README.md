@@ -67,9 +67,11 @@ the strict gate.
 - `src/daemon/` — the M1.4 assembly: `task-runner.ts` (`runTask`: validate
   → route → guarded session → yield → verify → ledger → receipt;
   deterministic worker prompt; injectable host for tests),
-  `parallel.ts` (`runParallelTask`: N workers across driver-created
-  workspaces → one combine → ONE verification gate on the integrated tree
-  through the EnvironmentDriver; residual conflicts escalate, never ship),
+  `parallel.ts` (`runParallelTask`: the shared composition core; isolated mode
+  selects one canonical worker/workspace, while parallel mode runs N workers
+  across driver-created workspaces → one combine → ONE verification gate on the
+  integrated tree through the EnvironmentDriver; residual conflicts escalate,
+  never ship),
   and `start.ts` (`startDaemon`: open ledger + boot reconciliation).
   - Measured efficiency (NFR-3): after a session settles the runner reads
     `SessionHandle.stats()` — the SDK already prices usage — and records

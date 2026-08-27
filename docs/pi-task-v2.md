@@ -215,6 +215,47 @@ The source-of-truth implementation paths include:
 - [`extensions/task/index.ts`](../extensions/task/index.ts) and the tests under
   `extensions/task/` for the migration reference and observable behavior.
 
+## Runnable engine slice (shipped)
+
+The first runnable-engine vertical slice is available through the project
+command:
+
+```sh
+mise run v2 -- --spec ./task.md --project-dir . --model provider/model
+```
+
+The command accepts a markdown file containing `Goal`, `Requirements`, and
+`Verification`, validates it before provider work, boots `startDaemon()` for
+ledger reconciliation, and executes one canonical task with one worker and one
+workspace through `daemon/isolated.ts`. The model must be supplied as a
+non-empty `--model <provider/model>` value or `PI_TASK_V2_MODEL`; the CLI value
+wins when both are present. The placeholder in the example is not a product
+default. The default `JujutsuWorkspaceDriver` provisions an
+isolated workspace, integrates successful changes with the task-base semantics,
+and runs verification on the integrated project tree. Progress is rendered
+from typed gateway and session events only. A compact receipt is printed and
+atomically delivered as a receipt artifact; failed runs retain the existing
+failure/recovery artifact contract. State and artifacts default to the user
+state location (keyed by project, honoring `XDG_STATE_HOME`) rather than the
+checkout.
+
+Ownership is intentionally narrow: `src/cli.ts` parses/validates arguments,
+selects providers, renders progress, and delivers receipts;
+`src/daemon/isolated.ts` selects the single-task composition of the shared
+workspace/session/integration pipeline; `src/daemon/parallel.ts` retains the
+multi-worker composition and its aggregate semantics; and the workspace,
+environment, session, gateway, and ledger modules own their respective
+contracts. The slice is limited to a
+single task and worker: cancellation, scheduling, child dispatch, remote
+surfaces, and multi-worker user commands remain deferred.
+
+Hermetic evidence is in `packages/core-v2/test/test-cli.ts` and is registered
+in `packages/core-v2/test/run-all.ts`. It uses a fake `SessionHost` with a real
+temporary jj repository and real verification to prove isolated editing,
+integration, progress, receipt delivery, verification failure, and cleanup or
+recovery behavior. Run `npx tsx packages/core-v2/test/test-cli.ts` for that
+slice; the real model e2e remains a separate manual gate.
+
 ## Evidence-gated MVP roadmap
 
 The next milestones are gates, not promises of feature volume. Each milestone

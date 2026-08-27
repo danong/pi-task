@@ -26,6 +26,26 @@ mise run verify    # toolchain gate (tsx, pi deps, python3 tomllib,
 mise run test      # full hermetic test suite, zero LLM calls
 ```
 
+### Run the v2 engine
+
+The first v2 vertical slice is a shell adapter for one task and one worker.
+It validates the markdown spec, starts the durable ledger, creates a temporary
+jj workspace, integrates and verifies the result, streams compact progress, and
+writes a durable receipt outside the checkout:
+
+```sh
+mise run v2 -- --spec ./task.md --project-dir . --model provider/model
+```
+
+`--model <provider/model>` is required unless `PI_TASK_V2_MODEL` contains a non-empty provider/model id; an explicit CLI value takes precedence. The placeholder above is not a product default. Use `mise run v2 --
+--help` for all options, including explicit ledger and artifact locations.
+Defaults use `XDG_STATE_HOME` (or the user state directory) keyed by the
+project, so normal runs do not pollute the repository. The v2 adapter owns only
+argument/input validation, progress rendering, and receipt delivery;
+`daemon/isolated.ts`, the workspace driver, session host, environment driver,
+and gateway remain the execution owners. Cancellation, multiple workers,
+parallel scheduling, and remote interfaces are not part of this slice.
+
 The repo ships `.pi/settings.json` registering itself as a project package
 (`"packages": [".."]`), so any trusted checkout auto-installs — the `task`
 tool, `/task-budget`, `/goals`, `/task-stats` and `/task-status` commands,

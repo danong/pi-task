@@ -11,15 +11,15 @@ contract, and conformance expectations. Historical material under
 The microkernel controls lifecycle and contracts; providers own effects. Keep
 these capabilities separate so locality and deletion are testable:
 
-| Capability | Provider responsibility | Kernel responsibility |
-| --- | --- | --- |
-| VCS/workspaces | isolate, combine/publish, preserve failed work | choose, sequence, gate, recover |
-| Environments | resolve project runtime and execute commands | bound, cancel, and record calls |
-| Sessions | host model sessions and expose typed events | schedule, stop, retry, and enforce yields |
-| Context | source, retrieve, compile, and score context | apply budgets and boundary schemas |
-| Verification | run checks and return evidence | decide completion from the contract |
-| Artifacts | persist manifests, receipts, failures, and recovery data | require delivery and link it to a run |
-| Interfaces | accept commands and stream canonical events | authorize lifecycle operations |
+| Capability     | Provider responsibility                                  | Kernel responsibility                     |
+| -------------- | -------------------------------------------------------- | ----------------------------------------- |
+| VCS/workspaces | isolate, combine/publish, preserve failed work           | choose, sequence, gate, recover           |
+| Environments   | resolve project runtime and execute commands             | bound, cancel, and record calls           |
+| Sessions       | host model sessions and expose typed events              | schedule, stop, retry, and enforce yields |
+| Context        | source, retrieve, compile, and score context             | apply budgets and boundary schemas        |
+| Verification   | run checks and return evidence                           | decide completion from the contract       |
+| Artifacts      | persist manifests, receipts, failures, and recovery data | require delivery and link it to a run     |
+| Interfaces     | accept commands and stream canonical events              | authorize lifecycle operations            |
 
 An ordered transform is a named, schema-validated payload operation. It is not
 a provider and cannot own lifecycle. An observer is read-only and
@@ -209,7 +209,35 @@ the trace and artifacts explain lifecycle, cost, context, verification, and
 failure without requiring a transcript. Recovery data must be sufficient for a
 human or interface to continue or inspect the preserved work.
 
-## 9. Evidence and migration
+## 9. Runnable shell slice
+
+The current runnable composition is exposed as:
+
+```sh
+mise run v2 -- --spec ./task.md --project-dir . --model provider/model
+```
+
+`packages/core-v2/src/cli.ts` is only an interface adapter: it validates the
+file and arguments, requires a non-empty model from `--model` or
+`PI_TASK_V2_MODEL` (CLI precedence), selects the typed providers, renders
+gateway/session progress, and delivers the receipt. The `<provider/model>`
+example is a placeholder, not a product default. `src/daemon/isolated.ts`
+selects exactly one canonical task, worker, and workspace in the shared daemon
+workspace pipeline. The `JujutsuWorkspaceDriver` owns isolation, integration,
+cleanup, and recovery; `parallel.ts` owns the provider-neutral composition
+flow for both isolated and multi-worker modes; the environment driver owns
+verification; and the ledger/gateway/session contracts own durability and
+events. The shell
+contains no jj commands or workspace lifecycle policy.
+
+The slice is deliberately limited to one task and one worker. It uses external
+user-state defaults keyed by project (and `XDG_STATE_HOME` when set), writes a
+portable receipt artifact, and keeps failure evidence in the existing artifact
+contract. `packages/core-v2/test/test-cli.ts` is the hermetic evidence: fake
+session, real temporary jj repository, real verification, typed progress,
+receipt delivery, success cleanup, and verification-failure recovery.
+
+## 10. Evidence and migration
 
 Every proposed optimization starts with a baseline and a falsifiable
 acceptance check. Run repeated trials, measure accepted-result quality, cost,
