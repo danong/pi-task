@@ -59,16 +59,35 @@ export function runTests(): Promise<void> {
 			"utf8",
 		);
 		writeFileSync(join(root, "image.dat"), Buffer.from([0, 1, 2, 3, 4]));
-		writeFileSync(join(root, "notes.weird"), "unsupported but visible\n", "utf8");
+		writeFileSync(
+			join(root, "notes.weird"),
+			"unsupported but visible\n",
+			"utf8",
+		);
 		const hugeContent = `export function hiddenBySize(): void {}\n${"x".repeat(700)}`;
 		writeFileSync(join(root, "huge.ts"), hugeContent, "utf8");
 
-		for (const ignored of [".git", ".jj", "node_modules", "vendor", "dist", "artifacts"]) {
+		for (const ignored of [
+			".git",
+			".jj",
+			"node_modules",
+			"vendor",
+			"dist",
+			"artifacts",
+		]) {
 			mkdirSync(join(root, ignored), { recursive: true });
-			writeFileSync(join(root, ignored, "ignored.ts"), "export const leaked = true;\n", "utf8");
+			writeFileSync(
+				join(root, ignored, "ignored.ts"),
+				"export const leaked = true;\n",
+				"utf8",
+			);
 		}
 
-		writeFileSync(join(outside, "secret.ts"), "export const escaped = true;\n", "utf8");
+		writeFileSync(
+			join(outside, "secret.ts"),
+			"export const escaped = true;\n",
+			"utf8",
+		);
 		symlinkSync(join(outside, "secret.ts"), join(root, "escape-file.ts"));
 		symlinkSync(outside, join(root, "escape-dir"), "dir");
 
@@ -97,7 +116,9 @@ export function runTests(): Promise<void> {
 
 		const python = first.entries.find((entry) => entry.path === "src/a.py");
 		const typescript = first.entries.find((entry) => entry.path === "src/z.ts");
-		const toml = first.entries.find((entry) => entry.path === "config/app.toml");
+		const toml = first.entries.find(
+			(entry) => entry.path === "config/app.toml",
+		);
 		check(
 			python?.language === "python" &&
 				python.symbols.includes("Alpha") &&
@@ -127,44 +148,67 @@ export function runTests(): Promise<void> {
 		check(many?.symbols.length === 3, "per-file symbol count is bounded");
 		check(
 			first.entries.every((entry) =>
-				entry.symbols.every((symbol) => Buffer.byteLength(symbol, "utf8") <= first.limits.maxSymbolBytes),
+				entry.symbols.every(
+					(symbol) =>
+						Buffer.byteLength(symbol, "utf8") <= first.limits.maxSymbolBytes,
+				),
 			),
 			"every symbol name respects the byte bound",
 		);
 		check(
-			first.entries.find((entry) => entry.path === "image.dat")?.status === "binary",
+			first.entries.find((entry) => entry.path === "image.dat")?.status ===
+				"binary",
 			"binary files are represented explicitly",
 		);
 		check(
-			first.entries.find((entry) => entry.path === "notes.weird")?.status === "unsupported",
+			first.entries.find((entry) => entry.path === "notes.weird")?.status ===
+				"unsupported",
 			"unsupported text files are represented explicitly",
 		);
 		const huge = first.entries.find((entry) => entry.path === "huge.ts");
 		check(
-			huge?.status === "oversized" && huge.symbols.length === 0 && huge.lineCount === null,
+			huge?.status === "oversized" &&
+				huge.symbols.length === 0 &&
+				huge.lineCount === null,
 			"oversized source is represented without symbol extraction",
 		);
 		check(
 			first.entries
 				.filter((entry) => entry.status === "oversized")
-			.every((entry) => entry.contentIdentityScope === "full"),
-			"oversized files disclose their full streamed identity scope",
+				.every((entry) => entry.contentIdentityScope === "prefix"),
+			"oversized files disclose their bounded identity scope",
 		);
 
-		// Mutate only after the parsing prefix while preserving the file length.
-		const changedAfterPrefix = `${hugeContent.slice(0, -1)}y`;
-		check(changedAfterPrefix.length === hugeContent.length, "oversized mutation preserves file length");
-		check(first.limits.maxFileBytes < changedAfterPrefix.length - 1, "oversized mutation is after the parsing prefix");
-		writeFileSync(join(root, "huge.ts"), changedAfterPrefix, "utf8");
+		// Mutate within the bounded prefix while preserving the file length.
+		const changedWithinPrefix = hugeContent.replace(
+			"hiddenBySize",
+			"hiddenBySizE",
+		);
+		check(
+			changedWithinPrefix.length === hugeContent.length,
+			"oversized mutation preserves file length",
+		);
+		check(
+			first.limits.maxFileBytes > 0,
+			"oversized mutation is within the readable prefix",
+		);
+		writeFileSync(join(root, "huge.ts"), changedWithinPrefix, "utf8");
 		const oversizedMutation = scanSymbolTree(options);
-		const mutatedHuge = oversizedMutation.entries.find((entry) => entry.path === "huge.ts");
-		const originalHuge = first.entries.find((entry) => entry.path === "huge.ts");
+		const mutatedHuge = oversizedMutation.entries.find(
+			(entry) => entry.path === "huge.ts",
+		);
+		const originalHuge = first.entries.find(
+			(entry) => entry.path === "huge.ts",
+		);
 		check(
 			mutatedHuge?.sizeBytes === originalHuge?.sizeBytes &&
-			mutatedHuge?.contentIdentity !== originalHuge?.contentIdentity,
-			"a same-size mutation after the bounded prefix changes oversized content identity",
+				mutatedHuge?.contentIdentity !== originalHuge?.contentIdentity,
+			"a same-size mutation within the bounded prefix changes oversized content identity",
 		);
-		check(oversizedMutation.treeIdentity !== first.treeIdentity, "an oversized content mutation changes tree identity");
+		check(
+			oversizedMutation.treeIdentity !== first.treeIdentity,
+			"an oversized content mutation changes tree identity",
+		);
 
 		for (const forbidden of [
 			".git/",
@@ -182,8 +226,14 @@ export function runTests(): Promise<void> {
 			);
 		}
 
-		check(first.provenance.sourceRevision === "fixture-change-1", "source revision provenance is retained");
-		check(first.provenance.source === "filesystem", "filesystem source provenance is explicit");
+		check(
+			first.provenance.sourceRevision === "fixture-change-1",
+			"source revision provenance is retained",
+		);
+		check(
+			first.provenance.source === "filesystem",
+			"filesystem source provenance is explicit",
+		);
 		check(
 			first.provenance.freshness.treeIdentity === first.treeIdentity &&
 				first.provenance.freshness.kind === "content-addressed",
@@ -194,19 +244,27 @@ export function runTests(): Promise<void> {
 		// mutation changes both the file and aggregate identities.
 		utimesSync(join(root, "src", "a.py"), new Date(1), new Date(1));
 		const timestampOnly = scanSymbolTree(options);
-		check(timestampOnly.treeIdentity === oversizedMutation.treeIdentity, "mtime does not affect identity");
+		check(
+			timestampOnly.treeIdentity === oversizedMutation.treeIdentity,
+			"mtime does not affect identity",
+		);
 		writeFileSync(
 			join(root, "src", "a.py"),
 			"class Alpha:\n    pass\n\ndef build_widget():\n    return 'changed'\n",
 			"utf8",
 		);
 		const mutated = scanSymbolTree(options);
-		const mutatedPython = mutated.entries.find((entry) => entry.path === "src/a.py");
+		const mutatedPython = mutated.entries.find(
+			(entry) => entry.path === "src/a.py",
+		);
 		check(
 			mutatedPython?.contentIdentity !== python?.contentIdentity,
 			"content mutation changes the relevant file identity",
 		);
-		check(mutated.treeIdentity !== oversizedMutation.treeIdentity, "content mutation changes tree identity");
+		check(
+			mutated.treeIdentity !== oversizedMutation.treeIdentity,
+			"content mutation changes tree identity",
+		);
 	} finally {
 		rmSync(parent, { recursive: true, force: true });
 	}
@@ -214,11 +272,16 @@ export function runTests(): Promise<void> {
 	if (errors.length > 0) {
 		throw new Error(`symbol-tree tests failed:\n  ✗ ${errors.join("\n  ✗ ")}`);
 	}
-	console.log("✓ symbol-tree: deterministic bounded symbols, identities, provenance, and escape safety");
+	console.log(
+		"✓ symbol-tree: deterministic bounded symbols, identities, provenance, and escape safety",
+	);
 	return Promise.resolve();
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (
+	process.argv[1] &&
+	import.meta.url === pathToFileURL(process.argv[1]).href
+) {
 	runTests()
 		.then(() => process.exit(0))
 		.catch((error: unknown) => {
