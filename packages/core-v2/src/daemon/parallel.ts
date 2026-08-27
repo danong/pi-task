@@ -42,9 +42,16 @@ import {
 import { LedgerStore } from "../ledger/store.ts";
 import type { TaskGateway } from "../contracts/index.ts";
 import type { TaskPlugin } from "../contracts/task-plugin.ts";
-import type { CompiledContextArtifact, ContextProvider, ContextProviderFactory } from "../contracts/context-provider.ts";
+import type {
+	CompiledContextArtifact,
+	ContextProvider,
+	ContextProviderFactory,
+} from "../contracts/context-provider.ts";
 import { createRawContextProvider } from "../context/providers.ts";
-import { buildInitialContextQuery, renderInitialContextArtifact } from "../context/compiler.ts";
+import {
+	buildInitialContextQuery,
+	renderInitialContextArtifact,
+} from "../context/compiler.ts";
 import type { SessionHostEvent } from "../sessions/host.ts";
 import { InMemoryTaskGateway } from "../gateway/index.ts";
 import { registerPluginTriggers } from "../plugins/index.ts";
@@ -242,21 +249,85 @@ async function runWithStore(
 	// worker session is spawned. Index/retrieval failure is an explicit raw
 	// fallback, never a task failure.
 	const requestedFactory = options.contextProviderFactory;
-	const requestedIdentity = requestedFactory?.identity ?? { id: "raw", version: "1" };
+	const requestedIdentity = requestedFactory?.identity ?? {
+		id: "raw",
+		version: "1",
+	};
 	let contextProvider: ContextProvider;
 	let contextArtifact: CompiledContextArtifact;
 	try {
-		contextProvider = (requestedFactory ?? { identity: requestedIdentity, create: createRawContextProvider }).create({ root: options.projectDir, sourceRevision: aggregateId });
-		const query = buildInitialContextQuery(parsed[0]?.goal ?? "task", parsed.flatMap((item) => item.requirements));
+		contextProvider = (
+			requestedFactory ?? {
+				identity: requestedIdentity,
+				create: createRawContextProvider,
+			}
+		).create({ root: options.projectDir, sourceRevision: aggregateId });
+		const query = buildInitialContextQuery(
+			parsed[0]?.goal ?? "task",
+			parsed.flatMap((item) => item.requirements),
+		);
 		contextArtifact = await contextProvider.compile({ query });
 	} catch (error) {
-		contextProvider = createRawContextProvider({ root: options.projectDir, sourceRevision: aggregateId });
+		contextProvider = createRawContextProvider({
+			root: options.projectDir,
+			sourceRevision: aggregateId,
+		});
 		contextArtifact = await contextProvider.compile({ query: "" });
-		options.onContextEvent?.({ type: "context.omitted", provider: contextProvider.identity, detail: { failureCode: "provider_failed", requestedProvider: requestedIdentity.id, requestedVersion: requestedIdentity.version, fallbackProvider: contextProvider.identity.id, message: error instanceof Error ? error.message.slice(0, 256) : String(error).slice(0, 256), treeIdentity: contextArtifact.source.treeIdentity, selectedCount: 0, omittedCount: 0, estimatedCharacters: 0, estimatedTokens: 0 } });
+		options.onContextEvent?.({
+			type: "context.omitted",
+			provider: contextProvider.identity,
+			detail: {
+				failureCode: "provider_failed",
+				requestedProvider: requestedIdentity.id,
+				requestedVersion: requestedIdentity.version,
+				fallbackProvider: contextProvider.identity.id,
+				message:
+					error instanceof Error
+						? error.message.slice(0, 256)
+						: String(error).slice(0, 256),
+				treeIdentity: contextArtifact.source.treeIdentity,
+				selectedCount: 0,
+				omittedCount: 0,
+				estimatedCharacters: 0,
+				estimatedTokens: 0,
+			},
+		});
 	}
-	options.onContextEvent?.({ type: "context.selected", provider: contextProvider.identity, detail: { treeIdentity: contextArtifact.source.treeIdentity, sourceRevision: contextArtifact.source.sourceRevision, selectedCount: contextArtifact.handles.length, omittedCount: contextArtifact.omissions.count, estimatedCharacters: contextArtifact.estimatedSize.characters, estimatedTokens: contextArtifact.estimatedSize.tokens } });
-	options.onContextEvent?.({ type: "context.injected", provider: contextProvider.identity, detail: { treeIdentity: contextArtifact.source.treeIdentity, selectedCount: contextArtifact.handles.length, omittedCount: contextArtifact.omissions.count, estimatedCharacters: contextArtifact.estimatedSize.characters, estimatedTokens: contextArtifact.estimatedSize.tokens } });
-	options.onContextEvent?.({ type: "context.omitted", provider: contextProvider.identity, detail: { treeIdentity: contextArtifact.source.treeIdentity, selectedCount: contextArtifact.handles.length, omittedCount: contextArtifact.omissions.count, reasons: contextArtifact.omissions.reasons, estimatedCharacters: contextArtifact.estimatedSize.characters, estimatedTokens: contextArtifact.estimatedSize.tokens } });
+	options.onContextEvent?.({
+		type: "context.selected",
+		provider: contextProvider.identity,
+		detail: {
+			treeIdentity: contextArtifact.source.treeIdentity,
+			sourceRevision: contextArtifact.source.sourceRevision,
+			selectedCount: contextArtifact.handles.length,
+			omittedCount: contextArtifact.omissions.count,
+			estimatedCharacters: contextArtifact.estimatedSize.characters,
+			estimatedTokens: contextArtifact.estimatedSize.tokens,
+		},
+	});
+	options.onContextEvent?.({
+		type: "context.injected",
+		provider: contextProvider.identity,
+		detail: {
+			treeIdentity: contextArtifact.source.treeIdentity,
+			selectedCount: contextArtifact.handles.length,
+			omittedCount: contextArtifact.omissions.count,
+			estimatedCharacters: contextArtifact.estimatedSize.characters,
+			estimatedTokens: contextArtifact.estimatedSize.tokens,
+		},
+	});
+	options.onContextEvent?.({
+		type: "context.omitted",
+		provider: contextProvider.identity,
+		detail: {
+			treeIdentity: contextArtifact.source.treeIdentity,
+			selectedCount: contextArtifact.handles.length,
+			omittedCount: contextArtifact.omissions.count,
+			reasons: contextArtifact.omissions.reasons,
+			estimatedCharacters: contextArtifact.estimatedSize.characters,
+			estimatedTokens: contextArtifact.estimatedSize.tokens,
+		},
+	});
 	const contextPrompt = renderInitialContextArtifact(contextArtifact);
 	const contexts: WorkspaceContext[] = [];
 	for (let i = 0; i < options.subTasks.length; i += 1) {
@@ -326,6 +397,31 @@ async function runWithStore(
 				)}`,
 				requirementCount: parsed[i]!.requirements.length,
 				contextProvider,
+				contextFallbackProvider: createRawContextProvider({
+					root: options.projectDir,
+					sourceRevision: aggregateId,
+				}),
+				onContextFallback: (event) =>
+					options.onContextEvent?.({
+						type: "context.omitted",
+						provider: event.fallbackProvider,
+						detail: {
+							failureCode: "retrieval_failed",
+							requestedProvider: event.requestedProvider.id,
+							requestedVersion: event.requestedProvider.version,
+							fallbackProvider: event.fallbackProvider.id,
+							fallbackVersion: event.fallbackProvider.version,
+							message: event.error,
+							treeIdentity:
+								event.artifact?.source.treeIdentity ??
+								"unindexed:session-fallback",
+							selectedCount: event.artifact?.handles.length ?? 0,
+							omittedCount: event.artifact?.omissions.count ?? 0,
+							estimatedCharacters:
+								event.artifact?.estimatedSize.characters ?? 0,
+							estimatedTokens: event.artifact?.estimatedSize.tokens ?? 0,
+						},
+					}),
 				initialContext: contextArtifact,
 				...(options.sessionTimeoutMs === undefined
 					? {}

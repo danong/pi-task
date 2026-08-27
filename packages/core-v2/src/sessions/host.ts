@@ -36,7 +36,11 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 
-import type { CompiledContextArtifact, ContextProvider, Yield } from "../contracts/index.ts";
+import type {
+	CompiledContextArtifact,
+	ContextProvider,
+	Yield,
+} from "../contracts/index.ts";
 import {
 	getRequirementTrackingPolicy,
 	makeChecklistTool,
@@ -90,6 +94,15 @@ export interface SessionHostConfig {
 	timeoutMs?: number;
 	/** Selected context capability; omitted for the raw/no-injection baseline. */
 	contextProvider?: ContextProvider;
+	/** Raw capability used if a selected provider fails during the session. */
+	contextFallbackProvider?: ContextProvider;
+	/** Canonical evidence sink for an in-session provider fallback. */
+	onContextFallback?: (event: {
+		requestedProvider: { id: string; version: string };
+		fallbackProvider: { id: string; version: string };
+		error: string;
+		artifact?: CompiledContextArtifact;
+	}) => void;
 	/** Deterministic initial artifact compiled before session spawn. */
 	initialContext?: CompiledContextArtifact;
 }
@@ -134,9 +147,19 @@ export function selectWorkerTools(
 }
 
 /** Settle/turn/tool lifecycle event the host streams to listeners. */
+function readPathFromToolArgs(
+	toolName: string,
+	args: unknown,
+): string | undefined {
+	if (toolName !== "read" || args === null || typeof args !== "object")
+		return undefined;
+	const path = (args as { path?: unknown }).path;
+	return typeof path === "string" && path.length > 0 ? path : undefined;
+}
+
 export type SessionHostEvent =
 	| { type: "turnStart" }
-	| { type: "toolStart"; toolName: string; toolCallId: string }
+	| { type: "toolStart"; toolName: string; toolCallId: string; path?: string }
 	| { type: "toolEnd"; toolName: string; toolCallId: string; isError: boolean }
 	| { type: "settled" }
 	| { type: "yielded"; payload: Yield }
@@ -260,6 +283,14 @@ export class DefaultSessionHost implements SessionHost {
 		await loader.reload();
 
 		const agentDir = getAgentDir();
+		const contextToolOptions = {
+			...(config.contextFallbackProvider === undefined
+				? {}
+				: { fallbackProvider: config.contextFallbackProvider }),
+			...(config.onContextFallback === undefined
+				? {}
+				: { onFallback: config.onContextFallback }),
+		};
 		const customTools = [
 			makeYieldTool(config.cwd, {
 				onYield: (payload) => {
@@ -267,7 +298,9 @@ export class DefaultSessionHost implements SessionHost {
 				},
 			}),
 			...(policy.checklistEnabled ? [makeChecklistTool(checklistStore)] : []),
-			...(config.contextProvider === undefined ? [] : [makeContextTool(config.contextProvider)]),
+			...(config.contextProvider === undefined
+				? []
+				: [makeContextTool(config.contextProvider, contextToolOptions)]),
 		];
 		const requestedTools = config.tools ?? DEFAULT_TOOLS;
 		const workerTools = selectWorkerToolsForPolicy(
@@ -388,11 +421,16 @@ class LiveSession implements SessionHandle {
 				this.#emit({ type: "turnStart" });
 				break;
 			case "tool_execution_start":
-				this.#emit({
-					type: "toolStart",
-					toolName: event.toolName,
-					toolCallId: event.toolCallId,
-				});
+				{
+					const path = readPathFromToolArgs(event.toolName, event.args);
+					this.#emit({
+						type: "toolStart",
+						toolName: event.toolName,
+						toolCallId: event.toolCallId,
+						...(path === undefined ? {} : { path }),
+					});
+					break;
+				}
 				break;
 			case "tool_execution_end":
 				this.#emit({

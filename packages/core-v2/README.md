@@ -58,10 +58,12 @@ M4 context is complete as an opt-in experiment. The CLI selects `raw` (default)
 or `symbol-tree` via `--context`; the latter compiles bounded handles before spawn and provides
 the bounded `context` query/resolve tool while preserving read/search/bash.
 Provider identity, tree identity, provenance, omissions, and estimated size are
-recorded in canonical trace events. Failures explicitly fall back to raw. Use
-`mise run context-eval` for the zero-model dry plan and `mise run context-report
--- <trace-jsonl>` for an evidence-only comparison. The harness makes no quality
-or cost claim without measured real-model traces. M5/M6 remain deferred.
+recorded in canonical trace events. Index and in-session retrieval failures
+explicitly fall back to raw and emit fallback evidence. Use `mise run context-eval`
+for the zero-model dry plan and `mise run context-report -- <trace-jsonl>` for an
+evidence-only comparison; traces without v2 selection evidence are recorded as
+the v1 map baseline. The harness makes no quality or cost claim without measured
+real-model traces. M5/M6 remain deferred.
 
 ## Layout
 

@@ -40,7 +40,10 @@ import { LedgerStore } from "./ledger/store.ts";
 import type { SessionHost, SessionHostEvent } from "./sessions/host.ts";
 import type { TaskLifecycleEvent } from "./contracts/gateway-events.ts";
 import type { ContextProviderFactory } from "./contracts/context-provider.ts";
-import { rawContextProviderFactory, symbolTreeContextProviderFactory } from "./context/providers.ts";
+import {
+	rawContextProviderFactory,
+	symbolTreeContextProviderFactory,
+} from "./context/providers.ts";
 import type { ContextEvidenceEvent } from "./daemon/parallel.ts";
 
 const DEFAULT_STATE_ROOT = ".local/state";
@@ -192,7 +195,8 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
 				stateDir = value;
 				break;
 			case "--context":
-				if (value !== "raw" && value !== "symbol-tree") throw new CliUsageError("--context must be raw or symbol-tree");
+				if (value !== "raw" && value !== "symbol-tree")
+					throw new CliUsageError("--context must be raw or symbol-tree");
 				context = value;
 				break;
 			case "--db":
@@ -330,7 +334,8 @@ function recordSessionEvent(
 	turnState: { active: boolean },
 ): void {
 	if (event.type === "turnStart") {
-		if (turnState.active) trace.record({ type: "turn.ended", phase: "turn", taskId: trace.taskId });
+		if (turnState.active)
+			trace.record({ type: "turn.ended", phase: "turn", taskId: trace.taskId });
 		turnState.active = true;
 		trace.record({ type: "turn.started", phase: "turn", taskId: trace.taskId });
 		return;
@@ -341,22 +346,53 @@ function recordSessionEvent(
 			phase: "tool",
 			taskId: trace.taskId,
 			sessionId: `${trace.taskId}-worker`,
-			detail: { toolName: event.toolName, toolCallId: event.toolCallId, ...(event.type === "toolEnd" ? { isError: event.isError } : {}) },
+			detail: {
+				toolName: event.toolName,
+				toolCallId: event.toolCallId,
+				...(event.type === "toolStart" && event.path === undefined
+					? {}
+					: event.type === "toolStart"
+						? { path: event.path }
+						: {}),
+				...(event.type === "toolEnd" ? { isError: event.isError } : {}),
+			},
 		});
 		return;
 	}
-	if (event.type === "settled" || event.type === "yielded" || event.type === "error") {
+	if (
+		event.type === "settled" ||
+		event.type === "yielded" ||
+		event.type === "error"
+	) {
 		if (turnState.active) {
 			trace.record({ type: "turn.ended", phase: "turn", taskId: trace.taskId });
 			turnState.active = false;
 		}
 	}
 	if (event.type === "error") {
-		trace.record({ type: "failure", phase: "session", taskId: trace.taskId, sessionId: `${trace.taskId}-worker`, detail: { message: event.message, code: event.code } });
+		trace.record({
+			type: "failure",
+			phase: "session",
+			taskId: trace.taskId,
+			sessionId: `${trace.taskId}-worker`,
+			detail: { message: event.message, code: event.code },
+		});
 	} else if (event.type === "yielded") {
-		trace.record({ type: "session.ended", phase: "session", taskId: trace.taskId, sessionId: `${trace.taskId}-worker`, detail: { outcome: "yielded" } });
+		trace.record({
+			type: "session.ended",
+			phase: "session",
+			taskId: trace.taskId,
+			sessionId: `${trace.taskId}-worker`,
+			detail: { outcome: "yielded" },
+		});
 	} else if (event.type === "settled") {
-		trace.record({ type: "session.ended", phase: "session", taskId: trace.taskId, sessionId: `${trace.taskId}-worker`, detail: { outcome: "settled" } });
+		trace.record({
+			type: "session.ended",
+			phase: "session",
+			taskId: trace.taskId,
+			sessionId: `${trace.taskId}-worker`,
+			detail: { outcome: "settled" },
+		});
 	}
 }
 
@@ -456,19 +492,43 @@ export async function runCli(
 	let daemon: Awaited<ReturnType<typeof startDaemon>> | undefined;
 	const deliverFailureTrace = (cause: string): CliResult => {
 		trace ??= createCliTrace(traceTaskId, args.model, specMarkdown);
-		trace.record({ type: "failure", phase: "task", taskId: trace.taskId, detail: { message: cause } });
-		trace.record({ type: "task.failed", phase: "task", taskId: trace.taskId, detail: { cause } });
-		const failurePath = writeFailureArtifact({ artifactsDir: paths.artifactsDir, runId: trace.taskId, cause });
+		trace.record({
+			type: "failure",
+			phase: "task",
+			taskId: trace.taskId,
+			detail: { message: cause },
+		});
+		trace.record({
+			type: "task.failed",
+			phase: "task",
+			taskId: trace.taskId,
+			detail: { cause },
+		});
+		const failurePath = writeFailureArtifact({
+			artifactsDir: paths.artifactsDir,
+			runId: trace.taskId,
+			cause,
+		});
 		const traceDelivery = finishTrace(trace, paths.artifactsDir, "failed");
-		if (failurePath === undefined) writeError("error: failure artifact delivery failed");
-		if (traceDelivery.error !== undefined) writeError(`error: trace artifact delivery failed: ${traceDelivery.error}`);
-		const deliveryError = traceDelivery.error === undefined
-			? undefined
-			: `trace artifact delivery failed: ${traceDelivery.error}`;
+		if (failurePath === undefined)
+			writeError("error: failure artifact delivery failed");
+		if (traceDelivery.error !== undefined)
+			writeError(
+				`error: trace artifact delivery failed: ${traceDelivery.error}`,
+			);
+		const deliveryError =
+			traceDelivery.error === undefined
+				? undefined
+				: `trace artifact delivery failed: ${traceDelivery.error}`;
 		return {
-			exitCode: failurePath === undefined || deliveryError !== undefined ? CLI_ARTIFACT_EXIT : CLI_TASK_EXIT,
+			exitCode:
+				failurePath === undefined || deliveryError !== undefined
+					? CLI_ARTIFACT_EXIT
+					: CLI_TASK_EXIT,
 			error: deliveryError ?? cause,
-			...(traceDelivery.path === undefined ? {} : { tracePath: traceDelivery.path }),
+			...(traceDelivery.path === undefined
+				? {}
+				: { tracePath: traceDelivery.path }),
 		};
 	};
 	try {
@@ -486,10 +546,18 @@ export async function runCli(
 		daemon = await daemonStarter(paths.dbPath, { projectDir });
 		const daemonAttemptId = resolveAttemptId(daemon.store, familyId);
 		if (daemonAttemptId !== traceTaskId)
-			throw new Error(`attempt identity changed during daemon setup: ${traceTaskId} -> ${daemonAttemptId}`);
-		const workspaceDriver = dependencies.workspaceDriver ?? new JujutsuWorkspaceDriver({ projectDir });
-		if (!(await workspaceDriver.isSupported())) throw new Error("jj is unavailable or project-dir is not a jj repository");
-		const gateway = dependencies.gateway ?? new InMemoryTaskGateway({ store: daemon.store });
+			throw new Error(
+				`attempt identity changed during daemon setup: ${traceTaskId} -> ${daemonAttemptId}`,
+			);
+		const workspaceDriver =
+			dependencies.workspaceDriver ??
+			new JujutsuWorkspaceDriver({ projectDir });
+		if (!(await workspaceDriver.isSupported()))
+			throw new Error(
+				"jj is unavailable or project-dir is not a jj repository",
+			);
+		const gateway =
+			dependencies.gateway ?? new InMemoryTaskGateway({ store: daemon.store });
 		const tracedGateway: TaskGateway = {
 			emit: (event) => {
 				gateway.emit(event);
@@ -499,12 +567,17 @@ export async function runCli(
 			getTaskState: (taskId) => gateway.getTaskState(taskId),
 			getManifest: (taskId) => gateway.getManifest(taskId),
 		};
-		const unsubscribe = gateway.on("*", (event) => write(renderProgress(event)));
+		const unsubscribe = gateway.on("*", (event) =>
+			write(renderProgress(event)),
+		);
 		const turnState = { active: false };
 		write(`starting v2 task in ${projectDir}`);
 		try {
-			const selectedContextFactory = dependencies.contextProviderFactory ??
-				(args.context === "symbol-tree" ? symbolTreeContextProviderFactory : rawContextProviderFactory);
+			const selectedContextFactory =
+				dependencies.contextProviderFactory ??
+				(args.context === "symbol-tree"
+					? symbolTreeContextProviderFactory
+					: rawContextProviderFactory);
 			const result = await runIsolatedTask({
 				specMarkdown,
 				projectDir,
@@ -512,63 +585,126 @@ export async function runCli(
 				dbPath: paths.dbPath,
 				model: args.model,
 				contextProviderFactory: selectedContextFactory,
-				onContextEvent: (event: ContextEvidenceEvent) => trace!.record({
-					type: event.type,
-					phase: "context",
-					taskId: trace!.taskId,
-					provider: event.provider.id,
-					config: event.provider.version,
-					detail: event.detail,
-				}),
+				onContextEvent: (event: ContextEvidenceEvent) =>
+					trace!.record({
+						type: event.type,
+						phase: "context",
+						taskId: trace!.taskId,
+						provider: event.provider.id,
+						config: event.provider.version,
+						detail: event.detail,
+					}),
 				workspaceDriver,
-				...(dependencies.environmentDriver === undefined ? {} : { environmentDriver: dependencies.environmentDriver }),
+				...(dependencies.environmentDriver === undefined
+					? {}
+					: { environmentDriver: dependencies.environmentDriver }),
 				...(dependencies.host === undefined ? {} : { host: dependencies.host }),
 				gateway: tracedGateway,
-				onEvent: (event) => { write(renderProgress(event)); recordSessionEvent(trace!, event, turnState); },
+				onEvent: (event) => {
+					write(renderProgress(event));
+					recordSessionEvent(trace!, event, turnState);
+				},
 			});
 			const receipt = result.receipt;
-			if (receipt.taskId !== trace.taskId) throw new Error(`trace task identity ${trace.taskId} disagrees with receipt ${receipt.taskId}`);
-			trace.setUsage({ status: receipt.usageStatus === "measured" ? "measured" : "unavailable", costUsd: receipt.costUsd, inputTokens: receipt.inputTokens, outputTokens: receipt.outputTokens, cacheReadTokens: receipt.cacheReadTokens, cacheWriteTokens: 0 });
+			if (receipt.taskId !== trace.taskId)
+				throw new Error(
+					`trace task identity ${trace.taskId} disagrees with receipt ${receipt.taskId}`,
+				);
+			trace.setUsage({
+				status: receipt.usageStatus === "measured" ? "measured" : "unavailable",
+				costUsd: receipt.costUsd,
+				inputTokens: receipt.inputTokens,
+				outputTokens: receipt.outputTokens,
+				cacheReadTokens: receipt.cacheReadTokens,
+				cacheWriteTokens: 0,
+			});
 
 			// Establish a truthful non-ship receipt first. It is upgraded only
 			// after the trace has also been durably delivered, preventing a
 			// trace failure from leaving a shipped receipt behind.
-			const provisionalReceipt = receipt.verdict === "ship"
-				? { ...receipt, verdict: "failed" as const }
-				: receipt;
-			const receiptPath = writeReceiptArtifact(provisionalReceipt, paths.artifactsDir);
+			const provisionalReceipt =
+				receipt.verdict === "ship"
+					? { ...receipt, verdict: "failed" as const }
+					: receipt;
+			const receiptPath = writeReceiptArtifact(
+				provisionalReceipt,
+				paths.artifactsDir,
+			);
 			const receiptDelivered = receiptPath !== undefined;
-			trace.record({ type: "receipt.delivered", phase: "artifact", taskId: trace.taskId, detail: { delivered: receiptDelivered } });
+			trace.record({
+				type: "receipt.delivered",
+				phase: "artifact",
+				taskId: trace.taskId,
+				detail: { delivered: receiptDelivered },
+			});
 			if (!receiptDelivered) {
 				writeError("error: receipt artifact delivery failed");
-				trace.record({ type: "failure", phase: "artifact", taskId: trace.taskId, detail: { message: "receipt artifact delivery failed" } });
-				trace.record({ type: "task.failed", phase: "task", taskId: trace.taskId, detail: { cause: "receipt artifact delivery failed" } });
+				trace.record({
+					type: "failure",
+					phase: "artifact",
+					taskId: trace.taskId,
+					detail: { message: "receipt artifact delivery failed" },
+				});
+				trace.record({
+					type: "task.failed",
+					phase: "task",
+					taskId: trace.taskId,
+					detail: { cause: "receipt artifact delivery failed" },
+				});
 			}
 
 			// Content acceptance is owned by the runner and deliberately remains
 			// semantic-free here. This finalization stage adds only transport
 			// facts; a task ships iff the runner shipped and both artifacts exist.
-			const traceOutcome = receipt.verdict === "ship"
-				? (receiptDelivered ? "ship" : "failed")
-				: receipt.verdict;
-			const traceDelivery = finishTrace(trace, paths.artifactsDir, traceOutcome);
+			const traceOutcome =
+				receipt.verdict === "ship"
+					? receiptDelivered
+						? "ship"
+						: "failed"
+					: receipt.verdict;
+			const traceDelivery = finishTrace(
+				trace,
+				paths.artifactsDir,
+				traceOutcome,
+			);
 			const finalized = finalizeArtifactAcceptance(
-				{ accepted: true, reasons: [], actualFiles: [], ...(receipt.commitIds[0] === undefined ? {} : { commitId: receipt.commitIds[0] }) },
+				{
+					accepted: true,
+					reasons: [],
+					actualFiles: [],
+					...(receipt.commitIds[0] === undefined
+						? {}
+						: { commitId: receipt.commitIds[0] }),
+				},
 				{ receiptDelivered, traceDelivered: traceDelivery.ok },
 			);
 			const deliveryError = [
-				...(receiptDelivered ? [] : [`receipt artifact delivery failed at ${paths.artifactsDir}`]),
-				...(traceDelivery.ok ? [] : [`trace artifact delivery failed: ${traceDelivery.error ?? "unknown error"}`]),
+				...(receiptDelivered
+					? []
+					: [`receipt artifact delivery failed at ${paths.artifactsDir}`]),
+				...(traceDelivery.ok
+					? []
+					: [
+							`trace artifact delivery failed: ${traceDelivery.error ?? "unknown error"}`,
+						]),
 			].join("; ");
 			const contentAccepted = receipt.verdict === "ship";
 			const ships = contentAccepted && finalized.accepted;
-			const finalReceipt = ships ? receipt : { ...receipt, verdict: "failed" as const };
+			const finalReceipt = ships
+				? receipt
+				: { ...receipt, verdict: "failed" as const };
 			if (traceDelivery.error !== undefined)
-				writeError(`error: trace artifact delivery failed: ${traceDelivery.error}`);
+				writeError(
+					`error: trace artifact delivery failed: ${traceDelivery.error}`,
+				);
 
 			if (!ships && (!contentAccepted || !finalized.accepted)) {
 				const deliveryReasons = finalized.reasons
-					.filter((reason) => reason.code === "receipt_missing" || reason.code === "trace_missing")
+					.filter(
+						(reason) =>
+							reason.code === "receipt_missing" ||
+							reason.code === "trace_missing",
+					)
 					.map((reason) => `${reason.code}: ${reason.detail}`);
 				if (deliveryReasons.length > 0) {
 					writeFailureArtifact({
@@ -583,12 +719,18 @@ export async function runCli(
 					exitCode: CLI_ARTIFACT_EXIT,
 					receipt: finalReceipt,
 					...(receiptPath === undefined ? {} : { receiptPath }),
-					...(traceDelivery.path === undefined ? {} : { tracePath: traceDelivery.path }),
+					...(traceDelivery.path === undefined
+						? {}
+						: { tracePath: traceDelivery.path }),
 					error: deliveryError || "artifact delivery failed",
 				};
 			}
 			if (receiptPath === undefined) {
-				return { exitCode: CLI_ARTIFACT_EXIT, receipt: finalReceipt, error: "receipt artifact delivery failed" };
+				return {
+					exitCode: CLI_ARTIFACT_EXIT,
+					receipt: finalReceipt,
+					error: "receipt artifact delivery failed",
+				};
 			}
 			// Replace the provisional receipt only after both delivery checks
 			// passed. A failed rewrite leaves the already durable failed receipt.
@@ -596,11 +738,26 @@ export async function runCli(
 				? writeReceiptArtifact(finalReceipt, paths.artifactsDir)
 				: receiptPath;
 			if (deliveredReceiptPath === undefined) {
-				writeFailureArtifact({ artifactsDir: paths.artifactsDir, runId: trace.taskId, cause: "receipt artifact delivery failed during finalization" });
-				return { exitCode: CLI_ARTIFACT_EXIT, receipt: { ...receipt, verdict: "failed" as const }, error: "receipt artifact delivery failed during finalization" };
+				writeFailureArtifact({
+					artifactsDir: paths.artifactsDir,
+					runId: trace.taskId,
+					cause: "receipt artifact delivery failed during finalization",
+				});
+				return {
+					exitCode: CLI_ARTIFACT_EXIT,
+					receipt: { ...receipt, verdict: "failed" as const },
+					error: "receipt artifact delivery failed during finalization",
+				};
 			}
 			write(`receipt: ${JSON.stringify(finalReceipt)}`);
-			return { exitCode: cliExitCode(finalReceipt.verdict, result.conflicts), receipt: finalReceipt, receiptPath: deliveredReceiptPath, ...(traceDelivery.path === undefined ? {} : { tracePath: traceDelivery.path }) };
+			return {
+				exitCode: cliExitCode(finalReceipt.verdict, result.conflicts),
+				receipt: finalReceipt,
+				receiptPath: deliveredReceiptPath,
+				...(traceDelivery.path === undefined
+					? {}
+					: { tracePath: traceDelivery.path }),
+			};
 		} catch (error) {
 			const message = validationError(error);
 			return deliverFailureTrace(message);

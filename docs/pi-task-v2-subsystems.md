@@ -303,6 +303,10 @@ from traces. It compares raw, a v1 deterministic-map baseline adapter, and
 symbol-tree while retaining neutral/negative outcomes and trace identities;
 it does not claim an unmeasured win. `mise run context-eval` is the dry plan
 and `mise run context-report -- <trace-jsonl>` is the evidence-only report.
+The report selects the v1 map baseline adapter for legacy traces that lack the
+v2 selection event. If a session retrieval call fails, the context tool switches
+to raw, returns bounded raw evidence, and emits canonical `context.omitted`
+fallback evidence.
 
 M5 workflow/migration cutover and M6 repeated real-model proof and scale
 selection remain deferred. Existing enabling modules do not establish those

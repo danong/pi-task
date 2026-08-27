@@ -308,8 +308,10 @@ in trace evidence and degrade to raw without failing otherwise-correct work.
 canonical artifacts/traces. The harness includes raw, the v1 deterministic map
 shape as a recorded baseline adapter, and symbol-tree; it preserves unavailable
 cost, repeated-read/tool/turn activity, acceptance, neutral/negative results,
-and source trace identities. It deliberately claims no unmeasured quality or
-cost advantage. M5 workflow/migration work and M6 repeated proof/scale
+and source trace identities. The report automatically adapts legacy traces that
+lack v2 selection evidence to the v1 map baseline, and session retrieval errors
+fall back to raw with canonical evidence. It deliberately claims no unmeasured
+quality or cost advantage. M5 workflow/migration work and M6 repeated proof/scale
 decisions remain deferred and are not implemented here.
 
 Each gate must publish canonical traces, benchmark results, and conformance

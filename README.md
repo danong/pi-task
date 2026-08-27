@@ -116,10 +116,12 @@ M4 context is complete as an opt-in, evidence-producing experiment: the v2 CLI
 selects `raw` (the default) or `symbol-tree` with `--context`, injects bounded progressive-
 disclosure handles, exposes the bounded `context` worker tool, and records
 provider, tree identity, selection, omission, and size evidence. Index or
-retrieval failure falls back explicitly to raw exploration. `mise run context-eval`
-is a hermetic dry plan; `mise run context-report -- <jsonl>` reports canonical
-trace comparisons with unavailable and negative outcomes preserved. No real-
-model quality or cost win is claimed. M5 and M6 remain deferred scope.
+retrieval failure, including a failed in-session context query, falls back
+explicitly to raw exploration and records canonical fallback evidence. `mise run
+context-eval` is a hermetic dry plan; `mise run context-report -- <jsonl>` reports
+canonical trace comparisons, automatically adapting traces without v2 selection
+evidence as the recorded v1 map baseline. Unavailable and negative outcomes are
+preserved; no real-model quality or cost win is claimed. M5 and M6 remain deferred scope.
 
 The repo ships `.pi/settings.json` registering itself as a project package
 (`"packages": [".."]`), so any trusted checkout auto-installs — the `task`
