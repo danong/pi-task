@@ -29,6 +29,7 @@ import { runTests as runLifecycleCollectorPluginTests } from "./test-plugins-lif
 import { runTests as runHandoffCapPluginTests } from "./test-plugins-handoff-cap.ts";
 import { runTests as runRouterTests } from "./test-router.ts";
 import { runTests as runSurfacesTests } from "./test-surfaces.ts";
+import { runTests as runSymbolTreeTests } from "./test-symbol-tree.ts";
 import { runTests as runTraceTests } from "./test-trace.ts";
 import { runTests as runVerifyRunTests } from "./test-verify-run.ts";
 import { runTests as runWatchdogDriverTests } from "./test-watchdog-driver.ts";
@@ -56,6 +57,7 @@ const SUITES: Array<{ name: string; run: () => Promise<void> }> = [
 	{ name: "environments", run: runEnvironmentTests },
 	{ name: "gateway", run: runGatewayTests },
 	{ name: "surfaces", run: runSurfacesTests },
+	{ name: "symbol-tree", run: runSymbolTreeTests },
 	{ name: "trace", run: runTraceTests },
 	{ name: "workflow-plan", run: runWorkflowPlanTests },
 	{ name: "workflow-build", run: runWorkflowBuildTests },
