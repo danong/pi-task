@@ -39,6 +39,9 @@ import { JujutsuWorkspaceDriver } from "./workspaces/jj-driver.ts";
 import { LedgerStore } from "./ledger/store.ts";
 import type { SessionHost, SessionHostEvent } from "./sessions/host.ts";
 import type { TaskLifecycleEvent } from "./contracts/gateway-events.ts";
+import type { ContextProviderFactory } from "./contracts/context-provider.ts";
+import { rawContextProviderFactory, symbolTreeContextProviderFactory } from "./context/providers.ts";
+import type { ContextEvidenceEvent } from "./daemon/parallel.ts";
 
 const DEFAULT_STATE_ROOT = ".local/state";
 
@@ -61,6 +64,7 @@ export interface ParsedCliArgs {
 	dbPath?: string;
 	artifactsDir?: string;
 	stateDir?: string;
+	context: "raw" | "symbol-tree";
 }
 
 export interface CliPaths {
@@ -77,6 +81,7 @@ export interface CliDependencies {
 	startDaemon?: typeof startDaemon;
 	write?: (line: string) => void;
 	writeError?: (line: string) => void;
+	contextProviderFactory?: ContextProviderFactory;
 }
 
 export interface CliResult {
@@ -100,6 +105,7 @@ Options:
   --state-dir <directory>       State root for the ledger and artifacts
   --db <file>                   Ledger SQLite path (overrides --state-dir)
   --artifacts-dir <directory>   Receipt and failure-artifact directory
+  --context <raw|symbol-tree>   Explicit context provider (default: raw)
   --help, -h                    Show this help
 
 Defaults are outside the repository: XDG_STATE_HOME/pi-task-v2/<project>/.
@@ -126,6 +132,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
 	let dbPath: string | undefined;
 	let artifactsDir: string | undefined;
 	let stateDir: string | undefined;
+	let context: "raw" | "symbol-tree" = "raw";
 	const seen = new Set<string>();
 
 	for (let i = 0; i < argv.length; i += 1) {
@@ -154,6 +161,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
 				"--state-dir",
 				"--db",
 				"--artifacts-dir",
+				"--context",
 			].includes(key)
 		)
 			throw new CliUsageError(`unknown option: ${arg}`);
@@ -183,6 +191,10 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
 			case "--state-dir":
 				stateDir = value;
 				break;
+			case "--context":
+				if (value !== "raw" && value !== "symbol-tree") throw new CliUsageError("--context must be raw or symbol-tree");
+				context = value;
+				break;
 			case "--db":
 				dbPath = value;
 				break;
@@ -205,6 +217,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
 		...(dbPath === undefined ? {} : { dbPath }),
 		...(artifactsDir === undefined ? {} : { artifactsDir }),
 		...(stateDir === undefined ? {} : { stateDir }),
+		context,
 	};
 }
 
@@ -362,17 +375,8 @@ function createCliTrace(
 		config: model.trim(),
 		detail: { modelId: model },
 	});
-	const systemPrompt = buildWorkerSystemPrompt(specMarkdown);
-	trace.record({
-		type: "context.injected",
-		phase: "context",
-		taskId,
-		detail: {
-			source: "worker-system-prompt",
-			bytes: Buffer.byteLength(systemPrompt + specMarkdown, "utf8"),
-			tokens: estimateGroundingTokens(systemPrompt, specMarkdown),
-		},
-	});
+	// Context lifecycle evidence is emitted by the selected capability before
+	// the worker spawn; the task prompt itself is not a context artifact.
 	return trace;
 }
 
@@ -499,12 +503,23 @@ export async function runCli(
 		const turnState = { active: false };
 		write(`starting v2 task in ${projectDir}`);
 		try {
+			const selectedContextFactory = dependencies.contextProviderFactory ??
+				(args.context === "symbol-tree" ? symbolTreeContextProviderFactory : rawContextProviderFactory);
 			const result = await runIsolatedTask({
 				specMarkdown,
 				projectDir,
 				artifactsDir: paths.artifactsDir,
 				dbPath: paths.dbPath,
 				model: args.model,
+				contextProviderFactory: selectedContextFactory,
+				onContextEvent: (event: ContextEvidenceEvent) => trace!.record({
+					type: event.type,
+					phase: "context",
+					taskId: trace!.taskId,
+					provider: event.provider.id,
+					config: event.provider.version,
+					detail: event.detail,
+				}),
 				workspaceDriver,
 				...(dependencies.environmentDriver === undefined ? {} : { environmentDriver: dependencies.environmentDriver }),
 				...(dependencies.host === undefined ? {} : { host: dependencies.host }),

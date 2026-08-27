@@ -52,10 +52,16 @@ mise run bench-report -- --traces-dir <trace-directory> --label <label>
 
 M3 grounding evaluation is dry by default (`mise run eval-grounding`) and
 writes real-run evidence, when requested with `-- --run`, under the selected
-metrics directory as `eval-grounding/records.jsonl` and `summary.md`. Remaining
-M4–M6 scope covers durable interfaces and parent/child execution, broader
-workflow/migration cutover, and repeated real-model proof and scale work; any
-enabling code does not make those product guarantees part of this MVP.
+metrics directory as `eval-grounding/records.jsonl` and `summary.md`.
+
+M4 context is complete as an opt-in experiment. The CLI selects `raw` (default)
+or `symbol-tree`; the latter compiles bounded handles before spawn and provides
+the bounded `context` query/resolve tool while preserving read/search/bash.
+Provider identity, tree identity, provenance, omissions, and estimated size are
+recorded in canonical trace events. Failures explicitly fall back to raw. Use
+`mise run context-eval` for the zero-model dry plan and `mise run context-report
+-- <trace-jsonl>` for an evidence-only comparison. The harness makes no quality
+or cost claim without measured real-model traces. M5/M6 remain deferred.
 
 ## Layout
 

@@ -285,14 +285,28 @@ contract. `packages/core-v2/test/test-cli.ts` is the hermetic evidence: fake
 session, real temporary jj repository, real verification, typed progress,
 receipt delivery, success cleanup, and verification-failure recovery.
 
-## 10. Remaining M4–M6 scope
+## 10. M4 context provider and evaluation; M5–M6 deferred
 
-M4–M6 are not part of the completed M1–M3 MVP contract. Remaining scope is
-supporting durable interfaces and sequential typed parent/child continuation,
-measuring and productizing broader workflow/scheduling and migration cutover,
-and running the repeated real-model proof needed for quality, efficiency,
-intervention, and scale decisions. Existing enabling modules do not by
-themselves establish those guarantees.
+M4 context conformance is shipped as an opt-in experiment. The typed context
+capability is implemented by the raw/no-injection provider and the deterministic
+symbol-tree provider. The kernel compiles one bounded initial artifact from the
+validated goal and requirements before session spawn, injects handles only,
+and adds a bounded query/resolve tool without removing read/search/bash. The
+CLI records explicit `raw` or `symbol-tree` selection. Scan/retrieval failure
+records a typed fallback and continues with raw.
+
+The canonical context events record provider/version, source tree identity,
+selected and omitted counts, provenance, and estimated size. The hermetic
+comparison harness derives context volume, selected handles, reads, context
+tool calls, repeated reads, turns, measured or unavailable cost, and acceptance
+from traces. It compares raw, a v1 deterministic-map baseline adapter, and
+symbol-tree while retaining neutral/negative outcomes and trace identities;
+it does not claim an unmeasured win. `mise run context-eval` is the dry plan
+and `mise run context-report -- <trace-jsonl>` is the evidence-only report.
+
+M5 workflow/migration cutover and M6 repeated real-model proof and scale
+selection remain deferred. Existing enabling modules do not establish those
+future guarantees.
 
 ## 11. Evidence and migration
 

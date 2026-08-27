@@ -112,11 +112,14 @@ The first command makes no LLM calls; real runs require the configured model
 and network. Evidence is written under the selected metrics directory in
 `eval-grounding/records.jsonl` and `eval-grounding/summary.md`.
 
-M4–M6 remain follow-on scope rather than claims of MVP proof: durable
-interfaces and typed parent/child execution, broader workflow scheduling and
-migration/cutover, and the repeated real-model proof plus scale/quality work
-that follows it. Some enabling code may exist, but those capabilities are not
-this MVP's measured product guarantee.
+M4 context is complete as an opt-in, evidence-producing experiment: the v2 CLI
+selects `raw` (the default) or `symbol-tree`, injects bounded progressive-
+disclosure handles, exposes the bounded `context` worker tool, and records
+provider, tree identity, selection, omission, and size evidence. Index or
+retrieval failure falls back explicitly to raw exploration. `mise run context-eval`
+is a hermetic dry plan; `mise run context-report -- <jsonl>` reports canonical
+trace comparisons with unavailable and negative outcomes preserved. No real-
+model quality or cost win is claimed. M5 and M6 remain deferred scope.
 
 The repo ships `.pi/settings.json` registering itself as a project package
 (`"packages": [".."]`), so any trusted checkout auto-installs — the `task`

@@ -651,7 +651,7 @@ async function filesAtRevision(projectDir: string, revision: string): Promise<st
 		throw new Error(
 			`jj file list -r ${revision} failed (${result.code}): ${result.stderr.trim()}`,
 		);
-	return result.stdout.split("\\n").map((path) => path.trim()).filter(Boolean).sort();
+	return result.stdout.split("\n").map((path) => path.trim()).filter(Boolean).sort();
 }
 
 export async function changedPathEvidence(

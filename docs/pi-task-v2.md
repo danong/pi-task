@@ -292,24 +292,25 @@ calls, repeated reads, context and elapsed metrics when available, and
 verification/acceptance failures. Missing measurements remain `unavailable`;
 the report does not infer them.
 
-## Remaining M4–M6 scope and proof gates
+## M4 context experiment complete; M5–M6 deferred
 
-M1–M3 establish the runnable, observable, mechanically accepted single-worker
-foundation. M4–M6 remain follow-on scope and are gates, not promises of feature
-volume:
+M4 ships an opt-in context capability in the runnable v2 CLI. `raw` is the
+correct default no-injection baseline; `symbol-tree` scans and retrieves
+bounded progressive-disclosure handles before session spawn, and exposes a
+bounded query/resolve worker tool. Both retain ordinary read/search/bash
+escape hatches. Canonical `context.selected`, `context.injected`, and
+`context.omitted` events record provider/version, source tree identity,
+provenance, counts, omissions, and estimated size. Provider failures are typed
+in trace evidence and degrade to raw without failing otherwise-correct work.
 
-- **M4 — durable interfaces and typed continuation:** make durable surface
-  behavior, cancellation/recovery across disconnects, and sequential
-  parent/child tasks with bounded handoffs part of the supported product path.
-  Passing an entire transcript is not an acceptable shortcut.
-- **M5 — workflow and migration cutover:** measure demand for workflow graphs,
-  scheduling and parallel dispatch, then complete inventory → shadow → flip →
-  delete migration only after conformance and parity evidence. Existing
-  enabling modules are not evidence that this product scope is complete.
-- **M6 — MVP proof and scale decisions:** run repeated real-model trials over
-  accepted-result quality, cost, time, intervention, context use, and failure
-  recovery; then decide which context, quality, remote, or scale capabilities
-  earn promotion. Real-model efficiency improvement has not yet been measured.
+`mise run context-eval` renders a provider-neutral zero-model dry plan and
+`mise run context-report -- <trace-jsonl>` derives comparison data from
+canonical artifacts/traces. The harness includes raw, the v1 deterministic map
+shape as a recorded baseline adapter, and symbol-tree; it preserves unavailable
+cost, repeated-read/tool/turn activity, acceptance, neutral/negative results,
+and source trace identities. It deliberately claims no unmeasured quality or
+cost advantage. M5 workflow/migration work and M6 repeated proof/scale
+decisions remain deferred and are not implemented here.
 
 Each gate must publish canonical traces, benchmark results, and conformance
  evidence. No model/provider default or snapshot number is implied by the

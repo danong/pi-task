@@ -36,12 +36,13 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 
-import type { Yield } from "../contracts/index.ts";
+import type { CompiledContextArtifact, ContextProvider, Yield } from "../contracts/index.ts";
 import {
 	getRequirementTrackingPolicy,
 	makeChecklistTool,
 	makeYieldTool,
 } from "./tools.ts";
+import { makeContextTool } from "./context-tool.ts";
 import type { ChecklistState, RequirementTrackingPolicy } from "./tools.ts";
 
 /** Default per-prompt wall-clock bound (R2 "timeout bounds"). */
@@ -87,6 +88,10 @@ export interface SessionHostConfig {
 	tools?: string[];
 	/** Per-prompt wall-clock timeout in ms. Defaults to ten minutes. */
 	timeoutMs?: number;
+	/** Selected context capability; omitted for the raw/no-injection baseline. */
+	contextProvider?: ContextProvider;
+	/** Deterministic initial artifact compiled before session spawn. */
+	initialContext?: CompiledContextArtifact;
 }
 
 /** Default requirement count for callers that predate the protocol field. */
@@ -262,7 +267,15 @@ export class DefaultSessionHost implements SessionHost {
 				},
 			}),
 			...(policy.checklistEnabled ? [makeChecklistTool(checklistStore)] : []),
+			...(config.contextProvider === undefined ? [] : [makeContextTool(config.contextProvider)]),
 		];
+		const requestedTools = config.tools ?? DEFAULT_TOOLS;
+		const workerTools = selectWorkerToolsForPolicy(
+			config.contextProvider === undefined || requestedTools.includes("context")
+				? requestedTools
+				: [...requestedTools, "context"],
+			policy,
+		);
 		const createSession =
 			this.#dependencies.createAgentSession ?? createAgentSession;
 		const { session } = await createSession({
@@ -270,7 +283,7 @@ export class DefaultSessionHost implements SessionHost {
 			agentDir,
 			model,
 			modelRuntime: runtime,
-			tools: selectWorkerToolsForPolicy(config.tools ?? DEFAULT_TOOLS, policy),
+			tools: workerTools,
 			customTools,
 			sessionManager: SessionManager.inMemory(config.cwd),
 			resourceLoader: loader,
