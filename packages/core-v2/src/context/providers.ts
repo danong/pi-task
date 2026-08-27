@@ -15,6 +15,8 @@ export {
 	RAW_CONTEXT_PROVIDER_IDENTITY,
 } from "./raw-provider.ts";
 import { ContextArtifactSchema } from "../contracts/context-provider.ts";
+import type { ContextAcquisitionFactory } from "../contracts/context-lifecycle.ts";
+import { capabilitiesFromLegacyProvider } from "./provider-adapter.ts";
 import { DEFAULT_CONTEXT_BUDGET } from "./compiler.ts";
 import {
 	retrieveSymbolTree,
@@ -176,4 +178,12 @@ export function createSymbolTreeContextProvider(
 export const symbolTreeContextProviderFactory: ContextProviderFactory = {
 	identity: SYMBOL_TREE_CONTEXT_PROVIDER_IDENTITY,
 	create: createSymbolTreeContextProvider,
+};
+
+/** Explicit acquisition factory; the legacy provider is kept only at this
+ * optional-provider edge so the kernel can delete symbol-tree wholesale. */
+export const symbolTreeAcquisitionFactory: ContextAcquisitionFactory = {
+	identity: SYMBOL_TREE_CONTEXT_PROVIDER_IDENTITY,
+	create: (options) =>
+		capabilitiesFromLegacyProvider(createSymbolTreeContextProvider(options)),
 };

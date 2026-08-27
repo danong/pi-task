@@ -68,10 +68,14 @@ CLI selects `raw` (default) or `symbol-tree` via `--context`; raw is an empty
 plan with no static index dependency. Symbol-tree provides bounded handles and
 the `context` query/resolve tool while preserving ordinary exploration. Use
 `mise run context-eval` for the zero-model dry plan and `mise run
-context-report -- <trace-jsonl>` for evidence-only comparison. M4 makes no
-quality/cost claim and does not adopt symbol-tree without cheap measured trials.
-M5 will build typed sequential continuation and self-hosting on these contracts;
-M6 scope remains intentionally open.
+context-report -- <trace-jsonl>` for evidence-only comparison.
+Kernel/session/tool code consumes the explicit acquisition/materialization
+contract; old provider translation is localized in `context/provider-adapter.ts`.
+A minimal matched measured smoke is retained under `test/fixtures/m4-proof/`;
+validate equivalent evidence with `mise run m4-proof -- <evidence.json>
+[report.md]`. The neutral result does not establish a general quality/cost
+advantage or adopt symbol-tree. M5 will build typed sequential continuation and
+self-hosting on these contracts; M6 scope remains intentionally open.
 
 ## Layout
 

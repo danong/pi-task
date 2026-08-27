@@ -37,9 +37,8 @@ import type {
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 
 import type {
-	CompiledContextArtifact,
 	ContextPlan,
-	ContextProvider,
+	ContextAcquisitionCapabilities,
 	ExecutionEpoch,
 	Yield,
 } from "../contracts/index.ts";
@@ -94,19 +93,16 @@ export interface SessionHostConfig {
 	tools?: string[];
 	/** Per-prompt wall-clock timeout in ms. Defaults to ten minutes. */
 	timeoutMs?: number;
-	/** Selected context capability; omitted for the raw/no-injection baseline. */
-	contextProvider?: ContextProvider;
+	/** Explicit acquisition/materialization capability. */
+	contextCapabilities?: ContextAcquisitionCapabilities;
 	/** Raw capability used if a selected provider fails during the session. */
-	contextFallbackProvider?: ContextProvider;
+	contextFallbackCapabilities?: ContextAcquisitionCapabilities;
 	/** Canonical evidence sink for an in-session provider fallback. */
 	onContextFallback?: (event: {
 		requestedProvider: { id: string; version: string };
 		fallbackProvider: { id: string; version: string };
 		error: string;
-		artifact?: CompiledContextArtifact;
 	}) => void;
-	/** Deterministic initial artifact compiled before session spawn. */
-	initialContext?: CompiledContextArtifact;
 	/** Kernel-owned lifecycle plan bound to this session's epoch. */
 	contextPlan?: ContextPlan;
 	/** Durable execution-epoch identity for checkpointed continuation. */
@@ -295,9 +291,11 @@ export class DefaultSessionHost implements SessionHost {
 
 		const agentDir = getAgentDir();
 		const contextToolOptions = {
-			...(config.contextFallbackProvider === undefined
+			root: config.cwd,
+			sourceRevision: config.contextPlan?.sourceRevision ?? "unknown",
+			...(config.contextFallbackCapabilities === undefined
 				? {}
-				: { fallbackProvider: config.contextFallbackProvider }),
+				: { fallbackProvider: config.contextFallbackCapabilities }),
 			...(config.onContextFallback === undefined
 				? {}
 				: { onFallback: config.onContextFallback }),
@@ -309,13 +307,14 @@ export class DefaultSessionHost implements SessionHost {
 				},
 			}),
 			...(policy.checklistEnabled ? [makeChecklistTool(checklistStore)] : []),
-			...(config.contextProvider === undefined
+			...(config.contextCapabilities === undefined
 				? []
-				: [makeContextTool(config.contextProvider, contextToolOptions)]),
+				: [makeContextTool(config.contextCapabilities, contextToolOptions)]),
 		];
 		const requestedTools = config.tools ?? DEFAULT_TOOLS;
 		const workerTools = selectWorkerToolsForPolicy(
-			config.contextProvider === undefined || requestedTools.includes("context")
+			config.contextCapabilities === undefined ||
+				requestedTools.includes("context")
 				? requestedTools
 				: [...requestedTools, "context"],
 			policy,

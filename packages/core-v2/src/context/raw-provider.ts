@@ -12,6 +12,11 @@ import {
 	type ContextProviderIdentity,
 	type ContextProvenance,
 } from "../contracts/context-provider.ts";
+import {
+	ContextAcquisitionCapabilitiesSchema,
+	type ContextAcquisitionCapabilities,
+	type ContextAcquisitionFactory,
+} from "../contracts/context-lifecycle.ts";
 import { DEFAULT_CONTEXT_BUDGET } from "./compiler.ts";
 
 export const RAW_CONTEXT_PROVIDER_IDENTITY: ContextProviderIdentity = {
@@ -82,7 +87,31 @@ export function createRawContextProvider(
 	return new RawContextProvider(options);
 }
 
+export function createRawContextCapabilities(
+	_options: RawContextProviderOptions,
+): ContextAcquisitionCapabilities {
+	const capabilities: ContextAcquisitionCapabilities = {
+		identity: RAW_CONTEXT_PROVIDER_IDENTITY,
+		candidates: {
+			identity: RAW_CONTEXT_PROVIDER_IDENTITY,
+			acquire: () => [],
+		},
+		materializer: {
+			identity: RAW_CONTEXT_PROVIDER_IDENTITY,
+			materialize: () => [],
+		},
+	};
+	return ContextAcquisitionCapabilitiesSchema.parse(
+		capabilities,
+	) as unknown as ContextAcquisitionCapabilities;
+}
+
 export const rawContextProviderFactory: ContextProviderFactory = {
 	identity: RAW_CONTEXT_PROVIDER_IDENTITY,
 	create: createRawContextProvider,
+};
+
+export const rawContextAcquisitionFactory: ContextAcquisitionFactory = {
+	identity: RAW_CONTEXT_PROVIDER_IDENTITY,
+	create: createRawContextCapabilities,
 };

@@ -39,6 +39,10 @@ run = "npx tsx packages/core-v2/src/bench/context-report.ts"
 description = "Render a context evaluation report from canonical trace JSONL"
 run = "npx tsx packages/core-v2/src/bench/context-report.ts"
 
+[tasks.m4-proof]
+description = "Validate and render matched measured raw/context trace evidence"
+run = "npx tsx packages/core-v2/src/bench/m4-proof.ts"
+
 [tasks.typecheck]
 description = "Type gate — strict tsc over both engines (core-v2 FR-11 + v1 extensions)"
 run = "npx tsc --noEmit -p packages/core-v2/tsconfig.json && npx tsc --noEmit -p tsconfig.json"

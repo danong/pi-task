@@ -42,15 +42,9 @@ import {
 import { LedgerStore } from "../ledger/store.ts";
 import type { TaskGateway } from "../contracts/index.ts";
 import type { TaskPlugin } from "../contracts/task-plugin.ts";
-import type {
-	CompiledContextArtifact,
-	ContextProvider,
-	ContextProviderFactory,
-} from "../contracts/context-provider.ts";
-import { createRawContextProvider } from "../context/raw-provider.ts";
-import { buildInitialContextQuery } from "../context/compiler.ts";
+import type { ContextAcquisitionFactory } from "../contracts/context-lifecycle.ts";
+import { rawContextAcquisitionFactory } from "../context/raw-provider.ts";
 import { assembleContext } from "../context/assembler.ts";
-import { contextItemsFromArtifact } from "../context/acquisition.ts";
 import { deriveInformationNeeds, planContext } from "../context/planner.ts";
 import { startExecutionEpoch } from "../context/epoch.ts";
 import type { ContextPlan } from "../contracts/context-lifecycle.ts";
@@ -105,8 +99,8 @@ export interface RunParallelOptions {
 	onEvent?: (workerIndex: number, event: SessionHostEvent) => void;
 	/** Single-task composition reuses this core without parallel identities. */
 	singleTask?: boolean;
-	/** Explicit context capability; raw is the default baseline. */
-	contextProviderFactory?: ContextProviderFactory;
+	/** Explicit acquisition/materialization capability; raw is the default. */
+	contextCapabilitiesFactory?: ContextAcquisitionFactory;
 	/** Optional user-state artifact store. Raw execution never requires it. */
 	contextArtifactStore?: ContextArtifactStore;
 	/** Canonical trace projection for context lifecycle evidence. */
@@ -265,45 +259,50 @@ async function runWithStore(
 	// Compile one bounded initial artifact from the validated task before any
 	// worker session is spawned. Index/retrieval failure is an explicit raw
 	// fallback, never a task failure.
-	const requestedFactory = options.contextProviderFactory;
-	const requestedIdentity = requestedFactory?.identity ?? {
-		id: "raw",
-		version: "1",
-	};
-	let contextProvider: ContextProvider;
-	let contextArtifact: CompiledContextArtifact;
-	let contextPlan: ContextPlan;
+	const requestedFactory =
+		options.contextCapabilitiesFactory ?? rawContextAcquisitionFactory;
+	const requestedIdentity = requestedFactory.identity;
+	let contextCapabilities = rawContextAcquisitionFactory.create({
+		root: options.projectDir,
+		sourceRevision: aggregateId,
+	});
+	let contextItems: Awaited<
+		ReturnType<typeof contextCapabilities.candidates.acquire>
+	> = [];
+	const contextGoal = parsed[0]?.goal ?? "task";
+	const contextRequirements = parsed.flatMap((item) => item.requirements);
+	const informationNeeds = deriveInformationNeeds({
+		goal: contextGoal,
+		requirements: contextRequirements,
+	}).needs;
 	try {
-		contextProvider = (
-			requestedFactory ?? {
-				identity: requestedIdentity,
-				create: createRawContextProvider,
-			}
-		).create({ root: options.projectDir, sourceRevision: aggregateId });
-		const query = buildInitialContextQuery(
-			parsed[0]?.goal ?? "task",
-			parsed.flatMap((item) => item.requirements),
-		);
-		contextArtifact = await contextProvider.compile({ query });
-	} catch (error) {
-		contextProvider = createRawContextProvider({
+		contextCapabilities = requestedFactory.create({
 			root: options.projectDir,
 			sourceRevision: aggregateId,
 		});
-		contextArtifact = await contextProvider.compile({ query: "" });
+		contextItems = await contextCapabilities.candidates.acquire({
+			root: options.projectDir,
+			sourceRevision: aggregateId,
+			needs: informationNeeds,
+		});
+	} catch (error) {
+		contextCapabilities = rawContextAcquisitionFactory.create({
+			root: options.projectDir,
+			sourceRevision: aggregateId,
+		});
+		contextItems = [];
 		options.onContextEvent?.({
 			type: "context.omitted",
-			provider: contextProvider.identity,
+			provider: contextCapabilities.identity,
 			detail: {
 				failureCode: "provider_failed",
 				requestedProvider: requestedIdentity.id,
 				requestedVersion: requestedIdentity.version,
-				fallbackProvider: contextProvider.identity.id,
+				fallbackProvider: contextCapabilities.identity.id,
 				message:
 					error instanceof Error
 						? error.message.slice(0, 256)
 						: String(error).slice(0, 256),
-				treeIdentity: contextArtifact.source.treeIdentity,
 				selectedCount: 0,
 				omittedCount: 0,
 				estimatedCharacters: 0,
@@ -311,40 +310,54 @@ async function runWithStore(
 			},
 		});
 	}
-	const contextGoal = parsed[0]?.goal ?? "task";
-	const contextRequirements = parsed.flatMap((item) => item.requirements);
-	const informationNeeds = deriveInformationNeeds({
+	const sourceRevision =
+		contextItems[0]?.provenance.sourceRevision ??
+		`unindexed:${contextCapabilities.identity.id}`;
+	const contextPlan = planContext({
 		goal: contextGoal,
 		requirements: contextRequirements,
-	}).needs;
-	contextPlan = planContext({
-		goal: contextGoal,
-		requirements: contextRequirements,
-		candidates: contextItemsFromArtifact(
-			contextArtifact,
-			contextProvider,
-			informationNeeds,
-		),
-		sourceRevision: contextArtifact.source.treeIdentity,
+		candidates: contextItems,
+		sourceRevision,
 		modelId: options.model,
 		toolSchemaIdentity: parsed
 			.map((task) => workerToolSchemaIdentity(task.requirements.length))
 			.join("|"),
-		mode: contextProvider.identity.id === "raw" ? "raw" : "managed",
+		mode: contextCapabilities.identity.id === "raw" ? "raw" : "managed",
 	});
+	// Compatibility-shaped evidence is ledger/trace metadata only; lifecycle
+	// decisions above use the explicit capabilities and ContextItems.
+	const contextProvider = { identity: contextCapabilities.identity };
+	const contextArtifact = {
+		source: { treeIdentity: sourceRevision, sourceRevision },
+		handles: contextPlan.selected,
+		omissions: {
+			count: contextPlan.omissions.length,
+			reasons: [...new Set(contextPlan.omissions.map((entry) => entry.reason))],
+		},
+		estimatedSize: {
+			characters: contextPlan.selected.reduce(
+				(sum, item) => sum + item.size.characters,
+				0,
+			),
+			tokens: contextPlan.selected.reduce(
+				(sum, item) => sum + item.size.tokens,
+				0,
+			),
+		},
+	};
 	let storedContextArtifactId: string | undefined;
 	let storedPlanId: string | undefined;
 	if (
-		contextProvider.identity.id !== "raw" &&
+		contextCapabilities.identity.id !== "raw" &&
 		options.contextArtifactStore !== undefined
 	) {
 		try {
-			const contextRef = options.contextArtifactStore.putJson(contextArtifact, {
+			const contextRef = options.contextArtifactStore.putJson(contextItems, {
 				namespace: "context",
 				kind: "context",
 				mediaType: "application/json",
 				sensitivity: "internal",
-				sourceRevision: contextArtifact.source.sourceRevision,
+				sourceRevision,
 			});
 			const planRef = options.contextArtifactStore.putJson(contextPlan, {
 				namespace: "plan",
@@ -365,8 +378,8 @@ async function runWithStore(
 						error instanceof Error
 							? error.message.slice(0, 256)
 							: String(error).slice(0, 256),
-					selectedCount: contextArtifact.handles.length,
-					omittedCount: contextArtifact.omissions.count,
+					selectedCount: contextPlan.selected.length,
+					omittedCount: contextPlan.omissions.length,
 				},
 			});
 		}
@@ -526,8 +539,8 @@ async function runWithStore(
 					parsed[i]!.requirements.length,
 				)}`,
 				requirementCount: parsed[i]!.requirements.length,
-				contextProvider,
-				contextFallbackProvider: createRawContextProvider({
+				contextCapabilities,
+				contextFallbackCapabilities: rawContextAcquisitionFactory.create({
 					root: options.projectDir,
 					sourceRevision: aggregateId,
 				}),
@@ -542,17 +555,13 @@ async function runWithStore(
 							fallbackProvider: event.fallbackProvider.id,
 							fallbackVersion: event.fallbackProvider.version,
 							message: event.error,
-							treeIdentity:
-								event.artifact?.source.treeIdentity ??
-								"unindexed:session-fallback",
-							selectedCount: event.artifact?.handles.length ?? 0,
-							omittedCount: event.artifact?.omissions.count ?? 0,
-							estimatedCharacters:
-								event.artifact?.estimatedSize.characters ?? 0,
-							estimatedTokens: event.artifact?.estimatedSize.tokens ?? 0,
+							treeIdentity: "unindexed:session-fallback",
+							selectedCount: 0,
+							omittedCount: 0,
+							estimatedCharacters: 0,
+							estimatedTokens: 0,
 						},
 					}),
-				initialContext: contextArtifact,
 				contextPlan,
 				contextEpoch: contextEpochs[i]!,
 				...(options.sessionTimeoutMs === undefined

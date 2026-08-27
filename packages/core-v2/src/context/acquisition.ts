@@ -5,16 +5,12 @@ import type {
 	ContextProvider,
 } from "../contracts/context-provider.ts";
 import type {
-	ContextAcquisitionCapabilities,
-	ContextCandidateProvider,
 	ContextItem,
 	ContextNeed,
 	ContextPlan,
 	ContextCacheCapabilities,
-	ContextMaterializationProvider,
 } from "../contracts/context-lifecycle.ts";
-import { contextItemFromReference, planContext } from "./planner.ts";
-import { assembleContext, type ContextAssemblyInput } from "./assembler.ts";
+import { planContext } from "./planner.ts";
 
 function matchingRequirementIds(
 	handle: ContextArtifactHandle,
@@ -32,7 +28,7 @@ function matchingRequirementIds(
 		.map((need) => need.requirementId);
 	return [...new Set(matches.length > 0 ? matches : ["goal"])].sort();
 }
-function itemFromHandle(
+export function contextItemFromHandle(
 	handle: ContextArtifactHandle,
 	provider: ContextProvider,
 	needs: readonly ContextNeed[] = [],
@@ -83,12 +79,11 @@ export function contextItemsFromArtifact(
 	needs: readonly ContextNeed[] = [],
 ): ContextItem[] {
 	return artifact.handles.map((handle) =>
-		itemFromHandle(handle, provider, needs),
+		contextItemFromHandle(handle, provider, needs),
 	);
 }
 export interface ContextLifecycleBuildInput {
 	provider: ContextProvider;
-	root?: string;
 	sourceRevision: string;
 	query: string;
 	goal?: string;
@@ -122,46 +117,4 @@ export async function planFromAcquisition(
 	};
 	const plan = planContext(planningInput);
 	return { artifact, plan };
-}
-export function acquisitionCapability(
-	provider: ContextProvider,
-): ContextCandidateProvider {
-	return {
-		identity: provider.identity,
-		acquire: async (input: {
-			root: string;
-			sourceRevision: string;
-			needs: readonly ContextNeed[];
-		}) =>
-			contextItemsFromArtifact(
-				await provider.query({
-					query: input.needs.map((need) => need.query).join("\n"),
-				}),
-				provider,
-				input.needs,
-			),
-	};
-}
-export function materializationCapability(
-	provider: ContextProvider,
-): ContextMaterializationProvider {
-	return {
-		identity: provider.identity,
-		materialize: async (input) =>
-			(await provider.resolve(input.handles)).map((handle) =>
-				itemFromHandle(handle, provider, [], input.requirementIds ?? ["goal"]),
-			),
-	};
-}
-export function acquisitionCapabilities(
-	provider: ContextProvider,
-): ContextAcquisitionCapabilities {
-	return {
-		identity: provider.identity,
-		candidates: acquisitionCapability(provider),
-		materializer: materializationCapability(provider),
-	};
-}
-export function assembleAcquiredContext(input: ContextAssemblyInput) {
-	return assembleContext(input);
 }

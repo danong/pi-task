@@ -334,27 +334,83 @@ export const ContextLifecycleArtifactSchema = z.union([
 	ExecutionEpochSchema,
 ]);
 
+export const ContextAcquisitionRequestSchema = z
+	.object({
+		root: z.string().min(1).max(4_096),
+		sourceRevision: z.string().min(1).max(256),
+		needs: z.array(ContextNeedSchema).max(CONTEXT_MAX_REQUIREMENTS),
+	})
+	.strict();
+export type ContextAcquisitionRequest = z.infer<
+	typeof ContextAcquisitionRequestSchema
+>;
+
+export const ContextMaterializationRequestSchema = z
+	.object({
+		handles: z.array(identity).max(CONTEXT_MAX_ITEMS),
+		requirementIds: z
+			.array(z.string().min(1).max(128))
+			.max(CONTEXT_MAX_REQUIREMENTS)
+			.optional(),
+	})
+	.strict();
+export type ContextMaterializationRequest = z.infer<
+	typeof ContextMaterializationRequestSchema
+>;
+
+/** Final provider boundary: the kernel accepts only bounded, schema-valid
+ * lifecycle items. Providers cannot return prompt text through this seam. */
+export const ContextItemListSchema = z
+	.array(ContextItemSchema)
+	.max(CONTEXT_MAX_ITEMS);
+export type ContextItemList = z.infer<typeof ContextItemListSchema>;
+
+export const ContextAcquisitionCapabilitiesSchema = z
+	.object({
+		identity: z.object({ id: identity, version: boundedText(128) }).strict(),
+		candidates: z
+			.object({
+				identity: z
+					.object({ id: identity, version: boundedText(128) })
+					.strict(),
+			})
+			.passthrough(),
+		materializer: z
+			.object({
+				identity: z
+					.object({ id: identity, version: boundedText(128) })
+					.strict(),
+			})
+			.passthrough(),
+	})
+	.passthrough();
+
 export interface ContextCandidateProvider {
 	readonly identity: { id: string; version: string };
-	acquire(input: {
-		root: string;
-		sourceRevision: string;
-		needs: readonly ContextNeed[];
-	}): Promise<readonly ContextItem[]> | readonly ContextItem[];
+	acquire(
+		input: ContextAcquisitionRequest,
+	): Promise<readonly ContextItem[]> | readonly ContextItem[];
 }
 
 export interface ContextMaterializationProvider {
 	readonly identity: { id: string; version: string };
-	materialize(input: {
-		handles: readonly string[];
-		requirementIds?: readonly string[];
-	}): Promise<readonly ContextItem[]> | readonly ContextItem[];
+	materialize(
+		input: ContextMaterializationRequest,
+	): Promise<readonly ContextItem[]> | readonly ContextItem[];
 }
 
 export interface ContextAcquisitionCapabilities {
 	readonly identity: { id: string; version: string };
 	readonly candidates: ContextCandidateProvider;
 	readonly materializer: ContextMaterializationProvider;
+}
+
+export interface ContextAcquisitionFactory {
+	readonly identity: { id: string; version: string };
+	create(options: {
+		root: string;
+		sourceRevision: string;
+	}): ContextAcquisitionCapabilities;
 }
 
 export function isRestricted(sensitivity: ContextSensitivity): boolean {

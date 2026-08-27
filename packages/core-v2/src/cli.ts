@@ -40,6 +40,7 @@ import { LedgerStore } from "./ledger/store.ts";
 import type { SessionHost, SessionHostEvent } from "./sessions/host.ts";
 import type { TaskLifecycleEvent } from "./contracts/gateway-events.ts";
 import type { ContextProviderFactory } from "./contracts/context-provider.ts";
+import { acquisitionFactoryFromLegacy } from "./context/provider-adapter.ts";
 import { rawContextProviderFactory } from "./context/raw-provider.ts";
 import { ContextArtifactStore } from "./context/artifact-store.ts";
 import type { ContextEvidenceEvent } from "./daemon/parallel.ts";
@@ -589,7 +590,9 @@ export async function runCli(
 				artifactsDir: paths.artifactsDir,
 				dbPath: paths.dbPath,
 				model: args.model,
-				contextProviderFactory: selectedContextFactory,
+				contextCapabilitiesFactory: acquisitionFactoryFromLegacy(
+					selectedContextFactory,
+				),
 				...(contextArtifactStore === undefined ? {} : { contextArtifactStore }),
 				onContextEvent: (event: ContextEvidenceEvent) =>
 					trace!.record({

@@ -224,7 +224,7 @@ export async function runTests(): Promise<void> {
 			"initial injection contains no source bodies",
 		);
 		check(
-			symbol.captured[0]?.contextProvider?.identity.id === "symbol-tree",
+			symbol.captured[0]?.contextCapabilities?.identity.id === "symbol-tree",
 			"selected capability and context tool reach the session host",
 		);
 		check(
@@ -342,7 +342,7 @@ export async function runTests(): Promise<void> {
 			`provider failure degrades without failing correct work (${fallback.result.error ?? ""}; ${JSON.stringify(fallback.result.receipt)})`,
 		);
 		check(
-			fallback.captured[0]?.contextProvider?.identity.id === "raw",
+			fallback.captured[0]?.contextCapabilities?.identity.id === "raw",
 			"failed provider is replaced by raw capability",
 		);
 		const fallbackTrace = TraceArtifactSchema.parse(

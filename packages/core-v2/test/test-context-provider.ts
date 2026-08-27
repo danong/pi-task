@@ -23,10 +23,9 @@ import {
 	createRawContextProvider,
 	createSymbolTreeContextProvider,
 } from "../src/context/providers.ts";
-import {
-	acquisitionCapabilities,
-	planFromAcquisition,
-} from "../src/context/acquisition.ts";
+import { planFromAcquisition } from "../src/context/acquisition.ts";
+import { capabilitiesFromLegacyProvider } from "../src/context/provider-adapter.ts";
+import { createRawContextCapabilities } from "../src/context/raw-provider.ts";
 import { deriveInformationNeeds } from "../src/context/planner.ts";
 import { makeContextTool } from "../src/sessions/context-tool.ts";
 
@@ -143,7 +142,7 @@ export async function runTests(): Promise<void> {
 			firstPlan.plan.id === retryPlan.plan.id,
 			"unchanged content produces cache-affine plans across attempt identities",
 		);
-		const capabilities = acquisitionCapabilities(symbol);
+		const capabilities = capabilitiesFromLegacyProvider(symbol);
 		const needs = deriveInformationNeeds({
 			goal: "Create the widget",
 			requirements: ["use createWidget"],
@@ -180,8 +179,11 @@ export async function runTests(): Promise<void> {
 			"prompt injection is body-free and bounded",
 		);
 
-		let fallbackEvidence:
-			{ fallbackProvider: string; artifact: string | undefined } | undefined;
+		const rawCapabilities = createRawContextCapabilities({
+			root,
+			sourceRevision: "fixture-1",
+		});
+		let fallbackEvidence: { fallbackProvider: string } | undefined;
 		const failingProvider: ContextProvider = {
 			identity: symbol.identity,
 			compile: symbol.compile.bind(symbol),
@@ -190,15 +192,15 @@ export async function runTests(): Promise<void> {
 			},
 			resolve: symbol.resolve.bind(symbol),
 		};
-		const fallbackTool = makeContextTool(failingProvider, {
-			fallbackProvider: raw,
-			onFallback: (event) => {
-				fallbackEvidence = {
-					fallbackProvider: event.fallbackProvider.id,
-					artifact: event.artifact?.provider.id,
-				};
+		const fallbackTool = makeContextTool(
+			capabilitiesFromLegacyProvider(failingProvider),
+			{
+				fallbackProvider: rawCapabilities,
+				onFallback: (event) => {
+					fallbackEvidence = { fallbackProvider: event.fallbackProvider.id };
+				},
 			},
-		});
+		);
 		const fallbackResult = await fallbackTool.execute(
 			"fallback-query",
 			{ action: "query", query: "createWidget" },
@@ -208,13 +210,11 @@ export async function runTests(): Promise<void> {
 		);
 		check(
 			(fallbackResult.details as { status?: string }).status === "fallback" &&
-				fallbackEvidence?.fallbackProvider === "raw" &&
-				fallbackEvidence.artifact === "raw",
+				fallbackEvidence?.fallbackProvider === "raw",
 			"async retrieval failure returns bounded raw fallback and evidence",
 		);
 
-		let resolveFallback:
-			{ fallbackProvider: string; artifact: string | undefined } | undefined;
+		let resolveFallback: { fallbackProvider: string } | undefined;
 		const resolveFailingProvider: ContextProvider = {
 			identity: { id: "broken-index", version: "1" },
 			compile: symbol.compile.bind(symbol),
@@ -223,15 +223,15 @@ export async function runTests(): Promise<void> {
 				throw new Error("index unavailable");
 			},
 		};
-		const resolveFallbackTool = makeContextTool(resolveFailingProvider, {
-			fallbackProvider: raw,
-			onFallback: (event) => {
-				resolveFallback = {
-					fallbackProvider: event.fallbackProvider.id,
-					artifact: event.artifact?.provider.id,
-				};
+		const resolveFallbackTool = makeContextTool(
+			capabilitiesFromLegacyProvider(resolveFailingProvider),
+			{
+				fallbackProvider: rawCapabilities,
+				onFallback: (event) => {
+					resolveFallback = { fallbackProvider: event.fallbackProvider.id };
+				},
 			},
-		});
+		);
 		const resolvedAfterFailure = await resolveFallbackTool.execute(
 			"resolve-fallback",
 			{ action: "resolve", handles: ["h-0123456789abcdef"] },
@@ -244,7 +244,7 @@ export async function runTests(): Promise<void> {
 				?.text ?? "";
 		let resolvedFallbackArtifact: {
 			provider?: { id?: string };
-			budget?: unknown;
+			items?: unknown[];
 		};
 		try {
 			resolvedFallbackArtifact = JSON.parse(
@@ -257,19 +257,21 @@ export async function runTests(): Promise<void> {
 			(resolvedAfterFailure.details as { status?: string }).status ===
 				"fallback" &&
 				resolvedFallbackArtifact.provider?.id === "raw" &&
-				resolvedFallbackArtifact.budget !== undefined &&
-				resolveFallback?.fallbackProvider === "raw" &&
-				resolveFallback.artifact === "raw",
-			"handle resolution failure returns a raw artifact and records actual fallback",
+				resolvedFallbackArtifact.items?.length === 0 &&
+				resolveFallback?.fallbackProvider === "raw",
+			"handle resolution failure returns empty raw capabilities and records actual fallback",
 		);
 
 		let invalidFallbackNotified = false;
-		const invalidTool = makeContextTool(symbol, {
-			fallbackProvider: raw,
-			onFallback: () => {
-				invalidFallbackNotified = true;
+		const invalidTool = makeContextTool(
+			capabilitiesFromLegacyProvider(symbol),
+			{
+				fallbackProvider: rawCapabilities,
+				onFallback: () => {
+					invalidFallbackNotified = true;
+				},
 			},
-		});
+		);
 		await invalidTool.execute(
 			"resolve-invalid",
 			{ action: "resolve", handles: ["../secret"] },
@@ -292,7 +294,9 @@ export async function runTests(): Promise<void> {
 			root: largeRoot,
 			sourceRevision: "fixture-large",
 		});
-		const largeTool = makeContextTool(largeSymbol);
+		const largeTool = makeContextTool(
+			capabilitiesFromLegacyProvider(largeSymbol),
+		);
 		const largeQuery = await largeTool.execute(
 			"large-query",
 			{ action: "query", query: "widget" },
@@ -304,23 +308,22 @@ export async function runTests(): Promise<void> {
 			(largeQuery.content[0] as { text?: string } | undefined)?.text ?? "";
 		try {
 			const largeArtifact = JSON.parse(largeQueryText) as {
-				budget?: { maxCharacters?: number };
-				handles?: Array<{ provenance?: { treeIdentity?: string } }>;
+				provider?: { id?: string };
+				items?: Array<{ provenance?: { sourceRevision?: string } }>;
 			};
 			check(
-				largeArtifact.budget?.maxCharacters ===
-					DEFAULT_CONTEXT_BUDGET.maxCharacters &&
-					(largeArtifact.handles?.length ?? 0) > 0 &&
-					largeArtifact.handles?.every(
-						(handle) => handle.provenance?.treeIdentity !== undefined,
+				largeArtifact.provider?.id === "symbol-tree" &&
+					(largeArtifact.items?.length ?? 0) > 0 &&
+					largeArtifact.items?.every(
+						(item) => item.provenance?.sourceRevision !== undefined,
 					) === true,
-				"large context query remains valid JSON with budget and provenance",
+				"large context query remains valid bounded JSON with provenance",
 			);
 		} catch {
 			errors.push("large context query must return valid JSON");
 		}
 
-		const tool = makeContextTool(symbol);
+		const tool = makeContextTool(capabilitiesFromLegacyProvider(symbol));
 		const queried = await tool.execute(
 			"query-1",
 			{ action: "query", query: "createWidget", max_results: 2 },

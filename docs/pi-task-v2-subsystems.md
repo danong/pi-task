@@ -353,11 +353,19 @@ volume, selected handles, stored artifacts, cache-read usage when measured,
 epoch activity, reads, repeated reads, turns, cost availability, and acceptance
 while retaining neutral and negative outcomes.
 
-M4 has not established a real-model advantage or adopted symbol-tree as a
-default. Checkpoint persistence and epoch transitions are available as kernel
-primitives; M5 owns their parent/child continuation workflow and self-hosting
-proof. The old `ContextProvider` shape remains only as the current acquisition
-adapter and can be removed after callers migrate to the lifecycle capabilities.
+Kernel, session, and context-tool code now consume explicit acquisition and
+materialization capabilities. The old `ContextProvider` shape is confined to
+the CLI/provider compatibility adapter and is covered by malformed-output and
+deletion tests; it can be removed without changing kernel execution after the
+external edge migrates.
+
+M4 has not established a general real-model advantage or adopted symbol-tree as
+a default. A minimal matched measured smoke and its neutral report live under
+[`packages/core-v2/test/fixtures/m4-proof/`](../packages/core-v2/test/fixtures/m4-proof/);
+`mise run m4-proof -- <evidence.json> [report.md]` rejects unmatched, dry-only,
+or model/provider-mismatched proof input. Checkpoint persistence and epoch
+transitions are kernel primitives; M5 owns their parent/child continuation
+workflow and self-hosting proof.
 
 ### M5 status
 

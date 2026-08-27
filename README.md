@@ -129,9 +129,14 @@ state is written into the repository. `mise run context-eval` remains a zero-
 model dry plan; `mise run context-report -- <jsonl>` reports canonical evidence
 including artifact/epoch activity and actual cache reads when available.
 
-M4 makes no real-model quality or cost claim and does not adopt symbol-tree as
-the default. M5 will use these checkpoint/epoch contracts for typed sequential
-children and a usable v2 self-hosting loop. M6 scope remains intentionally open.
+Kernel/session/tool code now consumes explicit acquisition/materialization
+capabilities; legacy provider translation is confined to the CLI/provider edge.
+A minimal matched Luna smoke is retained under the core-v2 M4 proof fixtures
+and validated with `mise run m4-proof -- <evidence.json> [report.md]`. It records
+measured accepted runs without claiming a general quality or cost advantage or
+adopting symbol-tree as the default. M5 will use the checkpoint/epoch contracts
+for typed sequential children and a usable v2 self-hosting loop. M6 scope
+remains intentionally open.
 
 The repo ships `.pi/settings.json` registering itself as a project package
 (`"packages": [".."]`), so any trusted checkout auto-installs — the `task`

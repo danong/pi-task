@@ -343,11 +343,18 @@ activity, acceptance, unavailable measurements, and neutral or negative
 outcomes.
 
 This status means the control plane and its deletion/failure paths pass
-hermetic conformance. It does **not** mean symbol-tree is adopted, that context
-management improves quality or cost, or that interruption continuation is a
-user workflow. Cheap real-model comparison remains deliberately pending; M5
-will consume the checkpoint/epoch contracts for durable sequential
-continuation and self-hosting.
+hermetic conformance. Kernel/session/tool code consumes explicit acquisition
+and materialization capabilities; the old monolithic provider shape is confined
+to a removable CLI/provider adapter.
+
+A minimal matched Luna smoke is recorded under
+[`packages/core-v2/test/fixtures/m4-proof/`](../packages/core-v2/test/fixtures/m4-proof/).
+Both raw and symbol-tree runs shipped with measured usage; the neutral report
+correctly makes no advantage claim. Validate future matched evidence with
+`mise run m4-proof -- <evidence.json> [report.md]`. This smoke does **not** adopt
+symbol-tree, establish general quality/cost improvement, or provide a user
+continuation workflow. M5 will consume the checkpoint/epoch contracts for
+durable sequential continuation and self-hosting.
 
 ### M5 — sequential composition and self-hosting
 

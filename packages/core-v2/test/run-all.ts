@@ -14,6 +14,7 @@ import { runTests as runBundleTests } from "./test-bundle.ts";
 import { runTests as runContractTests } from "./test-contracts.ts";
 import { runTests as runContextLifecycleContractTests } from "./test-context-lifecycle-contracts.ts";
 import { runTests as runContextArtifactStoreTests } from "./test-context-artifact-store.ts";
+import { runTests as runContextAcquisitionTests } from "./test-context-acquisition.ts";
 import { runTests as runContextPlannerTests } from "./test-context-planner.ts";
 import { runTests as runContextAssemblerTests } from "./test-context-assembler.ts";
 import { runTests as runContextCheckpointTests } from "./test-context-checkpoint.ts";
@@ -23,6 +24,7 @@ import { runTests as runContextProviderTests } from "./test-context-provider.ts"
 import { runTests as runContextToolTests } from "./test-context-tool.ts";
 import { runTests as runContextIntegrationTests } from "./test-context-integration.ts";
 import { runTests as runContextEvalTests } from "./test-context-eval.ts";
+import { runTests as runM4ProofTests } from "./test-m4-proof.ts";
 import { runTests as runContinuationTests } from "./test-continuation.ts";
 import { runTests as runCliTests } from "./test-cli.ts";
 import { runTests as runDaemonTests } from "./test-daemon.ts";
@@ -59,6 +61,7 @@ const SUITES: Array<{ name: string; run: () => Promise<void> }> = [
 		run: runContextLifecycleContractTests,
 	},
 	{ name: "context-artifact-store", run: runContextArtifactStoreTests },
+	{ name: "context-acquisition", run: runContextAcquisitionTests },
 	{ name: "context-planner", run: runContextPlannerTests },
 	{ name: "context-assembler", run: runContextAssemblerTests },
 	{ name: "context-checkpoint", run: runContextCheckpointTests },
@@ -68,6 +71,7 @@ const SUITES: Array<{ name: string; run: () => Promise<void> }> = [
 	{ name: "context-tool", run: runContextToolTests },
 	{ name: "context-integration", run: runContextIntegrationTests },
 	{ name: "context-eval", run: runContextEvalTests },
+	{ name: "m4-proof", run: runM4ProofTests },
 	{ name: "bundle", run: runBundleTests },
 	{ name: "continuation", run: runContinuationTests },
 	{ name: "cli", run: runCliTests },

@@ -5,7 +5,11 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import type { ContextProvider } from "../src/contracts/context-provider.ts";
-import { createRawContextProvider } from "../src/context/raw-provider.ts";
+import {
+	createRawContextCapabilities,
+	createRawContextProvider,
+} from "../src/context/raw-provider.ts";
+import { capabilitiesFromLegacyProvider } from "../src/context/provider-adapter.ts";
 import { makeContextTool } from "../src/sessions/context-tool.ts";
 
 function textOf(result: {
@@ -55,8 +59,13 @@ export async function runTests(): Promise<void> {
 				] as never,
 		};
 		let fallbacks = 0;
-		const tool = makeContextTool(malicious, {
-			fallbackProvider: raw,
+		const tool = makeContextTool(capabilitiesFromLegacyProvider(malicious), {
+			fallbackProvider: createRawContextCapabilities({
+				root,
+				sourceRevision: "rev",
+			}),
+			root,
+			sourceRevision: "rev",
 			onFallback: () => {
 				fallbacks += 1;
 			},
@@ -81,10 +90,16 @@ export async function runTests(): Promise<void> {
 			undefined as never,
 		);
 		check(
-			(resolve.details as { status?: string }).status === "fallback" &&
-				!textOf(resolve).includes("SOURCE_BODY_SENTINEL") &&
-				fallbacks === 2,
-			"undeclared materialization fields are rejected before tool output",
+			(resolve.details as { status?: string }).status === "fallback",
+			`undeclared materialization falls back (${JSON.stringify(resolve.details)})`,
+		);
+		check(
+			!textOf(resolve).includes("SOURCE_BODY_SENTINEL"),
+			"undeclared materialization never reaches tool output",
+		);
+		check(
+			fallbacks === 2,
+			`both malformed boundaries emit fallback evidence (${fallbacks})`,
 		);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
