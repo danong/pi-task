@@ -39,6 +39,25 @@ export function startExecutionEpoch(input: StartEpochInput): ExecutionEpoch {
 			input.tailBudgetTokens ?? plan.budgets.window.reserveTokens,
 	});
 }
+
+/** Start a child epoch from a durable checkpoint without inventing an initial plan. */
+export function startResumedExecutionEpoch(
+	input: StartEpochInput & { checkpoint: WorkingCheckpoint },
+): ExecutionEpoch {
+	const plan = input.plan;
+	return epoch({
+		version: 1,
+		parentId: input.checkpoint.epochId,
+		role: input.role,
+		modelId: input.modelId,
+		planId: plan.id,
+		checkpointId: input.checkpoint.id,
+		status: "active",
+		transition: "retry",
+		tailBudgetTokens:
+			input.tailBudgetTokens ?? plan.budgets.window.reserveTokens,
+	});
+}
 export interface EpochTransitionInput {
 	reason: EpochTransition;
 	modelId?: string;

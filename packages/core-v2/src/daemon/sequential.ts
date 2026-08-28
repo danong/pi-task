@@ -22,6 +22,7 @@ import {
 import {
 	ImmutableArtifactReferenceSchema,
 	ContextPlanSchema,
+	type ContextPlan,
 	type ImmutableArtifactReference,
 } from "../contracts/context-lifecycle.ts";
 import type { TaskLifecycleEvent } from "../contracts/gateway-events.ts";
@@ -583,7 +584,7 @@ export async function resumeSequentialChild(edgeId: string, runtime: SequentialR
 		}
 		if (edge.status === "claimed") return blockedResult(edge, "incompatible", parentReceipt);
 
-		let handoff: ChildHandoff; let checkpoint: ReturnType<typeof loadWorkingCheckpoint>; let childSpecMarkdown: string; let plan: unknown; let continuationRow: NonNullable<ReturnType<LedgerStore["getWorkspaceContinuation"]>>;
+		let handoff: ChildHandoff; let checkpoint: ReturnType<typeof loadWorkingCheckpoint>; let childSpecMarkdown: string; let plan: ContextPlan; let continuationRow: NonNullable<ReturnType<LedgerStore["getWorkspaceContinuation"]>>;
 		try {
 			if (config.edgeId !== edgeId || config.modelIdentity !== runtime.model)
 				throw new DurableDependencyError("incompatible", "edge ingress configuration does not match runtime model");
@@ -679,7 +680,9 @@ export async function resumeSequentialChild(edgeId: string, runtime: SequentialR
 				...(runtime.contextArtifactStore === undefined ? {} : { contextArtifactStore: runtime.contextArtifactStore }),
 				...(runtime.onContextEvent === undefined ? {} : { onContextEvent: runtime.onContextEvent }),
 				...(runtime.onEvent === undefined ? {} : { onEvent: runtime.onEvent }),
-				taskId: childTaskId, reuseExistingTask: true, workspace: resumed, resumeCheckpoint: checkpoint!, childHandoff: handoff, retainWorkspace: true, deferSuccessfulTerminal: true, sessionAttemptId,
+				taskId: childTaskId, reuseExistingTask: true, workspace: resumed,
+				contextInput: { kind: "validated-resume", plan, checkpoint: checkpoint! },
+				childHandoff: handoff, retainWorkspace: true, deferSuccessfulTerminal: true, sessionAttemptId,
 			});
 		} catch (error) {
 			return await preserveInterruptedChild(error instanceof Error ? error.name : "session_error");

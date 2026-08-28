@@ -46,8 +46,16 @@ import type { ContextAcquisitionFactory } from "../contracts/context-lifecycle.t
 import { rawContextAcquisitionFactory } from "../context/raw-provider.ts";
 import { assembleContext } from "../context/assembler.ts";
 import { deriveInformationNeeds, planContext } from "../context/planner.ts";
-import { startExecutionEpoch } from "../context/epoch.ts";
-import type { ContextPlan, WorkingCheckpoint } from "../contracts/context-lifecycle.ts";
+import {
+	startExecutionEpoch,
+	startResumedExecutionEpoch,
+} from "../context/epoch.ts";
+import {
+	ContextPlanSchema,
+	WorkingCheckpointSchema,
+	type ContextPlan,
+	type WorkingCheckpoint,
+} from "../contracts/context-lifecycle.ts";
 import type { ChildHandoff } from "../contracts/payloads.ts";
 import { serializeForPrompt } from "../contracts/serialize.ts";
 import { ChildHandoffSchema } from "../contracts/payloads.ts";
@@ -77,6 +85,20 @@ import {
 	sumUsage,
 	type UsageSnapshot,
 } from "./task-runner.ts";
+
+export interface ValidatedResumeInput {
+	/** The only non-initial execution form accepted by this pipeline. */
+	readonly kind: "validated-resume";
+	/** Already loaded and validated durable context plan. */
+	readonly plan: ContextPlan;
+	/** Already loaded and validated durable working checkpoint. */
+	readonly checkpoint: WorkingCheckpoint;
+}
+
+/** Context execution is ordinary unless this explicit durable-resume form is supplied. */
+export type ContextExecutionInput =
+	| { readonly kind: "new-task" }
+	| ValidatedResumeInput;
 
 export interface RunParallelOptions {
 	/** One spec markdown per worker (self-contained, per contract §5.4). */
@@ -119,8 +141,8 @@ export interface RunParallelOptions {
 	deferSuccessfulTerminal?: boolean;
 	/** Distinguishes repeated sessions for one durable resumable task. */
 	sessionAttemptId?: string;
-	/** New child epoch references the revalidated durable checkpoint. */
-	resumeCheckpoint?: WorkingCheckpoint;
+	/** Shared execution selector; omit it for the unchanged new-task path. */
+	contextInput?: ContextExecutionInput;
 	/** Already revalidated bounded continuation state, appended at session ingress. */
 	childHandoff?: ChildHandoff;
 	/** Explicit acquisition/materialization capability; raw is the default. */
@@ -155,6 +177,21 @@ interface WorkerObservation {
 function attemptNumberOf(taskId: string): number {
 	const m = /-a(\d+)$/.exec(taskId);
 	return m?.[1] ? Number(m[1]) : 1;
+}
+
+function validateResumeInput(
+	input: ValidatedResumeInput,
+	modelId: string,
+): ValidatedResumeInput {
+	const plan = ContextPlanSchema.parse(input.plan);
+	const checkpoint = WorkingCheckpointSchema.parse(input.checkpoint);
+	if (
+		plan.cache.modelId !== modelId ||
+		plan.sourceRevision !== checkpoint.workspaceRevision ||
+		checkpoint.plan.sourceRevision !== plan.sourceRevision
+	)
+		throw new Error("validated resume plan, checkpoint, model, or revision mismatch");
+	return { kind: "validated-resume", plan, checkpoint };
 }
 
 /** Receipt builder shared by every outcome path; usage comes pre-summed
@@ -286,74 +323,100 @@ async function runWithStore(
 	}
 	store.setTaskStatus(aggregateId, "executing");
 
-	// Compile one bounded initial artifact from the validated task before any
-	// worker session is spawned. Index/retrieval failure is an explicit raw
-	// fallback, never a task failure.
+	const validatedResume =
+		options.contextInput?.kind === "validated-resume"
+			? validateResumeInput(options.contextInput, options.model)
+			: undefined;
 	const requestedFactory =
 		options.contextCapabilitiesFactory ?? rawContextAcquisitionFactory;
 	const requestedIdentity = requestedFactory.identity;
 	let contextCapabilities = rawContextAcquisitionFactory.create({
 		root: options.projectDir,
-		sourceRevision: aggregateId,
+		sourceRevision: validatedResume?.checkpoint.workspaceRevision ?? aggregateId,
 	});
 	let contextItems: Awaited<
 		ReturnType<typeof contextCapabilities.candidates.acquire>
 	> = [];
-	const contextGoal = parsed[0]?.goal ?? "task";
-	const contextRequirements = parsed.flatMap((item) => item.requirements);
-	const informationNeeds = deriveInformationNeeds({
-		goal: contextGoal,
-		requirements: contextRequirements,
-	}).needs;
-	try {
-		contextCapabilities = requestedFactory.create({
-			root: options.projectDir,
-			sourceRevision: aggregateId,
-		});
-		contextItems = await contextCapabilities.candidates.acquire({
-			root: options.projectDir,
-			sourceRevision: aggregateId,
-			needs: informationNeeds,
-		});
-	} catch (error) {
-		contextCapabilities = rawContextAcquisitionFactory.create({
-			root: options.projectDir,
-			sourceRevision: aggregateId,
-		});
-		contextItems = [];
-		options.onContextEvent?.({
-			type: "context.omitted",
-			provider: contextCapabilities.identity,
-			detail: {
-				failureCode: "provider_failed",
-				requestedProvider: requestedIdentity.id,
-				requestedVersion: requestedIdentity.version,
-				fallbackProvider: contextCapabilities.identity.id,
-				message:
-					error instanceof Error
-						? error.message.slice(0, 256)
-						: String(error).slice(0, 256),
-				selectedCount: 0,
-				omittedCount: 0,
-				estimatedCharacters: 0,
-				estimatedTokens: 0,
-			},
+	let sourceRevision: string;
+	let contextPlan: ContextPlan;
+	if (validatedResume !== undefined) {
+		// A resumed child is admitted with the exact durable plan and checkpoint
+		// validated by sequential.ts. Creating a capability is only wiring the
+		// session tool; no candidate acquisition or planning is allowed here.
+		try {
+			contextCapabilities = requestedFactory.create({
+				root: options.projectDir,
+				sourceRevision: validatedResume.checkpoint.workspaceRevision,
+			});
+		} catch {
+			contextCapabilities = rawContextAcquisitionFactory.create({
+				root: options.projectDir,
+				sourceRevision: validatedResume.checkpoint.workspaceRevision,
+			});
+		}
+		contextPlan = validatedResume.plan;
+		contextItems = contextPlan.candidates;
+		sourceRevision = contextPlan.sourceRevision;
+	} else {
+		// Compile one bounded initial artifact from the validated task before any
+		// worker session is spawned. Index/retrieval failure is an explicit raw
+		// fallback, never a task failure.
+		const contextGoal = parsed[0]?.goal ?? "task";
+		const contextRequirements = parsed.flatMap((item) => item.requirements);
+		const informationNeeds = deriveInformationNeeds({
+			goal: contextGoal,
+			requirements: contextRequirements,
+		}).needs;
+		try {
+			contextCapabilities = requestedFactory.create({
+				root: options.projectDir,
+				sourceRevision: aggregateId,
+			});
+			contextItems = await contextCapabilities.candidates.acquire({
+				root: options.projectDir,
+				sourceRevision: aggregateId,
+				needs: informationNeeds,
+			});
+		} catch (error) {
+			contextCapabilities = rawContextAcquisitionFactory.create({
+				root: options.projectDir,
+				sourceRevision: aggregateId,
+			});
+			contextItems = [];
+			options.onContextEvent?.({
+				type: "context.omitted",
+				provider: contextCapabilities.identity,
+				detail: {
+					failureCode: "provider_failed",
+					requestedProvider: requestedIdentity.id,
+					requestedVersion: requestedIdentity.version,
+					fallbackProvider: contextCapabilities.identity.id,
+					message:
+						error instanceof Error
+							? error.message.slice(0, 256)
+							: String(error).slice(0, 256),
+					selectedCount: 0,
+					omittedCount: 0,
+					estimatedCharacters: 0,
+					estimatedTokens: 0,
+				},
+			});
+		}
+		sourceRevision =
+			contextItems[0]?.provenance.sourceRevision ??
+			`unindexed:${contextCapabilities.identity.id}`;
+		contextPlan = planContext({
+			goal: contextGoal,
+			requirements: contextRequirements,
+			candidates: contextItems,
+			sourceRevision,
+			modelId: options.model,
+			toolSchemaIdentity: parsed
+				.map((task) => workerToolSchemaIdentity(task.requirements.length))
+				.join("|"),
+			mode: contextCapabilities.identity.id === "raw" ? "raw" : "managed",
 		});
 	}
-	const sourceRevision =
-		contextItems[0]?.provenance.sourceRevision ??
-		`unindexed:${contextCapabilities.identity.id}`;
-	const contextPlan = planContext({
-		goal: contextGoal,
-		requirements: contextRequirements,
-		candidates: contextItems,
-		sourceRevision,
-		modelId: options.model,
-		toolSchemaIdentity: parsed
-			.map((task) => workerToolSchemaIdentity(task.requirements.length))
-			.join("|"),
-		mode: contextCapabilities.identity.id === "raw" ? "raw" : "managed",
-	});
 	// Compatibility-shaped evidence is ledger/trace metadata only; lifecycle
 	// decisions above use the explicit capabilities and ContextItems.
 	const contextProvider = { identity: contextCapabilities.identity };
@@ -378,6 +441,7 @@ async function runWithStore(
 	let storedContextArtifactId: string | undefined;
 	let storedPlanId: string | undefined;
 	if (
+		validatedResume === undefined &&
 		contextCapabilities.identity.id !== "raw" &&
 		options.contextArtifactStore !== undefined
 	) {
@@ -481,7 +545,12 @@ async function runWithStore(
 			estimatedTokens: contextArtifact.estimatedSize.tokens,
 		},
 	});
-	const contextPrompt = assembleContext({ plan: contextPlan }).prompt;
+	const contextPrompt = assembleContext({
+		plan: contextPlan,
+		...(validatedResume === undefined
+			? {}
+			: { checkpoint: validatedResume.checkpoint }),
+	}).prompt;
 	const contexts: WorkspaceContext[] = [];
 	for (let i = 0; i < options.subTasks.length; i += 1) {
 		if (!singleTask) {
@@ -551,12 +620,18 @@ async function runWithStore(
 		watchdogAbort: undefined,
 	}));
 	const contextEpochs = contexts.map((_context, index) =>
-		startExecutionEpoch({
-			role: `worker-${index}`,
-			modelId: options.model,
-			plan: contextPlan,
-			...(options.resumeCheckpoint === undefined ? {} : { checkpoint: options.resumeCheckpoint }),
-		}),
+		validatedResume === undefined
+			? startExecutionEpoch({
+					role: `worker-${index}`,
+					modelId: options.model,
+					plan: contextPlan,
+				})
+			: startResumedExecutionEpoch({
+					role: `worker-${index}`,
+					modelId: options.model,
+					plan: contextPlan,
+					checkpoint: validatedResume.checkpoint,
+				}),
 	);
 	for (const epoch of contextEpochs) {
 		options.onContextEvent?.({

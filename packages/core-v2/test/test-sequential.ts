@@ -8,6 +8,7 @@ import type { SessionHandle, SessionHost, SessionHostConfig, SessionHostEvent } 
 import { ContextArtifactStore } from "../src/context/artifact-store.ts";
 import { buildChildHandoff } from "../src/contracts/payloads.ts";
 import { WorkingCheckpointSchema } from "../src/contracts/context-lifecycle.ts";
+import { createWorkingCheckpoint, persistWorkingCheckpoint } from "../src/context/checkpoint.ts";
 import { InMemoryTaskGateway } from "../src/gateway/in-memory.ts";
 import { LedgerStore, type SequentialEdgeConfig } from "../src/ledger/store.ts";
 import type { ImmutableArtifactReference } from "../src/contracts/context-lifecycle.ts";
@@ -35,10 +36,11 @@ class Handle implements SessionHandle {
 	async setModel(): Promise<void> {}
 	close(): void {}
 }
-function host(counter?: { value: number }, prompts?: string[]): SessionHost {
+function host(counter?: { value: number }, prompts?: string[], epochs?: SessionHostConfig["contextEpoch"][]): SessionHost {
 	let calls = 0;
 	return { spawn: async (config) => {
 		prompts?.push(config.systemPrompt);
+		epochs?.push(config.contextEpoch);
 		const index = counter === undefined ? calls++ : counter.value++;
 		return new Handle(config, index);
 	} };
@@ -136,16 +138,59 @@ export async function runTests(): Promise<void> {
 		// daemon state is closed and a new artifact store, driver, ledger, and
 		// host resume the child by edge id. The parent is never spawned again.
 		const restartRepo = join(root, "repo-restart"); mkdirSync(restartRepo); execSync("jj git init --colocate", { cwd: restartRepo, stdio: "pipe" }); writeFileSync(join(restartRepo, "README.md"), "fixture\\n"); execSync('JJ_EDITOR=true jj commit -m init', { cwd: restartRepo, stdio: "pipe" });
-		const restartDb = join(root, "restart.sqlite"); const restartArtifactsDir = join(root, "restart-artifacts"); const restartCalls = { value: 0 };
-		const prepared = await prepareSequentialChild({ parentSpecMarkdown: PARENT, childSpecMarkdown: CHILD, projectDir: restartRepo, artifactsDir: join(root, "restart-failures"), dbPath: restartDb, model: "fake/model", workspaceDriver: new JujutsuWorkspaceDriver({ projectDir: restartRepo }), host: host(restartCalls), artifactStore: new ContextArtifactStore({ root: restartArtifactsDir }) });
+		const restartDb = join(root, "restart.sqlite"); const restartArtifactsDir = join(root, "restart-artifacts"); const restartCalls = { value: 0 }; const restartPrompts: string[] = []; const restartEpochs: SessionHostConfig["contextEpoch"][] = [];
+		const restartArtifactStore = new ContextArtifactStore({ root: restartArtifactsDir });
+		const prepared = await prepareSequentialChild({ parentSpecMarkdown: PARENT, childSpecMarkdown: CHILD, projectDir: restartRepo, artifactsDir: join(root, "restart-failures"), dbPath: restartDb, model: "fake/model", workspaceDriver: new JujutsuWorkspaceDriver({ projectDir: restartRepo }), host: host(restartCalls, restartPrompts, restartEpochs), artifactStore: restartArtifactStore });
 		check(prepared.status === "ready" && prepared.edgeId !== undefined, "preparation leaves one ready durable edge");
 		const beforeRestart = new LedgerStore(restartDb); const restartConfig = prepared.edgeId ? beforeRestart.getSequentialEdgeConfig(prepared.edgeId) : null;
 		check(restartConfig?.handoffReference.namespace === "handoff" && restartConfig?.checkpointReference.namespace === "checkpoint" && restartConfig?.planReference.namespace === "plan", "complete immutable ingress references round-trip");
+		// Replace the durable plan with a distinctive, otherwise valid plan. This
+		// makes a fresh child re-plan observable across the close/reopen boundary.
+		let persistedPlanId: string | undefined;
+		let persistedCheckpointId: string | undefined;
+		let persistedEpochId: string | undefined;
+		if (prepared.edgeId !== undefined && restartConfig !== null) {
+			const planBytes = readFileSync(join(restartArtifactsDir, "plan", restartConfig.planReference.id.slice("sha256:".length)), "utf8");
+			const persistedPlan = JSON.parse(planBytes) as Record<string, unknown>;
+			const marker = {
+				version: 1, id: "persisted-plan-marker", kind: "source", label: "PERSISTED_PLAN_MARKER",
+				summary: "distinctive plan loaded after reopen", sourcePath: "PERSISTED_PLAN_MARKER.txt", score: 100,
+				provenance: { providerId: "fixture", providerVersion: "1", source: "fixture", sourceRevision: restartConfig.sourceRevision, selector: "persisted-plan-marker" },
+				freshness: { revision: restartConfig.sourceRevision, observedAtRevision: restartConfig.sourceRevision, state: "fresh" },
+				sensitivity: "internal", size: { characters: 32, tokens: 8 }, requirementIds: ["goal"],
+			};
+			const distinctivePlan = { ...persistedPlan, mode: "managed", candidates: [marker], selected: [marker] };
+			persistedPlanId = String(persistedPlan.id);
+			const planReference = restartArtifactStore.putJson(distinctivePlan, { namespace: "plan", kind: "plan", sensitivity: "internal", sourceRevision: restartConfig.sourceRevision });
+			const oldCheckpoint = JSON.parse(readFileSync(join(restartArtifactsDir, "checkpoint", restartConfig.checkpointReference.id.slice("sha256:".length)), "utf8")) as ReturnType<typeof createWorkingCheckpoint>;
+			const checkpoint = createWorkingCheckpoint({ ...oldCheckpoint, plan: planReference });
+			const checkpointReference = persistWorkingCheckpoint(restartArtifactStore, checkpoint);
+			persistedCheckpointId = checkpoint.id;
+			persistedEpochId = checkpoint.epochId;
+			const oldHandoff = buildChildHandoff(JSON.parse(readFileSync(join(restartArtifactsDir, "handoff", restartConfig.handoffReference.id.slice("sha256:".length)), "utf8")));
+			const handoff = buildChildHandoff({ ...oldHandoff, planId: planReference.id, checkpointId: checkpointReference.id });
+			const handoffReference = restartArtifactStore.putJson(handoff, { namespace: "handoff", kind: "handoff", sensitivity: "internal", sourceRevision: restartConfig.sourceRevision });
+			const ingress = { version: 1, parentTaskId: prepared.parentTaskId, childTaskId: prepared.childTaskId, modelIdentity: restartConfig.modelIdentity, sourceRevision: restartConfig.sourceRevision, capabilityIdentity: restartConfig.capabilityIdentity, capabilityVersion: restartConfig.capabilityVersion, handoffReference, checkpointReference, childSpecReference: restartConfig.childSpecReference, planReference };
+			const ingressConfigReference = restartArtifactStore.putJson(ingress, { namespace: "context", kind: "context", sensitivity: "internal", sourceRevision: restartConfig.sourceRevision });
+			beforeRestart.db.prepare("UPDATE sequential_edge_configs SET handoff_reference_json = ?, checkpoint_reference_json = ?, plan_reference_json = ?, ingress_config_reference_json = ? WHERE edge_id = ?").run(JSON.stringify(handoffReference), JSON.stringify(checkpointReference), JSON.stringify(planReference), JSON.stringify(ingressConfigReference), prepared.edgeId);
+			beforeRestart.db.prepare("UPDATE task_edges SET handoff_artifact_id = ?, checkpoint_artifact_id = ? WHERE edge_id = ?").run(handoffReference.id, checkpointReference.id, prepared.edgeId);
+		}
 		beforeRestart.close();
-		const resumed = await resumeSequentialChild(prepared.edgeId!, { projectDir: restartRepo, artifactsDir: join(root, "restart-failures"), dbPath: restartDb, model: "fake/model", workspaceDriver: new JujutsuWorkspaceDriver({ projectDir: restartRepo }), host: host(restartCalls), artifactStore: new ContextArtifactStore({ root: restartArtifactsDir }) });
+		const resumed = await resumeSequentialChild(prepared.edgeId!, { projectDir: restartRepo, artifactsDir: join(root, "restart-failures"), dbPath: restartDb, model: "fake/model", workspaceDriver: new JujutsuWorkspaceDriver({ projectDir: restartRepo }), host: host(restartCalls, restartPrompts, restartEpochs), artifactStore: new ContextArtifactStore({ root: restartArtifactsDir }) });
+		const resumedEpoch = restartEpochs[1];
 		check(resumed.status === "completed" && existsSync(join(restartRepo, "parent.txt")) && existsSync(join(restartRepo, "child.txt")) && restartCalls.value === 2, "close/reopen resume verifies parent once and child once");
+		check(restartPrompts[1]?.includes("PERSISTED_PLAN_MARKER") === true && resumedEpoch?.planId === persistedPlanId && resumedEpoch?.checkpointId === persistedCheckpointId && resumedEpoch?.parentId === persistedEpochId && resumedEpoch?.transition === "retry", `resumed child receives the persisted plan and checkpoint epoch lineage (prompt=${restartPrompts[1]?.includes("PERSISTED_PLAN_MARKER")}, plan=${resumedEpoch?.planId}/${persistedPlanId}, checkpoint=${resumedEpoch?.checkpointId}/${persistedCheckpointId}, parent=${resumedEpoch?.parentId}/${persistedEpochId}, transition=${resumedEpoch?.transition})`);
 		const duplicate = await resumeSequentialChild(prepared.edgeId!, { projectDir: restartRepo, artifactsDir: join(root, "restart-failures"), dbPath: restartDb, model: "fake/model", workspaceDriver: new JujutsuWorkspaceDriver({ projectDir: restartRepo }), host: host(restartCalls), artifactStore: new ContextArtifactStore({ root: restartArtifactsDir }) });
 		check(duplicate.status === "completed" && restartCalls.value === 2, "terminal duplicate resume does not spawn twice");
+
+		const mismatchRepo = join(root, "repo-restart-mismatch"); mkdirSync(mismatchRepo); execSync("jj git init --colocate", { cwd: mismatchRepo, stdio: "pipe" }); writeFileSync(join(mismatchRepo, "README.md"), "fixture\n"); execSync('JJ_EDITOR=true jj commit -m init', { cwd: mismatchRepo, stdio: "pipe" });
+		const mismatchDb = join(root, "restart-mismatch.sqlite"); const mismatchArtifactsDir = join(root, "restart-mismatch-artifacts"); const mismatchCalls = { value: 0 };
+		const mismatchPrepared = await prepareSequentialChild({ parentSpecMarkdown: PARENT, childSpecMarkdown: CHILD, projectDir: mismatchRepo, artifactsDir: join(root, "restart-mismatch-failures"), dbPath: mismatchDb, model: "fake/model", workspaceDriver: new JujutsuWorkspaceDriver({ projectDir: mismatchRepo }), host: host(mismatchCalls), artifactStore: new ContextArtifactStore({ root: mismatchArtifactsDir }) });
+		const mismatchBefore = mismatchCalls.value;
+		const mismatched = await resumeSequentialChild(mismatchPrepared.edgeId!, { projectDir: mismatchRepo, artifactsDir: join(root, "restart-mismatch-failures"), dbPath: mismatchDb, model: "other/model", workspaceDriver: new JujutsuWorkspaceDriver({ projectDir: mismatchRepo }), host: host(mismatchCalls), artifactStore: new ContextArtifactStore({ root: mismatchArtifactsDir }) });
+		const mismatchLedger = new LedgerStore(mismatchDb);
+		check(mismatched.status === "blocked" && mismatchCalls.value === mismatchBefore && mismatchLedger.listSessions(mismatchPrepared.childTaskId).length === 0, "validated resume mismatch is rejected before child session spawn");
+		mismatchLedger.close();
 
 		// The provider mutation is owned by a preparing edge before it starts.
 		// Calling provider preparation before a simulated crash and again from a
