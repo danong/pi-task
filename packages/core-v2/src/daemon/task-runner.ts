@@ -431,6 +431,10 @@ export interface RunTaskOptions {
 	gateway?: TaskGateway | undefined;
 	/** Wall-clock bound forwarded to the session host. */
 	sessionTimeoutMs?: number;
+	/** Independent turn cap (R1): 0/unset = no cap, separate from wall time, tier-configurable. */
+	maxTurns?: number;
+	/** Independent cost cap (R1): 0/unset = no cap, separate from wall time. */
+	maxCostUsd?: number;
 
 	/** AI identity email configured for the run's jj commits (the
 	 *  provenance test failure hygiene applies before abandoning empty
@@ -615,11 +619,19 @@ async function runWithStore(
 		store.setTaskStatus(taskId, "failed");
 		// Session stamp (review M4 P0-2): terminal task.* events carry the
 		// owning session id so session-scoped surface subscribers can filter.
+		const capsForDetail =
+			classification.code === "budget_exceeded"
+				? {
+						...(options.maxTurns !== undefined ? { maxTurns: options.maxTurns } : {}),
+						...(options.maxCostUsd !== undefined ? { maxCostUsd: options.maxCostUsd } : {}),
+						...(options.sessionTimeoutMs !== undefined ? { wallTimeoutMs: options.sessionTimeoutMs } : {}),
+				  }
+				: {};
 		gateway.emit({
 			type: "task.failed",
 			taskId,
 			sessionId: `${taskId}-worker`,
-			detail: { cause, ...classification },
+			detail: { cause, ...classification, ...capsForDetail },
 		});
 		// R3: a bundled run that dies anywhere is a MISS. When the bundle was
 		// merely attempted (never grounded), the miss row was already written
@@ -771,9 +783,16 @@ async function runWithStore(
 		// One wall, not two: when the host carries a per-session timeout,
 		// the watchdog wall mirrors it so the tighter bound always wins
 		// (review C6 — shadowed wall budgets never fire).
-		...(options.sessionTimeoutMs === undefined
+		...(options.sessionTimeoutMs === undefined && (options.maxTurns ?? 0) === 0
 			? {}
-			: { limits: { wallTimeoutMs: options.sessionTimeoutMs } }),
+			: {
+					limits: {
+						...(options.sessionTimeoutMs === undefined
+							? {}
+							: { wallTimeoutMs: options.sessionTimeoutMs }),
+						...((options.maxTurns ?? 0) > 0 ? { maxTurns: options.maxTurns! } : {}),
+					},
+				}),
 		onAction: (action) => {
 			if (action.kind === "abort") observation.watchdogAbort = action;
 		},
@@ -809,6 +828,8 @@ async function runWithStore(
 	handle.close();
 
 	if (!yieldPayload) {
+		const isBudget = observation.watchdogAbort?.reason === "budget_exceeded";
+		const isWall = observation.watchdogAbort?.reason === "wall_timeout";
 		const cause = observation.watchdogAbort
 			? `watchdog abort: ${observation.watchdogAbort.reason}`
 			: "settled without yield";
@@ -817,6 +838,18 @@ async function runWithStore(
 			taskId,
 			sessionId: `${taskId}-worker`,
 		});
+		if (isBudget) {
+			return await failRun(cause, usage, {
+				stage: "session",
+				code: "budget_exceeded",
+			} as any);
+		}
+		if (isWall) {
+			return await failRun(cause, usage, {
+				stage: "session",
+				code: "session_timed_out",
+			} as any);
+		}
 		return await failRun(cause, usage, {
 			stage: "session",
 			code: "worker_failed",

@@ -53,6 +53,7 @@ import { runTests as runWorkflowBuildTests } from "./test-workflow-build.ts";
 import { runTests as runWorkflowReceiptsTests } from "./test-workflow-receipts.ts";
 import { runTests as runWorkflowSurveyTests } from "./test-workflow-survey.ts";
 import { runTests as runParityM5Tests } from "./test-parity-m5.ts";
+import { runTests as runBudgetTests } from "./test-budget.ts";
 import { runTests as runWorkerProtocolTests } from "./test-worker-protocol.ts";
 
 const SUITES: Array<{ name: string; run: () => Promise<void> }> = [
@@ -104,6 +105,7 @@ const SUITES: Array<{ name: string; run: () => Promise<void> }> = [
 	{ name: "parallel", run: runParallelTests },
 	{ name: "prewalk", run: runPrewalkTests },
 	{ name: "review-fork", run: runReviewForkTests },
+	{ name: "budget", run: runBudgetTests },
 	{ name: "daemon", run: runDaemonTests },
 	{ name: "worker-protocol", run: runWorkerProtocolTests },
 ];

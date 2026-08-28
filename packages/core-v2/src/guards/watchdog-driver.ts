@@ -21,6 +21,7 @@
 
 import type { SessionHandle, SessionHostEvent } from "../sessions/host.ts";
 import {
+	decideMaxTurnsAction,
 	decideNoProgressAction,
 	decideSettleAction,
 	decideToolTimeoutAction,
@@ -66,6 +67,8 @@ export interface WatchdogLimits {
 	noProgressTimeoutMs: number;
 	toolTimeoutMs: number;
 	tickIntervalMs: number;
+	/** Independent turn cap (R1): 0 = no cap, separate from wall time. */
+	maxTurns: number;
 }
 
 export interface WatchdogDriverOptions {
@@ -106,6 +109,7 @@ export class WatchdogDriver {
 	#running = false;
 	#hasYielded = false;
 	#nudged = false;
+	#turns = 0;
 	readonly #inFlight = new Map<string, InFlightTool>();
 	#terminal: WatchdogEnd | undefined;
 	#lastEvent: SessionHostEvent | undefined;
@@ -126,6 +130,7 @@ export class WatchdogDriver {
 				options.limits?.toolTimeoutMs ?? DEFAULT_WATCHDOG_TOOL_TIMEOUT_MS,
 			tickIntervalMs:
 				options.limits?.tickIntervalMs ?? DEFAULT_WATCHDOG_TICK_INTERVAL_MS,
+			maxTurns: options.limits?.maxTurns ?? 0,
 		};
 		this.#timers = options.timers ?? systemTimerSource;
 		this.#onAction = options.onAction;
@@ -193,7 +198,15 @@ export class WatchdogDriver {
 			case "yielded":
 				this.#hasYielded = true;
 				break;
-			case "turnStart":
+			case "turnStart": {
+				this.#turns += 1;
+				const budget = decideMaxTurnsAction({
+					turns: this.#turns,
+					maxTurns: this.limits.maxTurns,
+				});
+				if (budget.kind === "abort") return this.#latch(budget);
+				break;
+			}
 			case "error":
 				// Activity-only events: lastEvent/activity updated above.
 				break;

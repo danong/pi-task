@@ -54,6 +54,7 @@ import { InMemoryTaskGateway } from "../gateway/index.ts";
 import { registerPluginTriggers } from "../plugins/index.ts";
 import { HostEnvironmentDriver } from "../environments/drivers.ts";
 import { verifyThroughEnvironment } from "../verify/adapter.ts";
+import { budgetReason } from "../budget/execution-budget.ts";
 import {
 	createSessionHost,
 	workerToolSchemaIdentity,
@@ -86,6 +87,10 @@ export interface RunParallelOptions {
 	environmentDriver?: EnvironmentDriver;
 	/** Dependency injection for tests. */
 	host?: SessionHost;
+	/** Independent execution budgets (R1/R3): 0 = no cap, separate from wall time. */
+	maxTurns?: number;
+	maxCostUsd?: number;
+
 	/** Lifecycle event sink (R4); defaults to an InMemoryTaskGateway over
 	 *  this run's ledger so getTaskState awaits the same mutations. */
 	gateway?: TaskGateway | undefined;
@@ -584,9 +589,14 @@ async function runWithStore(
 	);
 	const watchdogHandles = handles.map((h, i) =>
 		attachWatchdogs(h, {
-			...(options.sessionTimeoutMs === undefined
+			...(options.sessionTimeoutMs === undefined && (options.maxTurns ?? 0) === 0
 				? {}
-				: { limits: { wallTimeoutMs: options.sessionTimeoutMs } }),
+				: {
+						limits: {
+							...(options.sessionTimeoutMs === undefined ? {} : { wallTimeoutMs: options.sessionTimeoutMs }),
+							...((options.maxTurns ?? 0) > 0 ? { maxTurns: options.maxTurns! } : {}),
+						},
+					}),
 			onAction: (action) => {
 				if (action.kind === "abort") observations[i]!.watchdogAbort = action;
 			},
@@ -726,7 +736,8 @@ async function runWithStore(
 		}
 	}
 	if (!singleTask) {
-		for (const receipt of perWorker) {
+		for (let pi = 0; pi < perWorker.length; pi++) {
+			const receipt = perWorker[pi]!;
 			if (receipt.verdict === "ship") {
 				gateway.emit({
 					type: "task.completed",
@@ -735,15 +746,21 @@ async function runWithStore(
 					detail: { verdict: "ship" },
 				});
 			} else {
+				const obs = observations[pi];
+				const isBudget = obs?.watchdogAbort?.reason === "budget_exceeded";
+				const isWall = obs?.watchdogAbort?.reason === "wall_timeout";
 				gateway.emit({
 					type: "task.failed",
 					taskId: receipt.taskId,
 					sessionId: `${receipt.taskId}-worker`,
 					detail: {
-						cause: "worker attempt failed",
+						cause: isBudget
+							? `budget_exceeded:maxTurns=${options.maxTurns ?? 0}`
+							: "worker attempt failed",
 						stage: "session",
-						code: "worker_failed",
-					},
+						code: isBudget ? "budget_exceeded" : isWall ? "session_timed_out" : "worker_failed",
+						...(isBudget ? { maxTurns: options.maxTurns ?? 0, maxCostUsd: options.maxCostUsd ?? 0 } : {}),
+					} as any,
 				});
 			}
 		}
@@ -968,6 +985,77 @@ async function runWithStore(
 		taskId: aggregateId,
 		detail: { passed: verification.passed, evidence: verification.evidence },
 	});
+	// R1/R2: independent execution budgets (maxTurns / maxCostUsd) separate from wall time.
+	// Zero/unset = no cap. Cap triggers → task.failed stage=session code=budget_exceeded (R2),
+	// independent of wall timeout, with bounded failure artifact and cap observability (R3).
+	{
+		const caps = {
+			maxTurns: options.maxTurns ?? 0,
+			maxCostUsd: options.maxCostUsd ?? 0,
+		};
+		const totalCost = sumUsage(usages).costUsd;
+		const reason = budgetReason(observedTurns, totalCost, caps);
+		const hasBudgetWatchdog = observations.some((o) => o.watchdogAbort?.reason === "budget_exceeded");
+		const budgetTripped = reason !== null || hasBudgetWatchdog;
+		if (budgetTripped) {
+			options.onContextEvent?.({
+				type: "checkpoint.saved",
+				provider: { id: "budget", version: "1" },
+				detail: {
+					cause: `budget_exceeded:${reason ?? "turns"}`,
+					reason: reason ?? "turns",
+					stage: "session",
+					code: "budget_exceeded",
+					turns: observedTurns,
+					costUsd: totalCost,
+					maxTurns: caps.maxTurns,
+					maxCostUsd: caps.maxCostUsd,
+					wallTimeoutMs: options.sessionTimeoutMs,
+				},
+			});
+			options.onContextEvent?.({
+				type: "epoch.transitioned",
+				provider: { id: "budget", version: "1" },
+				detail: {
+					reason: "context-pressure",
+					stage: "session",
+					code: "budget_exceeded",
+					budgetReason: reason ?? "turns",
+					turns: observedTurns,
+					costUsd: totalCost,
+					maxTurns: caps.maxTurns,
+					maxCostUsd: caps.maxCostUsd,
+				},
+			});
+			const cause = `budget_exceeded:${reason ?? "turns"}`;
+			for (const ctx of contexts) store.setWorkspaceStatus(`${ctx.taskId}-workspace`, "orphaned");
+			writeFailureArtifact({
+				artifactsDir: options.artifactsDir,
+				runId: aggregateId,
+				cause,
+				recovery: await reconcileFailedRun(cause),
+			});
+			store.setTaskStatus(aggregateId, "failed");
+			gateway.emit({
+				type: "task.failed",
+				taskId: aggregateId,
+				sessionId: `${aggregateId}-worker`,
+				detail: {
+					cause,
+					stage: "session",
+					code: "budget_exceeded",
+					maxTurns: caps.maxTurns,
+					maxCostUsd: caps.maxCostUsd,
+					...(options.sessionTimeoutMs === undefined ? {} : { wallTimeoutMs: options.sessionTimeoutMs }),
+				} as any,
+			});
+			return {
+				aggregate: makeReceipt(aggregateId, "failed", 0, [], observedTurns, sumUsage(usages)),
+				perWorker,
+				conflicts: [],
+			};
+		}
+	}
 	for (const cmd of verification.commands) {
 		if (cmd.exitCode !== 0) {
 			failures.push(

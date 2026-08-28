@@ -46,6 +46,7 @@ export const TASK_FAILURE_STAGES = [
 	"acceptance",
 	"delivery",
 	"workflow",
+	"budget",
 	"internal",
 ] as const;
 export type TaskFailureStage = (typeof TASK_FAILURE_STAGES)[number];
@@ -56,6 +57,7 @@ export const TASK_FAILURE_CODES = [
 	"context_failed",
 	"session_failed",
 	"session_timed_out",
+	"budget_exceeded",
 	"worker_failed",
 	"merge_failed",
 	"verification_failed",

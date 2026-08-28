@@ -32,7 +32,7 @@ export type WatchedEventType = SessionHostEvent["type"];
 
 /** Discriminated reasons an abort can be raised. */
 export type WatchdogAbortReason =
-	"wall_timeout" | "no_progress" | "tool_timeout" | "settled_without_yield";
+	"wall_timeout" | "no_progress" | "tool_timeout" | "settled_without_yield" | "budget_exceeded";
 
 /**
  * A typed decision with no side effects. The driver turns `nudge` into
@@ -212,6 +212,33 @@ export function decideToolTimeoutAction(opts: {
 			kind: "abort",
 			reason: "tool_timeout",
 			message: toolTimeoutMessage(opts.timeoutMs, opts.toolName),
+		};
+	}
+	return CONTINUE;
+}
+
+/** Abort message for the maxTurns budget watchdog. */
+export function budgetExceededMessage(maxTurns: number): string {
+	return (
+		`Session aborted: turn budget exceeded — the run reached its independent maxTurns cap of ` +
+		`${maxTurns} turn(s) without finishing (wall timeout is separate).`
+	);
+}
+
+/**
+ * (e) MaxTurns budget decision (pure): abort when observed turns reach
+ * the independent cap. Zero / unset means no cap (R1). Wall timeout is
+ * NOT consulted here — the two budgets never conflate.
+ */
+export function decideMaxTurnsAction(opts: {
+	turns: number;
+	maxTurns: number;
+}): WatchdogAction {
+	if (opts.maxTurns > 0 && opts.turns >= opts.maxTurns) {
+		return {
+			kind: "abort",
+			reason: "budget_exceeded",
+			message: budgetExceededMessage(opts.maxTurns),
 		};
 	}
 	return CONTINUE;

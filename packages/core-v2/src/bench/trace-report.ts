@@ -108,6 +108,15 @@ export function renderTraceReport(
 	const familyId = textValue(model?.detail?.familyId);
 	const attemptNumber = numberValue(model?.detail?.attemptNumber);
 	const specHash = textValue(model?.detail?.specHash);
+	const modelMaxTurns = numberValue(model?.detail?.maxTurns);
+	const modelMaxCostUsd = numberValue(model?.detail?.maxCostUsd);
+	const modelWallTimeoutMs = numberValue(model?.detail?.wallTimeoutMs);
+	const failureMaxTurns =
+		numberValue(terminalFailure?.detail?.maxTurns) ?? numberValue(diagnosticFailure?.detail?.maxTurns);
+	const failureMaxCostUsd =
+		numberValue(terminalFailure?.detail?.maxCostUsd) ?? numberValue(diagnosticFailure?.detail?.maxCostUsd);
+	const failureWallTimeoutMs =
+		numberValue(terminalFailure?.detail?.wallTimeoutMs) ?? numberValue(diagnosticFailure?.detail?.wallTimeoutMs);
 	const provider = planned?.provider ?? "unavailable";
 	const contextMode = textValue(planned?.detail?.mode);
 	const selectedCount = numberValue(injected?.detail?.selectedCount);
@@ -154,12 +163,17 @@ export function renderTraceReport(
 		`- Spec hash: ${specHash ?? "unavailable"}`,
 		`- Total elapsed: ${display(totalMs)} ms`,
 		`- Session elapsed: ${display(sessionMs)} ms`,
+		`- Configured maxTurns: ${display(modelMaxTurns)}`,
+		`- Configured maxCostUsd: ${display(modelMaxCostUsd)}`,
+		`- Configured wallTimeoutMs: ${display(modelWallTimeoutMs)}`,
 		"",
 		"## Execution",
 		`- Turns: ${events(trace, "turn.started").length}`,
 		`- Tool calls: ${tools.calls}`,
 		`- Tool errors: ${tools.errors}`,
 		`- Repeated reads: ${tools.repeatedReads}`,
+		`- Budget maxTurns: ${display(modelMaxTurns ?? failureMaxTurns)}`,
+		`- Budget maxCostUsd: ${display(modelMaxCostUsd ?? failureMaxCostUsd)}`,
 		"",
 		"## Context",
 		`- Provider: ${provider}`,
@@ -180,6 +194,9 @@ export function renderTraceReport(
 		`- Code: ${failureCode ?? "none"}`,
 		`- Cause: ${failureCause ?? "none"}`,
 		`- Terminal cause: ${terminalCause ?? "none"}`,
+		`- Budget maxTurns: ${display(failureMaxTurns ?? modelMaxTurns)}`,
+		`- Budget maxCostUsd: ${display(failureMaxCostUsd ?? modelMaxCostUsd)}`,
+		`- Budget wallTimeoutMs: ${display(failureWallTimeoutMs ?? modelWallTimeoutMs)}`,
 		"",
 		"## Usage",
 		`- Status: ${trace.usage?.status ?? "unavailable"}`,

@@ -68,6 +68,8 @@ export interface ParsedCliArgs {
 	artifactsDir?: string;
 	stateDir?: string;
 	context: "raw" | "symbol-tree";
+	maxTurns?: number;
+	maxCostUsd?: number;
 }
 
 export interface CliPaths {
@@ -109,6 +111,8 @@ Options:
   --db <file>                   Ledger SQLite path (overrides --state-dir)
   --artifacts-dir <directory>   Receipt and failure-artifact directory
   --context <raw|symbol-tree>   Explicit context provider (default: raw)
+  --max-turns <n>               Independent maxTurns cap (0 = no cap, default unset)
+  --max-cost-usd <n>            Independent maxCostUsd cap in USD (0 = no cap, default unset)
   --help, -h                    Show this help
 
 Defaults are outside the repository: XDG_STATE_HOME/pi-task-v2/<project>/.
@@ -136,6 +140,8 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
 	let artifactsDir: string | undefined;
 	let stateDir: string | undefined;
 	let context: "raw" | "symbol-tree" = "raw";
+	let maxTurns: number | undefined;
+	let maxCostUsd: number | undefined;
 	const seen = new Set<string>();
 
 	for (let i = 0; i < argv.length; i += 1) {
@@ -165,6 +171,8 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
 				"--db",
 				"--artifacts-dir",
 				"--context",
+				"--max-turns",
+				"--max-cost-usd",
 			].includes(key)
 		)
 			throw new CliUsageError(`unknown option: ${arg}`);
@@ -205,6 +213,20 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
 			case "--artifacts-dir":
 				artifactsDir = value;
 				break;
+			case "--max-turns": {
+				const n = Number(value);
+				if (!Number.isInteger(n) || n < 0)
+					throw new CliUsageError("--max-turns must be an integer >= 0");
+				maxTurns = n;
+				break;
+			}
+			case "--max-cost-usd": {
+				const n = Number(value);
+				if (!Number.isFinite(n) || n < 0)
+					throw new CliUsageError("--max-cost-usd must be a finite number >= 0");
+				maxCostUsd = n;
+				break;
+			}
 		}
 	}
 	if (!help && specPath === undefined)
@@ -222,6 +244,8 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
 		...(artifactsDir === undefined ? {} : { artifactsDir }),
 		...(stateDir === undefined ? {} : { stateDir }),
 		context,
+		...(maxTurns === undefined ? {} : { maxTurns }),
+		...(maxCostUsd === undefined ? {} : { maxCostUsd }),
 	};
 }
 
@@ -407,6 +431,7 @@ function createCliTrace(
 	familyId: string,
 	model: string,
 	specMarkdown: string,
+	caps: { maxTurns?: number; maxCostUsd?: number; wallTimeoutMs?: number } = {},
 ): TraceCollector {
 	const trace = new TraceCollector(taskId, taskId);
 	const provider = model.split("/")[0]?.trim() || "unknown";
@@ -427,6 +452,9 @@ function createCliTrace(
 				taskId === familyId
 					? 1
 					: Number.parseInt(taskId.slice(familyId.length + 2), 10),
+			...(caps.maxTurns === undefined ? {} : { maxTurns: caps.maxTurns }),
+			...(caps.maxCostUsd === undefined ? {} : { maxCostUsd: caps.maxCostUsd }),
+			...(caps.wallTimeoutMs === undefined ? {} : { wallTimeoutMs: caps.wallTimeoutMs }),
 		},
 	});
 	// Context lifecycle evidence is emitted by the selected capability before
@@ -521,7 +549,10 @@ export async function runCli(
 			code: "internal_error";
 		} = { stage: "internal", code: "internal_error" },
 	): CliResult => {
-		trace ??= createCliTrace(traceTaskId, familyId, args.model, specMarkdown);
+		trace ??= createCliTrace(traceTaskId, familyId, args.model, specMarkdown, {
+			...(args.maxTurns === undefined ? {} : { maxTurns: args.maxTurns }),
+			...(args.maxCostUsd === undefined ? {} : { maxCostUsd: args.maxCostUsd }),
+		});
 		announceRun();
 		trace.record({
 			type: "failure",
@@ -575,7 +606,10 @@ export async function runCli(
 		} finally {
 			identityStore.close();
 		}
-		trace = createCliTrace(traceTaskId, familyId, args.model, specMarkdown);
+		trace = createCliTrace(traceTaskId, familyId, args.model, specMarkdown, {
+			...(args.maxTurns === undefined ? {} : { maxTurns: args.maxTurns }),
+			...(args.maxCostUsd === undefined ? {} : { maxCostUsd: args.maxCostUsd }),
+		});
 		announceRun();
 		const daemonStarter = dependencies.startDaemon ?? startDaemon;
 		daemon = await daemonStarter(paths.dbPath, { projectDir });
@@ -626,6 +660,8 @@ export async function runCli(
 				artifactsDir: paths.artifactsDir,
 				dbPath: paths.dbPath,
 				model: args.model,
+				...(args.maxTurns === undefined ? {} : { maxTurns: args.maxTurns }),
+				...(args.maxCostUsd === undefined ? {} : { maxCostUsd: args.maxCostUsd }),
 				contextCapabilitiesFactory: acquisitionFactoryFromLegacy(
 					selectedContextFactory,
 				),
