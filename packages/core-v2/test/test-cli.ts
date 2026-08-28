@@ -28,6 +28,8 @@ import type {
 import { runCli, type CliDependencies, CliUsageError } from "../src/cli.ts";
 import { parseCliArgs, cliHelp, cliExitCode } from "../src/cli.ts";
 import { LedgerStore } from "../src/ledger/store.ts";
+import { prepareSequentialChild } from "../src/daemon/sequential.ts";
+import { ContextArtifactStore } from "../src/context/artifact-store.ts";
 import { deriveTaskId } from "../src/daemon/task-runner.ts";
 import { JujutsuWorkspaceDriver } from "../src/workspaces/jj-driver.ts";
 import {
@@ -318,6 +320,7 @@ export async function runTests(): Promise<void> {
 		else process.env.PI_TASK_V2_MODEL = priorModel;
 	}
 	check(cliHelp().includes("--child-spec <file>"), "help documents durable child continuation");
+	check(cliHelp().includes("--resume <edge-id>"), "help documents durable edge resume");
 	check(
 		cliHelp().includes("--project-dir <directory>"),
 		"help documents project dir",
@@ -336,7 +339,17 @@ export async function runTests(): Promise<void> {
 		parseCliArgs(["--spec", "parent.md", "--child-spec", "child.md", "--model", "fake/model"]).childSpecPath === "child.md",
 		"CLI parses one explicit continuation child",
 	);
-	for (const argv of [["--spec"], ["--unknown", "x"]]) {
+	check(
+		parseCliArgs(["--resume", "edge-1", "--model", "fake/model"]).resumeEdgeId === "edge-1",
+		"CLI parses an explicit durable edge resume selector",
+	);
+	for (const argv of [
+		["--spec", "parent.md", "--resume", "edge-1", "--model", "fake/model"],
+		["--resume", "edge-1", "--child-spec", "child.md", "--model", "fake/model"],
+		["--resume", "edge-1", "--context", "symbol-tree", "--model", "fake/model"],
+		["--spec"],
+		["--unknown", "x"],
+	]) {
 		try {
 			parseCliArgs(argv);
 			errors.push(`invalid arguments accepted: ${argv.join(" ")}`);
@@ -687,6 +700,59 @@ export async function runTests(): Promise<void> {
 			"CLI trace omits child workspace, provider, transcript, and reasoning data",
 		);
 		sequentialLedger.close();
+
+		// The normal CLI resume operation crosses a close/reopen boundary. The
+		// preparation process owns the only parent session; the fresh adapter
+		// instance may add exactly one child session and must never replay it.
+		const resumeRepo = join(root, "resume-repo");
+		initRepo(resumeRepo);
+		const resumeDb = join(root, "resume.sqlite");
+		const resumeArtifacts = join(root, "resume-artifacts");
+		const resumeContinuations = join(root, "continuations");
+		const preparationSpawns = { value: 0 };
+		const preparedResume = await prepareSequentialChild({
+			parentSpecMarkdown: SPEC,
+			childSpecMarkdown: SPEC,
+			projectDir: resumeRepo,
+			artifactsDir: join(root, "resume-failures"),
+			dbPath: resumeDb,
+			model: "fake/model",
+			workspaceDriver: new JujutsuWorkspaceDriver({ projectDir: resumeRepo }),
+			host: fakeHost("ok", preparationSpawns),
+			artifactStore: new ContextArtifactStore({ root: resumeContinuations }),
+		});
+		const beforeResumeLedger = new LedgerStore(resumeDb);
+		const beforeParentSessions = beforeResumeLedger.listSessions(preparedResume.parentTaskId).length;
+		const beforeChildSessions = beforeResumeLedger.listSessions(preparedResume.childTaskId).length;
+		beforeResumeLedger.close();
+		check(
+			preparedResume.status === "ready" && preparedResume.edgeId !== undefined &&
+			preparationSpawns.value === 1 && beforeParentSessions === 1 && beforeChildSessions === 0,
+			"CLI resume fixture leaves one ready edge after one parent session",
+		);
+		const resumeSpawns = { value: 0 };
+		const resumedCli = await runCli([
+			"--resume", preparedResume.edgeId!,
+			"--project-dir", resumeRepo,
+			"--model", "fake/model",
+			"--db", resumeDb,
+			"--artifacts-dir", resumeArtifacts,
+		], {
+			host: fakeHost("ok", resumeSpawns, { warmRewrite: true }),
+			workspaceDriver: new JujutsuWorkspaceDriver({ projectDir: resumeRepo }),
+			write: () => undefined,
+		});
+		const afterResumeLedger = new LedgerStore(resumeDb);
+		const afterParentSessions = afterResumeLedger.listSessions(preparedResume.parentTaskId).length;
+		const afterChildSessions = afterResumeLedger.listSessions(preparedResume.childTaskId).length;
+		afterResumeLedger.close();
+		check(
+			resumedCli.exitCode === 0 && resumedCli.receipt?.taskId === preparedResume.parentTaskId &&
+			resumedCli.receipt?.verdict === "ship" && resumeSpawns.value === 1 &&
+			afterParentSessions === beforeParentSessions && afterChildSessions === 1 &&
+			existsSync(join(resumeRepo, "result.txt")),
+			`CLI resumes a ready edge without replaying its parent (exit=${resumedCli.exitCode}, verdict=${resumedCli.receipt?.verdict ?? "none"}, parent=${beforeParentSessions}/${afterParentSessions}, child=${afterChildSessions}, spawns=${resumeSpawns.value}, error=${resumedCli.error ?? ""})`,
+		);
 
 		// A warm ledger allocates a fresh attempt while preserving the same
 		// task-family identity. The trace, receipt, and artifact names must all

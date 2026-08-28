@@ -34,7 +34,7 @@ import { writeReceiptArtifact } from "./guards/receipts.ts";
 import { writeFailureArtifact } from "./guards/artifacts.ts";
 import { startDaemon } from "./daemon/start.ts";
 import { runIsolatedTask } from "./daemon/isolated.ts";
-import { runSequentialTask } from "./daemon/sequential.ts";
+import { resumeSequentialChild, runSequentialTask } from "./daemon/sequential.ts";
 import { parseTaskSpecForCli } from "./daemon/task-runner.ts";
 import { JujutsuWorkspaceDriver } from "./workspaces/jj-driver.ts";
 import { LedgerStore } from "./ledger/store.ts";
@@ -64,6 +64,7 @@ export interface ParsedCliArgs {
 	help: boolean;
 	specPath?: string;
 	childSpecPath?: string;
+	resumeEdgeId?: string;
 	projectDir: string;
 	model: string;
 	dbPath?: string;
@@ -109,6 +110,7 @@ Execute exactly one pi-task-v2 task in an isolated jj workspace.
 Options:
   --spec, -s <file>             Task markdown file (Goal, Requirements, Verification)
   --child-spec <file>           One durable continuation child (raw context only)
+  --resume <edge-id>            Resume one ready durable continuation edge (raw context only)
   --project-dir <directory>     Project jj repository (default: current directory)
   --model, -m <provider/model>  Worker model (required unless PI_TASK_V2_MODEL is set)
   --state-dir <directory>       State root for the ledger and artifacts
@@ -140,6 +142,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
 	let help = false;
 	let specPath: string | undefined;
 	let childSpecPath: string | undefined;
+	let resumeEdgeId: string | undefined;
 	let projectDir = process.cwd();
 	let model = process.env.PI_TASK_V2_MODEL ?? "";
 	let dbPath: string | undefined;
@@ -173,6 +176,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
 			![
 				"--spec",
 				"--child-spec",
+				"--resume",
 				"--project-dir",
 				"--model",
 				"--state-dir",
@@ -204,6 +208,9 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
 				break;
 			case "--child-spec":
 				childSpecPath = value;
+				break;
+			case "--resume":
+				resumeEdgeId = value;
 				break;
 			case "--project-dir":
 				projectDir = value;
@@ -248,10 +255,16 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
 			}
 		}
 	}
-	if (!help && specPath === undefined)
-		throw new CliUsageError("--spec is required");
+	if (!help && specPath === undefined && resumeEdgeId === undefined)
+		throw new CliUsageError("--spec is required unless --resume is selected");
+	if (!help && resumeEdgeId !== undefined && specPath !== undefined)
+		throw new CliUsageError("--resume cannot be combined with --spec");
+	if (!help && resumeEdgeId !== undefined && childSpecPath !== undefined)
+		throw new CliUsageError("--resume cannot be combined with --child-spec");
 	if (!help && childSpecPath !== undefined && context !== "raw")
 		throw new CliUsageError("--child-spec currently requires --context raw");
+	if (!help && resumeEdgeId !== undefined && context !== "raw")
+		throw new CliUsageError("--resume currently requires --context raw");
 	if (!help && model.trim().length === 0)
 		throw new CliUsageError(
 			"--model is required (or set PI_TASK_V2_MODEL to a non-empty model id)",
@@ -260,6 +273,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
 		help,
 		...(specPath === undefined ? {} : { specPath }),
 		...(childSpecPath === undefined ? {} : { childSpecPath }),
+		...(resumeEdgeId === undefined ? {} : { resumeEdgeId }),
 		projectDir,
 		model,
 		...(dbPath === undefined ? {} : { dbPath }),
@@ -553,23 +567,28 @@ export async function runCli(
 	}
 
 	const projectDir = resolvePath(args.projectDir);
-	let specMarkdown: string;
+	// Resume reads the child specification and all other ingress data from the
+	// durable edge; it must not require, validate, or reconstruct the parent
+	// submission.
+	let specMarkdown = "";
 	let childSpecMarkdown: string | undefined;
 	try {
 		const projectStat = statSync(projectDir);
 		if (!projectStat.isDirectory())
 			throw new CliUsageError("--project-dir is not a directory");
-		if (args.specPath === undefined)
-			throw new CliUsageError("--spec is required");
-		const specPath = resolvePath(args.specPath);
-		specMarkdown = readFileSync(specPath, "utf8");
-		// Strict policy validation is the CLI ingress boundary. Keep it before
-		// path resolution for runtime state and before daemon/workspace/session
-		// construction so providers cannot observe an invalid task input.
-		parseTaskSpecForCli(specMarkdown);
-		if (args.childSpecPath !== undefined) {
-			childSpecMarkdown = readFileSync(resolvePath(args.childSpecPath), "utf8");
-			parseTaskSpecForCli(childSpecMarkdown);
+		if (args.resumeEdgeId === undefined) {
+			if (args.specPath === undefined)
+				throw new CliUsageError("--spec is required");
+			const specPath = resolvePath(args.specPath);
+			specMarkdown = readFileSync(specPath, "utf8");
+			// Strict policy validation is the CLI ingress boundary. Keep it before
+			// path resolution for runtime state and before daemon/workspace/session
+			// construction so providers cannot observe an invalid task input.
+			parseTaskSpecForCli(specMarkdown);
+			if (args.childSpecPath !== undefined) {
+				childSpecMarkdown = readFileSync(resolvePath(args.childSpecPath), "utf8");
+				parseTaskSpecForCli(childSpecMarkdown);
+			}
 		}
 	} catch (error) {
 		const message = validationError(error);
@@ -578,7 +597,7 @@ export async function runCli(
 	}
 
 	const paths = pathsFor(args, projectDir);
-	const familyId = deriveTaskId(childSpecMarkdown === undefined ? specMarkdown : `${specMarkdown}\n<!-- continuation -->\n${childSpecMarkdown}`, projectDir);
+	let familyId = args.resumeEdgeId ?? deriveTaskId(childSpecMarkdown === undefined ? specMarkdown : `${specMarkdown}\n<!-- continuation -->\n${childSpecMarkdown}`, projectDir);
 	let trace: TraceCollector | undefined;
 	let traceTaskId = familyId;
 	let runAnnounced = false;
@@ -645,13 +664,31 @@ export async function runCli(
 	};
 	try {
 		mkdirSync(dirname(paths.dbPath), { recursive: true });
-		// Resolve the attempt before daemon/workspace/provider setup so even a
-		// setup failure can use the same first/warm-ledger identity as a run.
-		const identityStore = new LedgerStore(paths.dbPath);
-		try {
-			traceTaskId = resolveAttemptId(identityStore, familyId);
-		} finally {
-			identityStore.close();
+		const daemonStarter = dependencies.startDaemon ?? startDaemon;
+		if (args.resumeEdgeId === undefined) {
+			// Resolve the attempt before daemon/workspace/provider setup so even a
+			// setup failure can use the same first/warm-ledger identity as a run.
+			const identityStore = new LedgerStore(paths.dbPath);
+			try {
+				traceTaskId = resolveAttemptId(identityStore, familyId);
+			} finally {
+				identityStore.close();
+			}
+		}
+		daemon = await daemonStarter(paths.dbPath, { projectDir });
+		if (args.resumeEdgeId !== undefined) {
+			// The parent id is only a correlation identity for the adapter trace;
+			// all executable child inputs remain inside resumeSequentialChild's
+			// durable manifest.
+			const selectedEdge = daemon.store.getTaskEdge(args.resumeEdgeId);
+			traceTaskId = selectedEdge?.parentTaskId ?? args.resumeEdgeId;
+			familyId = traceTaskId;
+		} else {
+			const daemonAttemptId = resolveAttemptId(daemon.store, familyId);
+			if (daemonAttemptId !== traceTaskId)
+				throw new Error(
+					`attempt identity changed during daemon setup: ${traceTaskId} -> ${daemonAttemptId}`,
+				);
 		}
 		trace = createCliTrace(traceTaskId, familyId, args.model, specMarkdown, {
 			...(args.maxTurns === undefined ? {} : { maxTurns: args.maxTurns }),
@@ -659,13 +696,6 @@ export async function runCli(
 			...(args.wallTimeoutMs === undefined ? {} : { wallTimeoutMs: args.wallTimeoutMs }),
 		});
 		announceRun();
-		const daemonStarter = dependencies.startDaemon ?? startDaemon;
-		daemon = await daemonStarter(paths.dbPath, { projectDir });
-		const daemonAttemptId = resolveAttemptId(daemon.store, familyId);
-		if (daemonAttemptId !== traceTaskId)
-			throw new Error(
-				`attempt identity changed during daemon setup: ${traceTaskId} -> ${daemonAttemptId}`,
-			);
 		const workspaceDriver =
 			dependencies.workspaceDriver ??
 			new JujutsuWorkspaceDriver({ projectDir });
@@ -720,41 +750,64 @@ export async function runCli(
 				...(dependencies.host === undefined ? {} : { host: dependencies.host }),
 				gateway: tracedGateway,
 			};
-			const result = childSpecMarkdown === undefined
-				? await runIsolatedTask({
-						...sharedExecution,
-						specMarkdown,
-						contextCapabilitiesFactory: acquisitionFactoryFromLegacy(selectedContextFactory),
-						...(contextArtifactStore === undefined ? {} : { contextArtifactStore }),
-						onContextEvent: (event: ContextEvidenceEvent) =>
-							trace!.record({
-								type: event.type,
-								phase: event.type.startsWith("epoch") || event.type.startsWith("checkpoint") ? "recovery" : "context",
-								taskId: trace!.taskId,
-								provider: event.provider.id,
-								config: event.provider.version,
-								detail: event.detail,
-							}),
-						onEvent: (event) => {
-							write(renderProgress(event));
-							recordSessionEvent(trace!, event, turnState);
-						},
-					})
-				: await (async () => {
-						const sequential = await runSequentialTask({
+			const result = args.resumeEdgeId !== undefined
+				? await (async () => {
+						const sequential = await resumeSequentialChild(args.resumeEdgeId!, {
 							...sharedExecution,
-							parentSpecMarkdown: specMarkdown,
-							childSpecMarkdown,
 							artifactStore: new ContextArtifactStore({ root: join(dirname(paths.artifactsDir), "continuations") }),
-							parentTaskId: traceTaskId,
-							childTaskId: `${traceTaskId}-child`,
-							edgeId: `${traceTaskId}-edge`,
 							contextCapabilitiesFactory: acquisitionFactoryFromLegacy(selectedContextFactory),
 							...(contextArtifactStore === undefined ? {} : { contextArtifactStore }),
-							onEvent: (event) => write(renderProgress(event)),
+							onContextEvent: (event: ContextEvidenceEvent) =>
+								trace!.record({
+									type: event.type,
+									phase: event.type.startsWith("epoch") || event.type.startsWith("checkpoint") ? "recovery" : "context",
+									taskId: trace!.taskId,
+									provider: event.provider.id,
+									config: event.provider.version,
+									detail: event.detail,
+								}),
+							onEvent: (event) => {
+								write(renderProgress(event));
+								recordSessionEvent(trace!, event, turnState);
+							},
 						});
 						return { receipt: sequential.parent, conflicts: sequential.status === "escalated" ? ["child escalation"] : [] };
-					})();
+					})()
+				: childSpecMarkdown === undefined
+					? await runIsolatedTask({
+							...sharedExecution,
+							specMarkdown,
+							contextCapabilitiesFactory: acquisitionFactoryFromLegacy(selectedContextFactory),
+							...(contextArtifactStore === undefined ? {} : { contextArtifactStore }),
+							onContextEvent: (event: ContextEvidenceEvent) =>
+								trace!.record({
+									type: event.type,
+									phase: event.type.startsWith("epoch") || event.type.startsWith("checkpoint") ? "recovery" : "context",
+									taskId: trace!.taskId,
+									provider: event.provider.id,
+									config: event.provider.version,
+									detail: event.detail,
+								}),
+							onEvent: (event) => {
+								write(renderProgress(event));
+								recordSessionEvent(trace!, event, turnState);
+							},
+						})
+					: await (async () => {
+							const sequential = await runSequentialTask({
+								...sharedExecution,
+								parentSpecMarkdown: specMarkdown,
+								childSpecMarkdown,
+								artifactStore: new ContextArtifactStore({ root: join(dirname(paths.artifactsDir), "continuations") }),
+								parentTaskId: traceTaskId,
+								childTaskId: `${traceTaskId}-child`,
+								edgeId: `${traceTaskId}-edge`,
+								contextCapabilitiesFactory: acquisitionFactoryFromLegacy(selectedContextFactory),
+								...(contextArtifactStore === undefined ? {} : { contextArtifactStore }),
+								onEvent: (event) => write(renderProgress(event)),
+							});
+							return { receipt: sequential.parent, conflicts: sequential.status === "escalated" ? ["child escalation"] : [] };
+						})();
 			const receipt = result.receipt;
 			if (receipt.taskId !== trace.taskId)
 				throw new Error(
