@@ -98,8 +98,17 @@ export interface CliDependencies {
 	contextProviderFactory?: ContextProviderFactory;
 }
 
+export type CliExecutionStatus =
+	| "completed"
+	| "failed"
+	| "escalated"
+	| "blocked"
+	| "resumable";
+
 export interface CliResult {
 	exitCode: number;
+	/** The durable sequential disposition, when this invocation selected an edge. */
+	status?: CliExecutionStatus;
 	receipt?: Awaited<ReturnType<typeof runIsolatedTask>>["receipt"];
 	receiptPath?: string;
 	tracePath?: string;
@@ -694,12 +703,12 @@ export async function runCli(
 			if (selectedEdge.status === "blocked") {
 				const message = `edge ${args.resumeEdgeId} is durably blocked`;
 				writeError(`error: ${message}`);
-				return { exitCode: CLI_EDGE_BLOCKED_EXIT, error: message };
+				return { exitCode: CLI_EDGE_BLOCKED_EXIT, status: "blocked", error: message };
 			}
-			if (["completed", "failed", "escalated"].includes(selectedEdge.status)) {
+			if (selectedEdge.status === "completed" || selectedEdge.status === "failed" || selectedEdge.status === "escalated") {
 				const message = `edge ${args.resumeEdgeId} is already terminal: ${selectedEdge.status}`;
 				write(message);
-				return { exitCode: CLI_EDGE_TERMINAL_EXIT };
+				return { exitCode: CLI_EDGE_TERMINAL_EXIT, status: selectedEdge.status };
 			}
 			// The parent id is only a correlation identity for the adapter trace;
 			// all executable child inputs remain inside resumeSequentialChild's
@@ -774,6 +783,7 @@ export async function runCli(
 				gateway: tracedGateway,
 			};
 			let resumeBlocked = false;
+			let executionStatus: CliExecutionStatus | undefined;
 			const result = args.resumeEdgeId !== undefined
 				? await (async () => {
 						const sequential = await resumeSequentialChild(args.resumeEdgeId!, {
@@ -796,6 +806,7 @@ export async function runCli(
 							},
 						});
 						resumeBlocked = sequential.status === "blocked";
+						executionStatus = sequential.status;
 						return { receipt: sequential.parent, conflicts: sequential.status === "escalated" ? ["child escalation"] : [] };
 					})()
 				: childSpecMarkdown === undefined
@@ -839,6 +850,11 @@ export async function runCli(
 				return { exitCode: CLI_EDGE_BLOCKED_EXIT, error: message };
 			}
 			const receipt = result.receipt;
+			executionStatus ??= receipt.verdict === "ship"
+				? "completed"
+				: receipt.verdict === "escalate"
+					? "escalated"
+					: "failed";
 			if (receipt.taskId !== trace.taskId)
 				throw new Error(
 					`trace task identity ${trace.taskId} disagrees with receipt ${receipt.taskId}`,
@@ -958,6 +974,7 @@ export async function runCli(
 			if (!ships && (!receiptDelivered || !traceDelivery.ok)) {
 				return {
 					exitCode: CLI_ARTIFACT_EXIT,
+					status: executionStatus,
 					receipt: finalReceipt,
 					...(receiptPath === undefined ? {} : { receiptPath }),
 					...(traceDelivery.path === undefined
@@ -969,6 +986,7 @@ export async function runCli(
 			if (receiptPath === undefined) {
 				return {
 					exitCode: CLI_ARTIFACT_EXIT,
+					status: executionStatus,
 					receipt: finalReceipt,
 					error: "receipt artifact delivery failed",
 				};
@@ -996,6 +1014,7 @@ export async function runCli(
 				write(`trace artifact: ${traceDelivery.path}`);
 			return {
 				exitCode: cliExitCode(finalReceipt.verdict, result.conflicts),
+				status: executionStatus,
 				receipt: finalReceipt,
 				receiptPath: deliveredReceiptPath,
 				...(traceDelivery.path === undefined

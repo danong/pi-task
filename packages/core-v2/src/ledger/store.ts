@@ -766,9 +766,15 @@ export class LedgerStore {
 		}
 		this.db
 			.prepare(
-				`INSERT OR IGNORE INTO task_artifacts
+				`INSERT INTO task_artifacts
 				 (task_id, role, artifact_id, media_type, source_revision, reference_json)
-				 VALUES (?, ?, ?, ?, ?, ?)`,
+				 VALUES (?, ?, ?, ?, ?, ?)
+				 ON CONFLICT(task_id, artifact_id) DO UPDATE SET
+				 role = excluded.role,
+				 media_type = excluded.media_type,
+				 source_revision = CASE WHEN excluded.reference_json IS NULL
+					THEN task_artifacts.source_revision ELSE excluded.source_revision END,
+				 reference_json = COALESCE(excluded.reference_json, task_artifacts.reference_json)`,
 			)
 			.run(
 				reference.taskId,

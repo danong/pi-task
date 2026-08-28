@@ -188,7 +188,7 @@ export class JujutsuWorkspaceDriver implements WorkspaceDriver {
 		let context: WorkspaceContext | undefined;
 		try {
 			const listed = await execJj(["workspace", "list", "--ignore-working-copy"], this.#opts.projectDir);
-			if (listed.code === 0 && listed.stdout.split("\\n").some((line) => line.includes(stableName))) {
+			if (listed.code === 0 && listed.stdout.split(/\r?\n/).some((line) => line.includes(stableName))) {
 				const root = await execJj(["workspace", "root", "--name", stableName, "--ignore-working-copy"], this.#opts.projectDir);
 				if (root.code === 0 && root.stdout.trim()) context = {
 					taskId, hostPath: resolve(root.stdout.trim()), branchName: stableName, status: "active",

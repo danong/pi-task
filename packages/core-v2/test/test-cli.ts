@@ -51,6 +51,51 @@ Create the result file.
 ## Artifact Policy
 - Change required
 `;
+const PARENT_SPEC = `## Goal
+Create the parent artifact.
+
+## Requirements
+- R1: parent-result.txt contains the expected value
+
+## Verification
+- test -f parent-result.txt
+- test "$(cat parent-result.txt)" = ok
+
+## Artifact Policy
+- Required: parent-result.txt
+- Change required
+`;
+const CHILD_SPEC = `## Goal
+Create the child artifact.
+
+## Requirements
+- R1: child-result.txt contains the expected value
+
+## Verification
+- test -f child-result.txt
+- test "$(cat child-result.txt)" = ok
+
+## Artifact Policy
+- Required: child-result.txt
+- Change required
+`;
+const RESUMABLE_CHILD_SPEC = `## Goal
+Finish the child artifact from its preserved checkpoint.
+
+## Requirements
+- R1: partial.txt is retained
+- R2: child-result.txt contains the expected value
+
+## Verification
+- test -f partial.txt
+- test -f child-result.txt
+- test "$(cat child-result.txt)" = ok
+
+## Artifact Policy
+- Required: partial.txt
+- Required: child-result.txt
+- Change required
+`;
 const MISSING_POLICY_SPEC = `## Goal
 Create the result file.
 
@@ -107,6 +152,7 @@ interface FakeSessionOptions {
 	statsAvailable?: boolean;
 	writeResult?: boolean;
 	reportedFiles?: string[];
+	artifactFile?: string | ((cwd: string) => string);
 	/** Make a warm rewrite observable while keeping shell verification equal. */
 	warmRewrite?: boolean;
 }
@@ -150,8 +196,14 @@ class FakeHandle implements SessionHandle {
 
 	prompt(): Promise<void> {
 		return Promise.resolve().then(() => {
+			const artifactFile =
+				this.options.artifactFile === undefined
+					? "result.txt"
+					: typeof this.options.artifactFile === "function"
+						? this.options.artifactFile(this.cwd)
+						: this.options.artifactFile;
 			if (this.options.writeResult !== false) {
-				const resultPath = join(this.cwd, "result.txt");
+				const resultPath = join(this.cwd, artifactFile);
 				const content =
 					this.options.warmRewrite && existsSync(resultPath)
 						? `${this.value}\n`
@@ -166,7 +218,7 @@ class FakeHandle implements SessionHandle {
 			this.result = {
 				files_changed:
 					this.options.reportedFiles ??
-					(this.options.writeResult === false ? [] : ["result.txt"]),
+					(this.options.writeResult === false ? [] : [artifactFile]),
 				summary:
 					this.options.writeResult === false ? "no change" : "created result",
 				commit_ids: ["fake-commit"],
@@ -217,6 +269,41 @@ function fakeHost(
 					warmRewrite: options.warmRewrite ?? warmRewrite,
 				}),
 			);
+		},
+	};
+}
+
+function interruptingHost(counter: { value: number }): SessionHost {
+	return {
+		spawn: (config: SessionHostConfig) => {
+			counter.value += 1;
+			return Promise.resolve({
+				role: config.role,
+				model: { provider: "fake", modelId: "fake/model" },
+				result: undefined,
+				subscribe(listener: (event: SessionHostEvent) => void) {
+					listener({ type: "turnStart" });
+					listener({ type: "turnStart" });
+					return () => undefined;
+				},
+				prompt: async () => {
+					writeFileSync(join(config.cwd, "partial.txt"), "preserved partial work\n");
+				},
+				abort: async () => undefined,
+				stats: async () => ({
+					sessionFile: undefined,
+					sessionId: "fake-interrupted",
+					userMessages: 1,
+					assistantMessages: 1,
+					toolCalls: 0,
+					toolResults: 0,
+					totalMessages: 2,
+					tokens: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, total: 2 },
+					cost: 0,
+				}),
+				setModel: async () => undefined,
+				close: () => undefined,
+			} satisfies SessionHandle);
 		},
 	};
 }
@@ -771,6 +858,139 @@ export async function runTests(): Promise<void> {
 			existsSync(join(resumeRepo, "result.txt")),
 			`CLI resumes a ready edge without replaying its parent (exit=${resumedCli.exitCode}, verdict=${resumedCli.receipt?.verdict ?? "none"}, parent=${beforeParentSessions}/${afterParentSessions}, child=${afterChildSessions}, spawns=${resumeSpawns.value}, error=${resumedCli.error ?? ""})`,
 		);
+
+		// The selector also owns the provider-reconciliation seam. The durable
+		// edge remains preparing across a close/reopen while the provider has
+		// already created its workspace; selection must reconcile it, then spawn
+		// only the child session.
+		const preparingFixture = join(root, "cli-preparing");
+		mkdirSync(preparingFixture);
+		const preparingRepo = join(preparingFixture, "repo");
+		initRepo(preparingRepo);
+		const preparingDb = join(preparingFixture, "ledger.sqlite");
+		const preparingArtifacts = join(preparingFixture, "artifacts");
+		const preparingContinuations = join(preparingFixture, "continuations");
+		const preparingSpawns = { value: 0 };
+		const preparingFile = (cwd: string) =>
+			cwd.includes("continuation") ? "child-result.txt" : "parent-result.txt";
+		const preparedPreparing = await prepareSequentialChild({
+			parentSpecMarkdown: PARENT_SPEC,
+			childSpecMarkdown: CHILD_SPEC,
+			projectDir: preparingRepo,
+			artifactsDir: join(preparingFixture, "failures"),
+			dbPath: preparingDb,
+			model: "fake/model",
+			workspaceDriver: new JujutsuWorkspaceDriver({ projectDir: preparingRepo }),
+			host: fakeHost("ok", preparingSpawns, { artifactFile: preparingFile }),
+			artifactStore: new ContextArtifactStore({ root: preparingContinuations }),
+			deferProviderPreparation: true,
+		});
+		const providerPreparation = new JujutsuWorkspaceDriver({ projectDir: preparingRepo });
+		const preparingOwnerLedger = new LedgerStore(preparingDb);
+		const preparingOwner = preparedPreparing.edgeId === undefined
+			? null
+			: preparingOwnerLedger.getChildPreparation(preparedPreparing.edgeId);
+		const preparingParentSessions = preparingOwnerLedger.listSessions(preparedPreparing.parentTaskId).length;
+		preparingOwnerLedger.close();
+		await providerPreparation.continuation!.prepareContinuation!(
+			preparedPreparing.childTaskId,
+			preparingOwner!.preparationId,
+		);
+		const reconciledPreparing = await runCli([
+			"--resume", preparedPreparing.edgeId!, "--project-dir", preparingRepo,
+			"--model", "fake/model", "--db", preparingDb, "--artifacts-dir", preparingArtifacts,
+		], {
+			host: fakeHost("ok", preparingSpawns, { artifactFile: preparingFile }),
+			workspaceDriver: new JujutsuWorkspaceDriver({ projectDir: preparingRepo }),
+			write: () => undefined,
+		});
+		const reconciledPreparingLedger = new LedgerStore(preparingDb);
+		check(
+			preparedPreparing.status === "preparing" &&
+			reconciledPreparing.exitCode === 0 &&
+			reconciledPreparing.status === "completed" &&
+			reconciledPreparing.receipt?.verdict === "ship" &&
+			preparingSpawns.value === 2 &&
+			reconciledPreparingLedger.getTaskEdge(preparedPreparing.edgeId!)?.status === "completed" &&
+			reconciledPreparingLedger.listSessions(preparedPreparing.parentTaskId).length === preparingParentSessions &&
+			reconciledPreparingLedger.listSessions(preparedPreparing.childTaskId).length === 1 &&
+			existsSync(join(preparingRepo, "parent-result.txt")) &&
+			existsSync(join(preparingRepo, "child-result.txt")),
+			"CLI selector reconciles a persisted preparing edge without replaying its parent",
+		);
+		reconciledPreparingLedger.close();
+
+		// A cap is a typed non-success for the selected child, not a terminal
+		// parent failure. Its checkpoint and provider continuation are refreshed;
+		// a later selector invocation settles from the current child edge.
+		const cappedFixture = join(root, "cli-capped");
+		mkdirSync(cappedFixture);
+		const cappedRepo = join(cappedFixture, "repo");
+		initRepo(cappedRepo);
+		const cappedDb = join(cappedFixture, "ledger.sqlite");
+		const cappedArtifacts = join(cappedFixture, "artifacts");
+		const cappedContinuations = join(cappedFixture, "continuations");
+		const cappedPreparationSpawns = { value: 0 };
+		const cappedPrepared = await prepareSequentialChild({
+			parentSpecMarkdown: PARENT_SPEC,
+			childSpecMarkdown: RESUMABLE_CHILD_SPEC,
+			projectDir: cappedRepo,
+			artifactsDir: join(cappedFixture, "failures"),
+			dbPath: cappedDb,
+			model: "fake/model",
+			workspaceDriver: new JujutsuWorkspaceDriver({ projectDir: cappedRepo }),
+			host: fakeHost("ok", cappedPreparationSpawns, { artifactFile: preparingFile }),
+			artifactStore: new ContextArtifactStore({ root: cappedContinuations }),
+		});
+		const cappedBefore = new LedgerStore(cappedDb);
+		const cappedParentSessions = cappedBefore.listSessions(cappedPrepared.parentTaskId).length;
+		const cappedBeforeCheckpoint = cappedBefore.getTaskEdge(cappedPrepared.edgeId!)?.checkpointArtifactId;
+		cappedBefore.close();
+		const cappedFirst = await runCli([
+			"--resume", cappedPrepared.edgeId!, "--project-dir", cappedRepo,
+			"--model", "fake/model", "--max-turns", "1", "--db", cappedDb,
+			"--artifacts-dir", cappedArtifacts,
+		], {
+			host: interruptingHost({ value: 0 }),
+			workspaceDriver: new JujutsuWorkspaceDriver({ projectDir: cappedRepo }),
+			write: () => undefined,
+		});
+		const cappedAfterFirst = new LedgerStore(cappedDb);
+		const cappedEdge = cappedAfterFirst.getTaskEdge(cappedPrepared.edgeId!);
+		const cappedChildSessions = cappedAfterFirst.listSessions(cappedPrepared.childTaskId).length;
+		check(
+			cappedFirst.exitCode !== 0 && cappedFirst.status === "resumable" &&
+			cappedFirst.receipt?.verdict === "failed" &&
+			cappedEdge?.status === "resumable" &&
+			cappedEdge.checkpointArtifactId !== cappedBeforeCheckpoint &&
+			cappedAfterFirst.listSessions(cappedPrepared.parentTaskId).length === cappedParentSessions &&
+			cappedChildSessions === 1,
+			"CLI capped selector returns a non-success resumable child outcome",
+		);
+		cappedAfterFirst.close();
+		const cappedSecondSpawns = { value: 0 };
+		const cappedSecond = await runCli([
+			"--resume", cappedPrepared.edgeId!, "--project-dir", cappedRepo,
+			"--model", "fake/model", "--db", cappedDb, "--artifacts-dir", cappedArtifacts,
+		], {
+			host: fakeHost("ok", cappedSecondSpawns, { artifactFile: preparingFile, warmRewrite: true }),
+			workspaceDriver: new JujutsuWorkspaceDriver({ projectDir: cappedRepo }),
+			write: () => undefined,
+		});
+		const cappedAfterSecond = new LedgerStore(cappedDb);
+		check(
+			cappedSecond.exitCode === 0 && cappedSecond.status === "completed" &&
+			cappedSecond.receipt?.taskId === cappedPrepared.parentTaskId &&
+			cappedSecond.receipt?.verdict === "ship" && cappedSecondSpawns.value === 1 &&
+			cappedAfterSecond.getTaskEdge(cappedPrepared.edgeId!)?.status === "completed" &&
+			cappedAfterSecond.listSessions(cappedPrepared.parentTaskId).length === cappedParentSessions &&
+			cappedAfterSecond.listSessions(cappedPrepared.childTaskId).length === 2 &&
+			existsSync(join(cappedRepo, "parent-result.txt")) &&
+			existsSync(join(cappedRepo, "partial.txt")) &&
+			existsSync(join(cappedRepo, "child-result.txt")),
+			"CLI resumes a capped child from its checkpoint and derives a fresh ship receipt from settlement",
+		);
+		cappedAfterSecond.close();
 
 		// Selector outcomes are resolved before provider construction. A terminal
 		// repeat is a successful no-op, while an absent edge is a usage error.
