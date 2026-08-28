@@ -446,7 +446,6 @@ export async function runTests(): Promise<void> {
 			const seedEdge = (dbPath: string, edgeId: string, state: "preparing" | "ready" | "claimed" | "resumable"): void => {
 				const seed = new LedgerStore(dbPath);
 				seed.insertTask({ id: `${edgeId}-parent`, goal: "parent" });
-				seed.insertTask({ id: `${edgeId}-child`, goal: "child" });
 				const config = recoveryConfig(edgeId, edgeId.length);
 				const intent = {
 					edgeId,
@@ -467,14 +466,28 @@ export async function runTests(): Promise<void> {
 					sequentialConfig: config,
 				};
 				if (state === "preparing") {
+					const preparationId = `${edgeId}-preparation`;
+					seed.persistChildPreparationOwner({
+						preparationId,
+						edgeId,
+						parentTaskId: `${edgeId}-parent`,
+						plannedChildTaskId: `${edgeId}-child`,
+						driver: "fake",
+						capabilityIdentity: config.capabilityIdentity,
+						capabilityVersion: config.capabilityVersion,
+					});
+					seed.recordChildParentAcceptance(preparationId, "{}", "parent-revision");
+					seed.beginChildArtifactPersistence(preparationId);
+					seed.insertTask({ id: `${edgeId}-child`, goal: "child" });
 					seed.persistPreparingChildIntent({
 						...intent,
-						preparationId: `${edgeId}-preparation`,
+						preparationId,
 						preparationDriver: "fake",
 						preparationCapabilityIdentity: config.capabilityIdentity,
 						preparationCapabilityVersion: config.capabilityVersion,
 					});
 				} else {
+					seed.insertTask({ id: `${edgeId}-child`, goal: "child" });
 					seed.persistReadyChildIntent(intent);
 					if (state === "claimed" || state === "resumable")
 						check(seed.claimReadyChild(edgeId) !== null, `${state} edge can be claimed`);

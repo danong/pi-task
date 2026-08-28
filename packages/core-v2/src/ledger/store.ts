@@ -952,13 +952,26 @@ export class LedgerStore {
 		});
 	}
 
+	private requireChildPreparationOwner(
+		preparationId: string,
+		intent: Pick<NewChildIntent, "edgeId" | "parentTaskId" | "childTaskId">,
+		provider?: { driver: string; capabilityIdentity: string; capabilityVersion: string },
+	): ChildPreparationOwnershipRow {
+		const owner = this.getChildPreparationOwnership(preparationId);
+		if (!owner || owner.edgeId !== intent.edgeId || owner.parentTaskId !== intent.parentTaskId ||
+			owner.plannedChildTaskId !== intent.childTaskId ||
+			(provider !== undefined && (owner.driver !== provider.driver ||
+				owner.capabilityIdentity !== provider.capabilityIdentity ||
+				owner.capabilityVersion !== provider.capabilityVersion)))
+			throw new Error("child preparation owner does not match intent");
+		return owner;
+	}
+
 	/** Unsupported providers still get an atomic child/edge attachment before
 	 * the edge is blocked; no child task can escape without its ownership edge. */
 	persistBlockedChildIntent(intent: NewChildIntent & { preparationId: string; childGoal: string }): TaskEdgeRow {
 		return this.transaction(() => {
-			const owner = this.getChildPreparationOwnership(intent.preparationId);
-			if (!owner || owner.edgeId !== intent.edgeId || owner.plannedChildTaskId !== intent.childTaskId)
-				throw new Error("child preparation owner does not match intent");
+			this.requireChildPreparationOwner(intent.preparationId, intent);
 			if (!this.getTask(intent.childTaskId)) this.insertTask({ id: intent.childTaskId, goal: intent.childGoal });
 			const edge = this.persistReadyChildIntentInTransaction(intent);
 			this.setPreparationOwnerStatus(intent.preparationId, "blocked");
@@ -1079,9 +1092,11 @@ export class LedgerStore {
 		childGoal?: string;
 	}): TaskEdgeRow {
 		return this.transaction(() => {
-			const owner = this.getChildPreparationOwnership(intent.preparationId);
-			if (!owner || owner.edgeId !== intent.edgeId || owner.parentTaskId !== intent.parentTaskId || owner.plannedChildTaskId !== intent.childTaskId)
-				throw new Error("child preparation owner does not match intent");
+			const owner = this.requireChildPreparationOwner(intent.preparationId, intent, {
+				driver: intent.preparationDriver,
+				capabilityIdentity: intent.preparationCapabilityIdentity,
+				capabilityVersion: intent.preparationCapabilityVersion,
+			});
 			if (["provider_preparing", "ready"].includes(owner.status)) {
 				const existing = this.getTaskEdge(intent.edgeId);
 				if (existing) return existing;
