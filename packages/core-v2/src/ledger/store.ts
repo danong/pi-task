@@ -21,7 +21,7 @@ import {
 	type ImmutableArtifactReference,
 } from "../contracts/context-lifecycle.ts";
 
-export const LEDGER_SCHEMA_VERSION = 5;
+export const LEDGER_SCHEMA_VERSION = 6;
 
 export type TaskStatus =
 	| "queued"
@@ -134,6 +134,38 @@ export interface ChildPreparationRow {
 	updatedAt: string;
 }
 
+/** Parent-owned reservation. This row intentionally does not foreign-key the
+ * planned child: it is the boot-discoverable owner that exists before the
+ * child task, its edge, or any immutable child artifact. */
+export type ChildPreparationOwnershipStatus =
+	| "parent_pending" | "parent_accepted" | "artifacts_pending"
+	| "provider_preparing" | "ready" | "blocked";
+
+export interface ChildPreparationOwnershipRow {
+	preparationId: string;
+	edgeId: string;
+	parentTaskId: string;
+	plannedChildTaskId: string;
+	driver: string;
+	capabilityIdentity: string;
+	capabilityVersion: string;
+	status: ChildPreparationOwnershipStatus;
+	parentRevision: string | null;
+	parentReceiptJson: string | null;
+	createdAt: string;
+	updatedAt: string;
+}
+
+export interface NewChildPreparationOwnership {
+	preparationId: string;
+	edgeId: string;
+	parentTaskId: string;
+	plannedChildTaskId: string;
+	driver: string;
+	capabilityIdentity: string;
+	capabilityVersion: string;
+}
+
 export interface TaskArtifactReference {
 	taskId: string;
 	role: string;
@@ -228,6 +260,8 @@ export interface NewChildIntent {
 	preparationCapabilityIdentity?: string;
 	preparationCapabilityVersion?: string;
 	initialStatus?: "preparing" | "ready";
+	/** Used only by the owner attach transaction; never creates an unowned task. */
+	childGoal?: string;
 }
 
 export interface ChildSettlementArtifacts {
@@ -434,12 +468,37 @@ CREATE TABLE IF NOT EXISTS child_preparations (
 CREATE INDEX IF NOT EXISTS child_preparations_status_idx ON child_preparations(status, created_at);
 `;
 
+/** V6 makes the parent-to-child reservation independently discoverable.
+ * The planned child id is deliberately not a task FK: the reservation must
+ * survive a crash before child creation. */
+const V6_DDL = `
+CREATE TABLE IF NOT EXISTS child_preparation_ownership (
+    preparation_id TEXT PRIMARY KEY,
+    edge_id TEXT NOT NULL UNIQUE,
+    parent_task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    planned_child_task_id TEXT NOT NULL,
+    driver TEXT NOT NULL,
+    capability_identity TEXT NOT NULL,
+    capability_version TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN (
+        'parent_pending', 'parent_accepted', 'artifacts_pending',
+        'provider_preparing', 'ready', 'blocked')),
+    parent_revision TEXT,
+    parent_receipt_json TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS child_preparation_ownership_status_idx
+    ON child_preparation_ownership(status, created_at);
+`;
+
 const MIGRATIONS: Migration[] = [
 	{ version: 1, sql: V1_DDL },
 	{ version: 2, sql: V2_DDL },
 	{ version: 3, sql: V3_DDL },
 	{ version: 4, sql: V4_DDL },
 	{ version: 5, sql: V5_DDL },
+	{ version: 6, sql: V6_DDL },
 ];
 
 function migrate(db: DatabaseSync): void {
@@ -808,9 +867,111 @@ export class LedgerStore {
 		};
 	}
 
-	/** Persist the child task edge and every reference before it becomes ready. */
-	persistReadyChildIntent(intent: NewChildIntent): TaskEdgeRow {
+	/** Reserve parent ownership before any child row or immutable child bytes
+	 * exist. INSERT OR IGNORE makes the reservation safe to repeat after a
+	 * close/reopen; a conflicting identity is rejected rather than forked. */
+	persistChildPreparationOwner(owner: NewChildPreparationOwnership): ChildPreparationOwnershipRow {
 		return this.transaction(() => {
+			if (!this.getTask(owner.parentTaskId)) throw new Error("parent task does not exist");
+			const existing = this.getChildPreparationOwnership(owner.preparationId);
+			if (existing !== null) {
+				if (existing.edgeId !== owner.edgeId || existing.parentTaskId !== owner.parentTaskId ||
+					existing.plannedChildTaskId !== owner.plannedChildTaskId || existing.driver !== owner.driver ||
+					existing.capabilityIdentity !== owner.capabilityIdentity || existing.capabilityVersion !== owner.capabilityVersion)
+					throw new Error("child preparation owner identity conflicts with durable reservation");
+				return existing;
+			}
+			const byEdge = this.db.prepare("SELECT preparation_id FROM child_preparation_ownership WHERE edge_id = ?").get(owner.edgeId);
+			if (byEdge !== undefined) throw new Error("child preparation edge already has an owner");
+			this.db.prepare(`INSERT INTO child_preparation_ownership
+				(preparation_id, edge_id, parent_task_id, planned_child_task_id, driver,
+				 capability_identity, capability_version, status)
+				VALUES (?, ?, ?, ?, ?, ?, ?, 'parent_pending')`).run(
+				owner.preparationId, owner.edgeId, owner.parentTaskId, owner.plannedChildTaskId,
+				owner.driver, owner.capabilityIdentity, owner.capabilityVersion,
+			);
+			this.setTaskStatus(owner.parentTaskId, "preparing");
+			return this.getChildPreparationOwnership(owner.preparationId)!;
+		});
+	}
+
+	getChildPreparationOwnership(preparationId: string): ChildPreparationOwnershipRow | null {
+		const row = this.db.prepare("SELECT * FROM child_preparation_ownership WHERE preparation_id = ?").get(preparationId) as Record<string, unknown> | undefined;
+		return row ? rowToChildPreparationOwnership(row) : null;
+	}
+
+	getChildPreparationOwnershipByEdge(edgeId: string): ChildPreparationOwnershipRow | null {
+		const row = this.db.prepare("SELECT * FROM child_preparation_ownership WHERE edge_id = ?").get(edgeId) as Record<string, unknown> | undefined;
+		return row ? rowToChildPreparationOwnership(row) : null;
+	}
+
+	/** Record acceptance separately from child preparation. A parent receipt is
+	 * kept in the ledger until its immutable artifact reference is attached, so
+	 * recovery never has to rerun the accepted parent. */
+	recordChildParentAcceptance(preparationId: string, parentReceiptJson: string, parentRevision: string): ChildPreparationOwnershipRow {
+		return this.transaction(() => {
+			if (!parentReceiptJson || !parentRevision) throw new Error("parent acceptance requires receipt and revision");
+			const owner = this.getChildPreparationOwnership(preparationId);
+			if (!owner) throw new Error("child preparation owner does not exist");
+			if (owner.status === "parent_accepted" || owner.status === "artifacts_pending" || owner.status === "provider_preparing" || owner.status === "ready") {
+				if (owner.parentReceiptJson !== parentReceiptJson || owner.parentRevision !== parentRevision)
+					throw new Error("parent acceptance conflicts with durable acceptance");
+				return owner;
+			}
+			if (owner.status !== "parent_pending") throw new Error("child preparation is not awaiting parent acceptance");
+			this.db.prepare("UPDATE child_preparation_ownership SET status = 'parent_accepted', parent_receipt_json = ?, parent_revision = ?, updated_at = CURRENT_TIMESTAMP WHERE preparation_id = ? AND status = 'parent_pending'").run(parentReceiptJson, parentRevision, preparationId);
+			this.setTaskStatus(owner.parentTaskId, "awaiting_child");
+			return this.getChildPreparationOwnership(preparationId)!;
+		});
+	}
+
+	/** Mark the external immutable-write boundary before writing bytes. */
+	beginChildArtifactPersistence(preparationId: string): ChildPreparationOwnershipRow {
+		return this.transaction(() => {
+			const owner = this.getChildPreparationOwnership(preparationId);
+			if (!owner) throw new Error("child preparation owner does not exist");
+			if (owner.status === "parent_accepted")
+				this.db.prepare("UPDATE child_preparation_ownership SET status = 'artifacts_pending', updated_at = CURRENT_TIMESTAMP WHERE preparation_id = ?").run(preparationId);
+			else if (!["artifacts_pending", "provider_preparing", "ready"].includes(owner.status))
+				throw new Error("child artifacts cannot be started from the current preparation state");
+			return this.getChildPreparationOwnership(preparationId)!;
+		});
+	}
+
+	private setPreparationOwnerStatus(preparationId: string, status: ChildPreparationOwnershipStatus): void {
+		this.db.prepare("UPDATE child_preparation_ownership SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE preparation_id = ?").run(status, preparationId);
+	}
+
+	blockChildPreparation(preparationId: string): ChildPreparationOwnershipRow {
+		return this.transaction(() => {
+			const owner = this.getChildPreparationOwnership(preparationId);
+			if (!owner) throw new Error("child preparation owner does not exist");
+			this.setPreparationOwnerStatus(preparationId, "blocked");
+			this.setTaskStatus(owner.parentTaskId, "failed");
+			return this.getChildPreparationOwnership(preparationId)!;
+		});
+	}
+
+	/** Unsupported providers still get an atomic child/edge attachment before
+	 * the edge is blocked; no child task can escape without its ownership edge. */
+	persistBlockedChildIntent(intent: NewChildIntent & { preparationId: string; childGoal: string }): TaskEdgeRow {
+		return this.transaction(() => {
+			const owner = this.getChildPreparationOwnership(intent.preparationId);
+			if (!owner || owner.edgeId !== intent.edgeId || owner.plannedChildTaskId !== intent.childTaskId)
+				throw new Error("child preparation owner does not match intent");
+			if (!this.getTask(intent.childTaskId)) this.insertTask({ id: intent.childTaskId, goal: intent.childGoal });
+			const edge = this.persistReadyChildIntentInTransaction(intent);
+			this.setPreparationOwnerStatus(intent.preparationId, "blocked");
+			return edge;
+		});
+	}
+
+	/** Persist the child task, edge, and references as one attach transaction. */
+	persistReadyChildIntent(intent: NewChildIntent): TaskEdgeRow {
+		return this.transaction(() => this.persistReadyChildIntentInTransaction(intent));
+	}
+
+	private persistReadyChildIntentInTransaction(intent: NewChildIntent): TaskEdgeRow {
 			const relationship = intent.relationship ?? "continuation";
 			if (intent.ordinal <= 0 || !Number.isInteger(intent.ordinal))
 				throw new Error("child ordinal must be a positive integer");
@@ -905,18 +1066,34 @@ export class LedgerStore {
 				this.setTaskStatus(intent.childTaskId, "preparing");
 			}
 			return this.getTaskEdge(intent.edgeId)!;
-		});
 	}
 
-	/** Create the durable owner before invoking a provider. */
+	/** Attach a planned child only after the parent owner exists. The child
+	 * insert, edge, references, and provider-preparing state share one unit. */
 	persistPreparingChildIntent(intent: NewChildIntent & {
 		preparationId: string;
 		preparationDriver: string;
 		preparationCapabilityIdentity: string;
 		preparationCapabilityVersion: string;
 		sequentialConfig: SequentialEdgeConfig;
+		childGoal?: string;
 	}): TaskEdgeRow {
-		return this.persistReadyChildIntent({ ...intent, initialStatus: "preparing" });
+		return this.transaction(() => {
+			const owner = this.getChildPreparationOwnership(intent.preparationId);
+			if (!owner || owner.edgeId !== intent.edgeId || owner.parentTaskId !== intent.parentTaskId || owner.plannedChildTaskId !== intent.childTaskId)
+				throw new Error("child preparation owner does not match intent");
+			if (["provider_preparing", "ready"].includes(owner.status)) {
+				const existing = this.getTaskEdge(intent.edgeId);
+				if (existing) return existing;
+			}
+			if (!["artifacts_pending", "parent_accepted"].includes(owner.status))
+				throw new Error("child intent cannot be attached from the current preparation state");
+			if (!this.getTask(intent.childTaskId))
+				this.insertTask({ id: intent.childTaskId, goal: intent.childGoal ?? "continuation child" });
+			const edge = this.persistReadyChildIntentInTransaction({ ...intent, initialStatus: "preparing" });
+			this.setPreparationOwnerStatus(intent.preparationId, "provider_preparing");
+			return edge;
+		});
 	}
 
 	/** Commit provider facts and the complete immutable ingress atomically. */
@@ -928,14 +1105,28 @@ export class LedgerStore {
 	): TaskEdgeRow {
 		return this.transaction(() => {
 			const edge = this.getTaskEdge(edgeId);
-			if (!edge || edge.status !== "preparing") throw new Error("child edge is not preparing");
+			if (!edge) throw new Error("child edge is not preparing");
+			const owner = this.getChildPreparationOwnershipByEdge(edgeId);
+			if (edge.status === "ready" && owner?.status === "ready") return edge;
+			if (edge.status !== "preparing") throw new Error("child edge is not preparing");
 			if (config.edgeId !== edgeId || continuation.taskId !== edge.childTaskId || workspace.taskId !== edge.childTaskId)
 				throw new Error("provider preparation identity does not match edge");
 			this.db.prepare("INSERT OR IGNORE INTO workspaces (id, task_id, driver, host_path, container_path, branch_name, status) VALUES (?, ?, ?, ?, ?, ?, 'active')").run(workspace.id, workspace.taskId, workspace.driver, workspace.hostPath, workspace.containerPath ?? null, workspace.branchName);
-			this.insertWorkspaceContinuation({ ...continuation, status: "ready" });
+			const continuationVersion = continuation.capabilityVersion ?? continuation.providerVersion;
+			if (continuationVersion === undefined) throw new Error("provider preparation has no capability version");
+			this.db.prepare(`INSERT OR IGNORE INTO workspace_continuations
+				(id, task_id, driver, provider_version, capability_identity,
+				 capability_version, opaque_token, revision, status)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'ready')`).run(
+				continuation.id, continuation.taskId, continuation.driver,
+				continuationVersion,
+				continuation.capabilityIdentity ?? null, continuationVersion,
+				continuation.opaqueToken, continuation.revision,
+			);
 			this.db.prepare("UPDATE task_edges SET workspace_continuation_id = ?, handoff_artifact_id = ?, checkpoint_artifact_id = ? WHERE edge_id = ?").run(continuation.id, config.handoffReference.id, config.checkpointReference.id, edgeId);
 			this.db.prepare("DELETE FROM task_edge_status_overrides WHERE edge_id = ?").run(edgeId);
 			this.db.prepare("UPDATE child_preparations SET status = 'ready', workspace_id = ?, updated_at = CURRENT_TIMESTAMP WHERE edge_id = ?").run(workspace.id, edgeId);
+			this.db.prepare("UPDATE child_preparation_ownership SET status = 'ready', updated_at = CURRENT_TIMESTAMP WHERE edge_id = ?").run(edgeId);
 			this.replaceSequentialEdgeConfig(config);
 			for (const [role, ref] of [["handoff", config.handoffReference], ["checkpoint", config.checkpointReference], ["plan", config.planReference], ["child-spec", config.childSpecReference], ["ingress-config", config.ingressConfigReference], ["parent-receipt", config.parentReceiptReference]] as const)
 				this.insertTaskArtifact({ taskId: edge.childTaskId!, role, artifactId: ref.id, mediaType: ref.mediaType, reference: ref });
@@ -1222,13 +1413,20 @@ export class LedgerStore {
 
 	// ─── boot reconciliation (NFR-1) ──────────────────────────────────
 
-	/** Reclassify child edges after a crash using ledger facts only. No session
-	 * or provider is started while making this decision. Preparing and ready
-	 * edges are deliberately left to sequential recovery ownership. */
-	reconcileChildEdgesOnBoot(): { resumable: string[]; blocked: string[] } {
+	/** Reclassify child preparation ownership before generic task retry. No
+	 * session or provider is started while making this decision. */
+	reconcileChildEdgesOnBoot(): { preparing: string[]; resumable: string[]; blocked: string[] } {
 		return this.transaction(() => {
+			const preparing: string[] = [];
 			const resumable: string[] = [];
 			const blocked: string[] = [];
+			const owners = this.db.prepare("SELECT * FROM child_preparation_ownership WHERE status IN ('parent_pending', 'parent_accepted', 'artifacts_pending', 'provider_preparing') ORDER BY created_at, rowid").all() as Record<string, unknown>[];
+			for (const row of owners) {
+				const owner = rowToChildPreparationOwnership(row);
+				const edge = this.getTaskEdge(owner.edgeId);
+				if (!edge) preparing.push(owner.preparationId);
+				else if (edge.status === "preparing" || edge.status === "ready") preparing.push(owner.preparationId);
+			}
 			const rows = this.db.prepare("SELECT e.*, o.status AS override_status FROM task_edges e LEFT JOIN task_edge_status_overrides o ON o.edge_id = e.edge_id WHERE COALESCE(o.status, e.status) IN ('preparing', 'ready', 'claimed', 'resumable') ORDER BY e.created_at, e.rowid").all() as Record<string, unknown>[];
 			for (const row of rows) {
 				const edge = rowToTaskEdge(row);
@@ -1263,7 +1461,7 @@ export class LedgerStore {
 				}
 				blocked.push(edge.edgeId);
 			}
-			return { resumable, blocked };
+			return { preparing, resumable, blocked };
 		});
 	}
 
@@ -1354,7 +1552,13 @@ export class LedgerStore {
 				   AND COALESCE(o.status, e.status) IN ('preparing', 'ready', 'claimed', 'resumable')
 				 LIMIT 1`,
 			).get(task.id, task.id);
-			if (edgeOwned !== undefined) continue;
+			const preparationOwned = this.db.prepare(
+				`SELECT 1 FROM child_preparation_ownership
+				 WHERE (parent_task_id = ? OR planned_child_task_id = ?)
+				   AND status IN ('parent_pending', 'parent_accepted', 'artifacts_pending', 'provider_preparing')
+				 LIMIT 1`,
+			).get(task.id, task.id);
+			if (edgeOwned !== undefined || preparationOwned !== undefined) continue;
 			const decision = reconcileCrashedTask({
 				status: task.status,
 				retryCount: task.retryCount,
@@ -1433,6 +1637,18 @@ function rowToWorkspace(row: Record<string, unknown>): WorkspaceRow {
 		status: row.status as WorkspaceStatus,
 		createdAt: String(row.created_at),
 		updatedAt: String(row.updated_at),
+	};
+}
+
+function rowToChildPreparationOwnership(row: Record<string, unknown>): ChildPreparationOwnershipRow {
+	return {
+		preparationId: String(row.preparation_id), edgeId: String(row.edge_id),
+		parentTaskId: String(row.parent_task_id), plannedChildTaskId: String(row.planned_child_task_id),
+		driver: String(row.driver), capabilityIdentity: String(row.capability_identity),
+		capabilityVersion: String(row.capability_version), status: row.status as ChildPreparationOwnershipStatus,
+		parentRevision: row.parent_revision === null ? null : String(row.parent_revision),
+		parentReceiptJson: row.parent_receipt_json === null ? null : String(row.parent_receipt_json),
+		createdAt: String(row.created_at), updatedAt: String(row.updated_at),
 	};
 }
 

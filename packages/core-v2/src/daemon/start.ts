@@ -38,9 +38,9 @@ export interface StartedDaemon {
 	store: LedgerStore;
 	/** Reconciliation outcome: task ids requeued vs failed at boot. */
 	reconciled: { requeued: string[]; failed: string[] };
-	/** Child edges classified from complete durable ingress only; preparing and
-	 * ready edges remain owned by sequential recovery, and no sessions run. */
-	childReconciled: { resumable: string[]; blocked: string[] };
+	/** Child preparation ownership is classified before generic task retry;
+	 * preparing reservations remain owned by sequential recovery. */
+	childReconciled: { preparing: string[]; resumable: string[]; blocked: string[] };
 	/** Repo-artifact hygiene result (default-lineage strays). `undefined`
 	 *  when no projectDir was configured or the sweep was skipped. */
 	repoHygiene?: RepoHygieneReport | undefined;

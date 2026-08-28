@@ -361,48 +361,71 @@ export async function prepareSequentialChild(options: RunSequentialTaskOptions):
 	const ledger = new LedgerStore(options.dbPath);
 	const gateway = options.gateway ?? new InMemoryTaskGateway({ store: ledger });
 	try {
-		ledger.insertTask({ id: parentTaskId, goal: parentSpec.goal });
-		const parent = await runIsolatedTask({
-			specMarkdown: options.parentSpecMarkdown, projectDir: options.projectDir,
-			artifactsDir: options.artifactsDir, dbPath: options.dbPath, model: options.model,
-			workspaceDriver: options.workspaceDriver,
-			...(options.environmentDriver === undefined ? {} : { environmentDriver: options.environmentDriver }),
-			...(options.host === undefined ? {} : { host: options.host }), gateway,
-			...(options.maxTurns === undefined ? {} : { maxTurns: options.maxTurns }),
-			...(options.maxCostUsd === undefined ? {} : { maxCostUsd: options.maxCostUsd }),
-			...(options.sessionTimeoutMs === undefined ? {} : { sessionTimeoutMs: options.sessionTimeoutMs }),
-			...(options.contextCapabilitiesFactory === undefined ? {} : { contextCapabilitiesFactory: options.contextCapabilitiesFactory }),
-			...(options.contextArtifactStore === undefined ? {} : { contextArtifactStore: options.contextArtifactStore }),
-			...(options.onContextEvent === undefined ? {} : { onContextEvent: options.onContextEvent }),
-			...(options.onEvent === undefined ? {} : { onEvent: options.onEvent }),
-			taskId: parentTaskId, reuseExistingTask: true, deferSuccessfulTerminal: true,
+		// Reserve ownership before the parent session starts. The reservation is
+		// the recovery boundary: an accepted parent can never look standalone
+		// merely because the process died before child rows were attached.
+		if (!ledger.getTask(parentTaskId)) ledger.insertTask({ id: parentTaskId, goal: parentSpec.goal });
+		let continuationCapability: ReturnType<typeof workspaceContinuationOf> | undefined;
+		let providerError: unknown;
+		try { continuationCapability = workspaceContinuationOf(options.workspaceDriver); }
+		catch (error) { providerError = error; }
+		const reservedProviderIdentity = capabilityIdentity(continuationCapability ?? {}) ?? "unavailable";
+		const reservedProviderVersion = capabilityVersion(continuationCapability ?? {}) ?? "unavailable";
+		const existingOwner = ledger.getChildPreparationOwnershipByEdge(edgeId);
+		const preparationId = existingOwner?.preparationId ?? id("prep");
+		const owner = ledger.persistChildPreparationOwner({
+			preparationId, edgeId, parentTaskId, plannedChildTaskId: childTaskId,
+			driver: options.workspaceDriver.name, capabilityIdentity: reservedProviderIdentity,
+			capabilityVersion: reservedProviderVersion,
 		});
-		if (parent.receipt.verdict !== "ship")
-			return { parent: parent.receipt, parentTaskId, childTaskId, status: parent.receipt.verdict === "escalate" ? "escalated" : "failed" };
-
-		const parentRevision = parent.mergedCommitId ?? sha(parentTaskId).slice("sha256:".length);
-		let continuationCapability: ReturnType<typeof workspaceContinuationOf>;
-		try {
-			continuationCapability = workspaceContinuationOf(options.workspaceDriver);
-		} catch (error) {
-			ledger.insertTask({ id: childTaskId, goal: childSpec.goal });
+		let parentReceipt: TaskReceipt;
+		let parentRevision: string;
+		if (owner.status === "parent_pending") {
+			const parent = await runIsolatedTask({
+				specMarkdown: options.parentSpecMarkdown, projectDir: options.projectDir,
+				artifactsDir: options.artifactsDir, dbPath: options.dbPath, model: options.model,
+				workspaceDriver: options.workspaceDriver,
+				...(options.environmentDriver === undefined ? {} : { environmentDriver: options.environmentDriver }),
+				...(options.host === undefined ? {} : { host: options.host }), gateway,
+				...(options.maxTurns === undefined ? {} : { maxTurns: options.maxTurns }),
+				...(options.maxCostUsd === undefined ? {} : { maxCostUsd: options.maxCostUsd }),
+				...(options.sessionTimeoutMs === undefined ? {} : { sessionTimeoutMs: options.sessionTimeoutMs }),
+				...(options.contextCapabilitiesFactory === undefined ? {} : { contextCapabilitiesFactory: options.contextCapabilitiesFactory }),
+				...(options.contextArtifactStore === undefined ? {} : { contextArtifactStore: options.contextArtifactStore }),
+				...(options.onContextEvent === undefined ? {} : { onContextEvent: options.onContextEvent }),
+				...(options.onEvent === undefined ? {} : { onEvent: options.onEvent }),
+				taskId: parentTaskId, reuseExistingTask: true, deferSuccessfulTerminal: true,
+			});
+			if (parent.receipt.verdict !== "ship") {
+				ledger.blockChildPreparation(preparationId);
+				return { parent: parent.receipt, parentTaskId, childTaskId, status: parent.receipt.verdict === "escalate" ? "escalated" : "failed" };
+			}
+			parentReceipt = parent.receipt;
+			parentRevision = parent.mergedCommitId ?? sha(parentTaskId).slice("sha256:".length);
+			ledger.recordChildParentAcceptance(preparationId, JSON.stringify(parentReceipt), parentRevision);
+		} else {
+			if (!owner.parentReceiptJson || !owner.parentRevision)
+				throw new Error("accepted child preparation has no durable parent receipt");
+			parentReceipt = TaskReceiptSchema.parse(JSON.parse(owner.parentReceiptJson));
+			parentRevision = owner.parentRevision;
+		}
+		const parent = { receipt: parentReceipt, mergedCommitId: parentRevision };
+		if (!continuationCapability || providerError !== undefined) {
 			const sourceRevision = sha(parentRevision);
 			const plan = planContext({ goal: childSpec.goal, requirements: childSpec.requirements, candidates: [], sourceRevision: parentRevision, modelId: options.model, toolSchemaIdentity: "sequential-child", mode: "raw" });
+			ledger.beginChildArtifactPersistence(preparationId);
 			const planRef = options.artifactStore.putJson(plan, { namespace: "plan", kind: "plan", sensitivity: "internal", sourceRevision: parentRevision });
 			const checkpointRef = persistWorkingCheckpoint(options.artifactStore, createWorkingCheckpoint({ epochId: "parent-handoff", workspaceRevision: parentRevision, plan: planRef, requirements: [], verification: { status: "passed" }, summary: { nextActions: ["select a continuation-capable workspace provider"] } }));
 			const handoffRef = artifactJson(options.artifactStore, buildChildHandoff({ version: 1, parentTaskId, childTaskId, relationship: "continuation", checkpointId: checkpointRef.id, planId: planRef.id, sourceRevision, requirementState: [], decisions: [], openQuestions: ["workspace continuation provider unavailable"], nextActions: ["select a continuation-capable workspace provider"], changedPaths: [], artifactReferences: [], verification: { status: "passed", evidenceReferences: [] } }), parentRevision, "handoff");
-			ledger.persistReadyChildIntent({ edgeId, parentTaskId, childTaskId, ordinal: 1, handoffArtifactId: handoffRef.id, checkpointArtifactId: checkpointRef.id });
-			ledger.blockChild(edgeId);
-			return { parent: parentOutcome(parent.receipt, "blocked"), parentTaskId, childTaskId, edgeId, status: "blocked", failureCode: isWorkspaceContinuationError(error) ? error.code : "provider_error" };
+			const edge = ledger.persistBlockedChildIntent({ edgeId, parentTaskId, childTaskId, ordinal: 1, handoffArtifactId: handoffRef.id, checkpointArtifactId: checkpointRef.id, preparationId, childGoal: childSpec.goal });
+			ledger.blockChild(edge.edgeId);
+			return { parent: parentOutcome(parent.receipt, "blocked"), parentTaskId, childTaskId, edgeId, status: "blocked", failureCode: providerError !== undefined && isWorkspaceContinuationError(providerError) ? providerError.code : "provider_error" };
 		}
 		const providerIdentity = capabilityIdentity(continuationCapability);
 		const providerVersion = capabilityVersion(continuationCapability);
-		const preparationId = id("prep");
 		if (!providerIdentity || !providerVersion) {
-			ledger.insertTask({ id: childTaskId, goal: childSpec.goal });
-			return { parent: parentOutcome(parent.receipt, "blocked"), parentTaskId, childTaskId, edgeId, status: "blocked", failureCode: "incompatible" };
+			throw new Error("continuation provider identity is incomplete");
 		}
-		ledger.insertTask({ id: childTaskId, goal: childSpec.goal });
 
 		// Build a complete, bounded manifest before provider mutation. If the
 		// provider observes a different revision the same manifest is rebuilt
@@ -422,8 +445,9 @@ export async function prepareSequentialChild(options: RunSequentialTaskOptions):
 			const config: SequentialEdgeConfig = { edgeId, handoffReference: handoffRef, checkpointReference: checkpointRef, childSpecReference: childSpecRef, planReference: planRef, ingressConfigReference: ingressConfigRef, parentReceiptReference: parentReceiptRef, modelIdentity: options.model, sourceRevision: workspaceRevision, capabilityIdentity: providerIdentity!, capabilityVersion: providerVersion! };
 			return { plan, planRef, checkpointRef, handoffRef, childSpecRef, parentReceiptRef, ingressConfigRef, config };
 		};
+		ledger.beginChildArtifactPersistence(preparationId);
 		const initial = buildArtifacts(parentRevision);
-		ledger.persistPreparingChildIntent({ edgeId, parentTaskId, childTaskId, ordinal: 1, handoffArtifactId: initial.handoffRef.id, checkpointArtifactId: initial.checkpointRef.id, artifacts: [
+		ledger.persistPreparingChildIntent({ edgeId, parentTaskId, childTaskId, childGoal: childSpec.goal, ordinal: 1, handoffArtifactId: initial.handoffRef.id, checkpointArtifactId: initial.checkpointRef.id, artifacts: [
 			{ role: "plan", artifactId: initial.planRef.id, mediaType: initial.planRef.mediaType, reference: initial.planRef },
 			{ role: "child-spec", artifactId: initial.childSpecRef.id, mediaType: initial.childSpecRef.mediaType, reference: initial.childSpecRef },
 			{ role: "ingress-config", artifactId: initial.ingressConfigRef.id, mediaType: initial.ingressConfigRef.mediaType, reference: initial.ingressConfigRef },

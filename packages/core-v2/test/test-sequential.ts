@@ -9,7 +9,8 @@ import { ContextArtifactStore } from "../src/context/artifact-store.ts";
 import { buildChildHandoff } from "../src/contracts/payloads.ts";
 import { WorkingCheckpointSchema } from "../src/contracts/context-lifecycle.ts";
 import { InMemoryTaskGateway } from "../src/gateway/in-memory.ts";
-import { LedgerStore } from "../src/ledger/store.ts";
+import { LedgerStore, type SequentialEdgeConfig } from "../src/ledger/store.ts";
+import type { ImmutableArtifactReference } from "../src/contracts/context-lifecycle.ts";
 import { prepareSequentialChild, resumeSequentialChild, runSequentialTask } from "../src/daemon/sequential.ts";
 import { JujutsuWorkspaceDriver } from "../src/workspaces/jj-driver.ts";
 
@@ -158,6 +159,40 @@ export async function runTests(): Promise<void> {
 		await providerBeforeCrash.continuation!.prepareContinuation!(preparing.childTaskId, preparation!.preparationId);
 		const preparedAfterCrash = await resumeSequentialChild(preparing.edgeId!, { projectDir: prepRepo, artifactsDir: join(root, "preparing-failures"), dbPath: prepDb, model: "fake/model", workspaceDriver: new JujutsuWorkspaceDriver({ projectDir: prepRepo }), host: host(prepCalls), artifactStore: new ContextArtifactStore({ root: prepArtifactsRoot }) });
 		check(preparedAfterCrash.status === "completed" && prepCalls.value === 2 && existsSync(join(prepRepo, "child.txt")), `provider prepare is idempotently reconciled after restart without parent replay (${preparedAfterCrash.status}, calls=${prepCalls.value})`);
+
+		// Fault-boundary proof: every preparation phase is visible after a
+		// close/reopen, including the interval before a child task exists. The
+		// generic retry pass sees the owner and therefore cannot replay parent
+		// acceptance while artifacts or provider work are incomplete.
+		const faultDb = join(root, "fault-boundary.sqlite");
+		const faultLedger = new LedgerStore(faultDb);
+		faultLedger.insertTask({ id: "fault-parent", goal: "accepted parent" });
+		const owner = faultLedger.persistChildPreparationOwner({ preparationId: "fault-prep", edgeId: "fault-edge", parentTaskId: "fault-parent", plannedChildTaskId: "fault-child", driver: "fake", capabilityIdentity: "fake.continuation", capabilityVersion: "1" });
+		check(owner.status === "parent_pending" && faultLedger.getTask("fault-child") === null, "parent reservation precedes child creation");
+		faultLedger.close();
+		let faultReopen = new LedgerStore(faultDb);
+		const beforeAcceptanceBoot = faultReopen.reconcileChildEdgesOnBoot();
+		const beforeAcceptanceTasks = faultReopen.reconcileOnBoot();
+		check(beforeAcceptanceBoot.preparing.includes("fault-prep") && beforeAcceptanceTasks.requeued.length === 0 && faultReopen.getTask("fault-parent")?.status === "preparing", "preliminary preparation is classified before generic retry");
+		faultReopen.recordChildParentAcceptance("fault-prep", JSON.stringify({ taskId: "fault-parent", verdict: "ship" }), "parent-revision");
+		faultReopen.close();
+		faultReopen = new LedgerStore(faultDb);
+		check(faultReopen.getChildPreparationOwnership("fault-prep")?.status === "parent_accepted" && faultReopen.getTask("fault-child") === null, "accepted parent survives before child creation without replay");
+		faultReopen.beginChildArtifactPersistence("fault-prep");
+		faultReopen.close();
+		faultReopen = new LedgerStore(faultDb);
+		check(faultReopen.getChildPreparationOwnership("fault-prep")?.status === "artifacts_pending" && faultReopen.getTask("fault-child") === null, "immutable artifact boundary is durable before child attach");
+		const faultRef = (hex: string, kind: ImmutableArtifactReference["kind"], namespace = kind): ImmutableArtifactReference => ({ version: 1, id: `sha256:${hex.repeat(64 / hex.length)}`, namespace, kind, mediaType: "application/json", sizeBytes: 1, sensitivity: "internal", sourceRevision: "parent-revision" });
+		const faultConfig: SequentialEdgeConfig = { edgeId: "fault-edge", handoffReference: faultRef("1", "handoff"), checkpointReference: faultRef("2", "checkpoint"), childSpecReference: faultRef("3", "context", "context"), planReference: faultRef("4", "plan"), ingressConfigReference: faultRef("5", "context", "context"), parentReceiptReference: faultRef("6", "receipt"), modelIdentity: "fake/model", sourceRevision: "parent-revision", capabilityIdentity: "fake.continuation", capabilityVersion: "1" };
+		const faultEdge = faultReopen.persistPreparingChildIntent({ preparationId: "fault-prep", preparationDriver: "fake", preparationCapabilityIdentity: "fake.continuation", preparationCapabilityVersion: "1", parentTaskId: "fault-parent", childTaskId: "fault-child", childGoal: "accepted child", edgeId: "fault-edge", ordinal: 1, handoffArtifactId: faultConfig.handoffReference.id, checkpointArtifactId: faultConfig.checkpointReference.id, sequentialConfig: faultConfig });
+		faultReopen.close();
+		faultReopen = new LedgerStore(faultDb);
+		check(faultEdge.status === "preparing" && faultReopen.getTask("fault-child") !== null && faultReopen.getParentEdge("fault-child")?.edgeId === "fault-edge" && faultReopen.getChildPreparationOwnership("fault-prep")?.status === "provider_preparing", "child creation and immutable references attach under preparation ownership");
+		const completedFaultEdge = faultReopen.completeChildPreparation("fault-edge", { id: "fault-workspace", taskId: "fault-child", driver: "fake", hostPath: "/provider-owned", branchName: "fault-child" }, { id: "fault-cont", taskId: "fault-child", driver: "fake", providerVersion: "1", capabilityIdentity: "fake.continuation", capabilityVersion: "1", opaqueToken: "opaque", revision: "parent-revision" }, faultConfig);
+		faultReopen.close();
+		faultReopen = new LedgerStore(faultDb);
+		check(completedFaultEdge.status === "ready" && faultReopen.getChildPreparationOwnership("fault-prep")?.status === "ready" && faultReopen.getTask("fault-parent")?.status === "awaiting_child", "provider preparation commits ready edge transactionally");
+		faultReopen.close();
 
 		// A capped child preserves its dirty workspace under a new checkpoint.
 		// A second process resumes that checkpoint, retains the partial file, and
