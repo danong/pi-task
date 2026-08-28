@@ -1,4 +1,4 @@
-# pi-task
+# pi-task and Project Tau
 
 A task-execution engine for the [pi coding agent](https://pi.dev): isolated
 worker sessions, typed schema-validated results, durable evidence, and
@@ -6,13 +6,21 @@ context-efficient execution. The user-facing experience is like other coding
 harnesses: you chat, and the conversational agent decides whether to edit
 directly or dispatch work to workers.
 
-The repository contains the production v1 engine and the v2 bootstrap path.
-V1 includes prewalk model swapping, sandboxing, review, and parallel jj
-workspaces; its compatibility contract is `docs/pi-task-design.md`. V2 treats
-model swapping as one optional execution policy inside a broader context
-lifecycle built from acquisition providers, explicit context plans, cache-aware
-prompt segments, working checkpoints, and accepted-artifact evidence. Its
-active contract is `docs/pi-task-v2.md`.
+This repository currently contains two generations:
+
+- **pi-task (v1):** the existing extension under `extensions/task/`; its
+  compatibility contract is `docs/pi-task-design.md`.
+- **Project Tau (working name):** the engine currently called `pi-task-v2` and
+  implemented under `packages/core-v2/`. Tau is `2π`; the distinct name avoids
+  overloading `pi-task`, which already belongs to v1. Its active product and
+  runtime contract is `docs/pi-task-v2.md`.
+
+M5 shipped Tau's narrow durable sequential-child continuation. M5.5 is the
+approved next design: passive Pi JSON event journaling, run-ID resume/fork for
+every admitted attempt, provider-neutral workspace checkpoints, and
+engine-owned settlement of verified work. M6 will extract Tau into a standalone
+repository, make it the default, and archive v1 outside Tau's active source and
+worker context. Existing package/CLI names remain unchanged until extraction.
 
 ## Install
 
@@ -28,12 +36,14 @@ mise run verify    # toolchain gate (tsx, pi deps, python3 tomllib,
 mise run test      # full hermetic test suite, zero LLM calls
 ```
 
-### Run the v2 engine
+### Run the current Project Tau bootstrap
 
-The first v2 vertical slice is a shell adapter for one task and one worker.
-It validates the markdown spec, starts the durable ledger, creates a temporary
-jj workspace, integrates and verifies the result, streams compact progress, and
-writes a durable receipt outside the checkout:
+The current v2/Tau shell adapter validates the markdown spec, starts the durable
+ledger, asks the configured workspace provider for isolation, integrates and
+verifies the result, streams compact progress, and writes a durable receipt
+outside the checkout. Jujutsu is the current default provider, not a kernel
+requirement; snapshot, restore/fork, preservation, and integration are typed
+capabilities that future Git, SVN, or other providers may implement:
 
 ```sh
 mise run v2 -- --spec ./task.md --project-dir . --model provider/model
@@ -48,7 +58,7 @@ argument/input validation, progress rendering, and receipt delivery;
 and gateway remain the execution owners. Cancellation, multiple workers,
 parallel scheduling, and remote interfaces are not part of this slice.
 
-### v2 status: M1–M3 foundation and M4 context control plane
+### Project Tau status: shipped M1–M5, planned M5.5 and M6
 
 M1–M3 are the completed evidence-backed MVP foundation. M1 provides a
 versioned, bounded, provider-neutral trace artifact with lifecycle, observed
@@ -148,9 +158,31 @@ failure is retained under `packages/core-v2/test/fixtures/dogfood/`; it exposed
 that the CLI prompt wall was not paired with an independent turn bound.
 Continued dogfood therefore requires the supported turn and wall-time bounds;
 measured final cost remains reporting-only until provider-neutral live cost
-signals exist. M5 will use the checkpoint/epoch contracts for
-typed sequential children and a usable v2 self-hosting loop. M6 scope remains
-intentionally open.
+signals exist. M5 uses those checkpoint/epoch contracts for one durable sequential child, but
+a post-land review showed that this is not yet general task recovery. A failed
+standalone review has no child edge to resume, and verified workers that exhaust
+their turn budget before `yield` still require manual recovery. Active M5
+hardening must pass repository gates before it is called shipped.
+
+M5.5 fixes the product boundary. Pi's visible JSON worker events are persisted
+passively in a bounded local operational journal, so successful tasks pay no
+additional inference tokens. Cheap turn checkpoints refer to journal offsets,
+context-plan identities, usage, and optional opaque workspace-provider snapshot
+tokens. `resume` reconstructs compatible visible history after transient
+failure; `fork` selects a bounded turn/checkpoint plus corrective instructions
+for spinning work. The kernel never assumes jj revisions, Git refs, SVN working
+copies, branch names, or host paths. Canonical traces and receipts remain
+transcript-free, and successful verified work can be settled by the engine even
+when the model misses its final `yield`.
+
+M6 extracts the engine under the working **Project Tau** name and makes it the
+normal standalone tool. V1 remains a pinned manual emergency release outside
+Tau's repository rather than an embedded fallback. We will not fund mandatory
+v1 instrumentation or duplicate shadow runs. Real tasks across projects record
+outcome, cost, latency, intervention, failure/recovery phase, and one selected
+plugin experiment variant. Development concentrates vertically on context,
+editing, verification, and recovery; horizontal orchestration expands only when
+real dogfood demonstrates a need.
 
 The repo ships `.pi/settings.json` registering itself as a project package
 (`"packages": [".."]`), so any trusted checkout auto-installs — the `task`

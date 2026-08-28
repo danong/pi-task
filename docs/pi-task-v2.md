@@ -1,7 +1,12 @@
-# pi-task-v2 — Product and Runtime Contract
+# Project Tau — Product and Runtime Contract
 
-**Status: Active.** This is a current source of truth for v2 product intent and
-runtime behavior. The companion documents are [subsystems](pi-task-v2-subsystems.md)
+> **Naming:** Project Tau is the working standalone name for the engine currently
+> implemented as `pi-task-v2` / `packages/core-v2`. Tau is `2π`, but the product
+> name deliberately avoids `pi-task`, which already names v1. Existing package,
+> command, state, and document identifiers remain unchanged until M6 extraction.
+
+**Status: Active.** This is the current source of truth for Project Tau product
+intent and runtime behavior. The companion documents are [subsystems](pi-task-v2-subsystems.md)
 (the detailed capability, contract, and conformance specification) and
 [future](pi-task-v2-future.md) (deferred scale and product work). Historical
 reviews, handoffs, investigations, plans, and superseded workflow/testing
@@ -9,17 +14,18 @@ material is archived under [`old/`](old/README.md) and is non-normative.
 
 ## Product philosophy
 
-pi-task-v2 is a **context-efficient coding engine with a reliable microkernel**.
-Its primary outcome is accepted-result quality per dollar and minute,
-particularly when using cheaper or open-weight models. The execution runtime
-supports that differentiation: it makes work durable, bounded, observable,
-and recoverable, but it is not itself the product advantage.
+Project Tau is a **context-efficient coding engine with a reliable
+microkernel**. Its primary outcome is accepted-result quality per dollar and
+minute, particularly when using cheaper or open-weight models. The execution
+runtime supports that differentiation: it makes work durable, bounded,
+observable, and recoverable, but it is not itself the product advantage.
 
 This makes context engineering a product capability, not prompt decoration.
 The engine should spend tokens on information that changes the result, retain
 useful context across work, and prove that the requested artifact was delivered.
-The loop is **baseline → experiment → measure → retain or delete**. v1 parity is
-a safety gate for migration, never product success.
+The loop is **baseline → experiment → measure → retain or delete**. Historical
+v1 behavior is a useful compatibility reference, not a permanent parity gate or
+a reason to duplicate real work.
 
 ## Source of truth and scope
 
@@ -38,7 +44,24 @@ The active design set is:
 The implementation is the final authority for shipped behavior. Source paths
 linked below are evidence anchors, not an inventory snapshot.
 
-v2 accepts a validated task specification, runs bounded coding sessions in an
+### Current state for a fresh session
+
+- **Shipped M1–M5:** typed execution, context control plane, bounded execution,
+  and durable sequential parent→child continuation exist in the current v2
+  implementation.
+- **Active M5 hardening:** a post-land review found gaps in crash-authoritative
+  preparation, public edge resume, persisted-plan lineage, cost-cap honesty,
+  and terminal evidence. Repairs may exist on an unlanded development stack;
+  do not describe them as shipped until repository gates pass and `main` moves.
+- **Planned M5.5:** general recovery for every admitted attempt, using passive
+  Pi JSON event capture, full resume, partial fork, and engine-owned settlement.
+  These public run-ID interfaces are not shipped merely because child-edge
+  continuation exists.
+- **Planned M6:** extract the engine under the Project Tau name, make it the
+  standalone default, archive v1 outside its active context, and improve Tau
+  through real-project dogfood and cohort experiments rather than shadow runs.
+
+Tau accepts a validated task specification, runs bounded coding sessions in an
 isolated workspace, verifies the resulting tree, and returns a structured
 receipt plus durable evidence. A task may have sequential children. Parallel
 execution is an available foundation capability, but it is not required by the
@@ -91,20 +114,23 @@ observers are non-authoritative.
 
 ## Workspace and execution model
 
-Task semantics are VCS-neutral: create an isolated task workspace, apply work,
-combine or publish it, preserve failed work for recovery, and report the
-resulting artifact. **Jujutsu is the default workspace provider** and its
-implementation is anchored at [`packages/core-v2/src/workspaces/jj.ts`](../packages/core-v2/src/workspaces/jj.ts)
-and the parallel pipeline at
-[`packages/core-v2/src/daemon/parallel.ts`](../packages/core-v2/src/daemon/parallel.ts).
-The existing extension implementation remains a migration reference at
-[`extensions/task/workspace.ts`](../extensions/task/workspace.ts).
+Task semantics are source-control-neutral: create an isolated task workspace,
+apply work, combine or publish it, preserve failed work, identify restorable
+snapshots, and report the resulting artifact. The kernel depends only on typed
+workspace capabilities. Isolation, snapshot, restore/fork, integration,
+preservation, and publication return opaque provider tokens; kernel contracts
+must not contain jj revsets, Git refs/worktree paths, SVN working-copy details,
+branch names, or host paths.
 
-A future Git provider must implement the same provider contract and be
-selectable by configuration without changing kernel execution code. Model
-prompts may describe task goals and resulting files, but model-facing VCS
-knowledge is separate from engine-owned workspace mechanics. The model should
-not need to know whether isolation used jj, Git worktrees, or another provider.
+**Jujutsu is the current default provider**, implemented behind
+[`packages/core-v2/src/contracts/workspace-driver.ts`](../packages/core-v2/src/contracts/workspace-driver.ts)
+and [`packages/core-v2/src/workspaces/jj-driver.ts`](../packages/core-v2/src/workspaces/jj-driver.ts).
+It is evidence for the contract, not a kernel dependency. Git, SVN, remote
+workspace, or other providers must be selectable by configuration and pass the
+same capability conformance suite without changing daemon control flow. A
+provider that cannot snapshot at every turn may expose a weaker capability and
+cause exact historical workspace fork to be unavailable; context resume must
+still work from the latest valid provider token.
 
 The normal sequential path is:
 
@@ -113,12 +139,14 @@ validate → route → create workspace → run session → yield → verify
 → persist parent/child and artifacts → deliver receipt
 ```
 
-A child receives a bounded handoff, not the parent's transcript. The ledger
-records the parent/child relationship, each child has structured artifacts and
-its own receipt, and handoffs contain only the bounded facts needed to continue.
-Parallel workers may fan out and combine deterministically through the same
-provider-neutral semantics; their availability must never make a sequential
-MVP task impossible.
+A shipped M5 child receives a bounded handoff, not the parent's transcript. The
+ledger records the parent/child relationship, each child has structured
+artifacts and its own receipt, and handoffs contain only the bounded facts
+needed to continue. M5.5 adds a separate **local operational attempt journal**
+for recovery; it is not a canonical handoff, receipt, or trace and does not
+change child task semantics. Parallel workers may fan out and combine
+deterministically through the same provider-neutral capabilities; their
+availability must never make a sequential task impossible.
 
 ## Context engineering
 
@@ -187,6 +215,15 @@ selected inputs, hashes, and provenance, but it must not require storage or
 exposure of private chain-of-thought. A trace is evidence about execution, not a
 request to retain hidden reasoning.
 
+M5.5 recovery uses a distinct, local, bounded **attempt journal** populated
+passively from Pi's visible JSON event stream. It may retain normalized visible
+messages and paired tool calls/results for failed or in-flight attempts, but it
+must never enter canonical traces, receipts, portable handoffs, or public
+artifacts. It is versioned, size-capped, subject to retention/deletion policy,
+and accessed through a replaceable journal-store capability. Successful runs
+incur no extra model turns or inference tokens; replay input is paid only when a
+resume or fork is requested.
+
 The existing event and gateway foundations are at
 [`packages/core-v2/src/contracts/gateway-events.ts`](../packages/core-v2/src/contracts/gateway-events.ts),
 [`packages/core-v2/src/contracts/task-plugin.ts`](../packages/core-v2/src/contracts/task-plugin.ts),
@@ -196,10 +233,12 @@ document.
 
 ## Benchmarking and proof
 
-Benchmarking is a first-class capability, not a final demo. The harness compares
-raw pi, v1, baseline v2, and context-enhanced variants using repeated trials,
-fixed task fixtures where practical, and acceptance checks that inspect the
-requested artifact. Report at least:
+Benchmarking is a first-class capability, not a final demo. The harness can compare
+raw execution, historical v1 evidence, baseline Tau, and context-enhanced
+variants when a specific experiment requires it. M6 does not require duplicate
+v1/v2 shadow execution: normal real-project tasks run one selected variant and
+record an experiment identity. Repeated fixtures remain useful for regression
+reproduction, while acceptance checks inspect the requested artifact. Report at least:
 
 - accepted-result success and acceptance quality;
 - cost per accepted result, total cost, and time;
@@ -230,9 +269,10 @@ The source-of-truth implementation paths include:
 - [`packages/core-v2/src/daemon/start.ts`](../packages/core-v2/src/daemon/start.ts)
   and [`task-runner.ts`](../packages/core-v2/src/daemon/task-runner.ts) for
   assembly and lifecycle;
-- [`packages/core-v2/src/daemon/parallel.ts`](../packages/core-v2/src/daemon/parallel.ts)
-  and [`packages/core-v2/src/workspaces/jj.ts`](../packages/core-v2/src/workspaces/jj.ts)
-  for optional parallel isolation and combination;
+- [`packages/core-v2/src/daemon/parallel.ts`](../packages/core-v2/src/daemon/parallel.ts),
+  [`workspace-driver.ts`](../packages/core-v2/src/contracts/workspace-driver.ts),
+  and the current [`jj-driver.ts`](../packages/core-v2/src/workspaces/jj-driver.ts)
+  for provider-neutral isolation/combination contracts and their default implementation;
 - [`packages/core-v2/src/contracts/`](../packages/core-v2/src/contracts/)
   and [`packages/core-v2/src/plugins/`](../packages/core-v2/src/plugins/)
   for typed boundaries and extension loading;
@@ -363,35 +403,92 @@ clock for determinism), emits bounded structural evidence (`index/digest/exitCod
 
 ### M5 — durable sequential composition and self-hosting
 
-M5 is shipped. The ordinary v2 CLI can select one explicit raw-context
-continuation child with `--child-spec`. A child receives its own validated spec,
-provider-owned workspace continuation, context plan, and bounded declarative
-checkpoint/handoff—not a transcript. Parent/child edges, complete immutable
-ingress references, provider compatibility, checkpoints, evidence, and terminal
-settlement are durable.
+M5 is shipped, but post-land hardening is active. The ordinary v2 CLI can select
+one explicit raw-context continuation child with `--child-spec`. A child
+receives its own validated spec, provider-owned workspace continuation, context
+plan, and bounded declarative checkpoint/handoff—not a transcript. Parent/child
+edges and provider compatibility are durable. The post-land review report under
+`reports/` is the authority for unresolved hardening findings; passing the full
+repository gates is required before claiming those repairs shipped.
 
-Preparation records provider ownership before workspace mutation. On restart,
-an edge can reconcile provider preparation and resume with newly constructed
-ledger, artifact store, driver, and session host instances without replaying the
-parent. Interrupted or capped child work preserves its workspace and writes a
-replacement bounded checkpoint before becoming resumable. Missing, corrupt,
-stale, revision-mismatched, unsupported, or incompatible dependencies block
-with a typed outcome rather than guessing provider state.
+M5 proved a narrow mechanism: a prepared sequential child can preserve a
+workspace and bounded state across process restart. It did **not** make every
+standalone/review/repair attempt resumable, preserve the useful visible Pi
+session stream, or automatically settle verified work when a model misses its
+final `yield`. Those gaps define M5.5 rather than being hidden under the M5
+claim.
 
-The normal surface and the hermetic M5 conformance suites exercise parent/child
-isolation, bounded handoffs, boot authority, close/reopen recovery, interruption
-continuation, admitted lifecycle traces, truthful child evidence, and parent
-non-ship on child failure. V1 remains the fallback until M6 adoption evidence
-supports a task-class migration decision.
+### M5.5 — useful recovery for every attempt
 
-### M6 — measured adoption and cutover
+M5.5 generalizes recovery from child edges to every admitted attempt. A task
+family contains immutable attempt lineage; each stopped attempt has a typed
+disposition such as resumable, forkable, blocked, settled, or nonrecoverable.
+Sequential children consume the same mechanism rather than owning a parallel
+recovery design.
 
-M6 is not a scale-infrastructure milestone. It will shadow normal task use,
-compare matched v1/v2 outcomes by model, specification, revision, verification,
-quality, cost, latency, and intervention, then flip only documented task classes
-with immediate v1 fallback. Raw context remains the baseline; retain symbol-tree
-only when repeated matched evidence demonstrates accepted-result value. Delete
-superseded v1 paths only after the v2 default slice and deletion tests pass.
+Normal successful runs must pay no additional model-token or model-turn cost.
+The session adapter passively writes Pi's visible JSON events to a local attempt
+journal. Every completed turn records a cheap checkpoint containing a journal
+offset, context-plan identity, usage, and an optional opaque workspace snapshot
+token supplied by the configured workspace provider. No kernel code may invoke
+jj, Git, SVN, or filesystem snapshot mechanics directly.
+
+M5.5 exposes two different operations:
+
+- **resume** reconstructs all compatible visible history that fits, restores
+  the latest valid workspace/context state, appends the typed failure reason,
+  and starts a fresh session for transient provider/process/budget failures;
+- **fork** selects a turn/checkpoint and a deterministic bounded subset of the
+  journal, chooses current/checkpoint/clean workspace policy, and adds a bounded
+  corrective instruction and optional model/budget override for spinning or
+  strategically failed work.
+
+The existing context continuation selector preserves ordering and tool-call /
+tool-result invariants when a full journal does not fit. Optional model-authored
+semantic compression may improve very long recovery payloads, but it is not a
+baseline dependency. Hidden chain-of-thought is never required or stored.
+Provider-native session continuation is an optimization; the normalized local
+journal is the provider-neutral source of truth.
+
+Engine-owned settlement is part of M5.5: when integrated changes satisfy the
+artifact policy and verification passes, failure to emit a final model `yield`
+must not turn objective success into manual jj recovery. The engine derives
+changed paths, commit identities, verification, and usage; a missing model
+summary is recorded as unavailable.
+
+The public interface operates by run ID, not internal edge/workspace IDs, and
+includes status, checkpoint listing, resume, and fork. A user should see why an
+attempt stopped, what was retained, the recommended action, and any compatibility
+blocker without knowing the configured workspace implementation.
+
+M5.5 exits only when hermetic close/reopen tests and bounded real dogfood prove:
+standalone provider-failure resume, mid-edit resume, spinning-worker fork from
+an earlier turn with corrective instructions, compatible model replacement,
+engine settlement after verification, and clear blocked outcomes for corrupt or
+incompatible state. Journals remain bounded, local, temporary, and absent from
+canonical evidence.
+
+### M6 — Project Tau extraction and clean cutover
+
+M6 extracts the v2 engine into a standalone repository under the working
+**Project Tau** name and makes it the normal implementation. The existing
+`pi-task` name remains associated with v1; v1 is archived outside Tau's active
+source/context and retained only as a pinned manual emergency release. Tau does
+not carry a runtime v1 fallback or duplicate v1 implementation that can confuse
+workers.
+
+M6 does not instrument v1 or double cost through mandatory shadow runs. Tau is
+dogfooded once per real task across multiple projects and records task class,
+project, model/budget, accepted outcome, verification, cost, latency,
+intervention, failure phase, recovery action, and selected experiment variant.
+Plugin A/B tests assign one variant to each useful real task and compare cohorts;
+they do not execute duplicate artificial work.
+
+Product investment is vertical: context acquisition/retrieval/assembly,
+editing, verification, and practical recovery. Stable plugin seams cover these
+capabilities plus non-authoritative evidence observers. Horizontal workflow,
+remote scale, and generalized orchestration are added only when repeated real
+work demonstrates a blocking need.
 
 Each milestone gate publishes canonical traces, benchmark evidence, and
 conformance results. No model/provider default or performance claim is implied
@@ -428,18 +525,19 @@ These rules favor fewer, evidence-bearing milestones over frequent relabeling.
 The implementation remains authoritative for what is shipped; this roadmap is
 a commitment about what “done” means.
 
-## Safe migration loop
+## Cutover and experiment loop
 
-Migration uses **inventory → shadow → flip → delete**. Inventory maps each v1
-behavior to an owning v2 seam. Shadow runs the candidate beside v1. Flip makes
-the candidate the default only after conformance and parity evidence. Delete
-removes superseded paths only after a deletion test proves the capability is
-still supplied by its declared owner.
+M6 uses **stabilize → extract → default → archive**. Stabilize finishes M5.5's
+public recovery contract and repository gates. Extract moves only Tau's typed
+kernel, providers, tests, docs, and package surfaces into the standalone
+repository. Default makes Tau the normal tool. Archive keeps v1 source and a
+pinned emergency release outside Tau's active repository and worker context.
 
-Product development uses the separate loop **baseline → experiment → measure →
-retain or delete**. This keeps safe migration from turning v1 behavior into an
-untested product requirement. The archive index identifies historical claims
-that must not override this contract.
+Product development uses **baseline → assign one real-task variant → measure →
+retain or delete**. Receipts identify the selected plugin/config variant so
+context or edit approaches can be compared across useful work without doubling
+inference. Historical v1 evidence may diagnose a regression but does not impose
+a permanent shadow-compute tax.
 
 ## Non-goals for the MVP
 
