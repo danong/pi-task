@@ -15,6 +15,7 @@
  */
 
 import { z } from "zod";
+import { ImmutableArtifactReferenceSchema } from "./context-lifecycle.ts";
 
 /** Model routing for a task (FR-10): per-role defaults overridden by the
  *  bundle author. Ledger-only per-role model config lives in task.toml. */
@@ -87,40 +88,6 @@ export const YieldSchema = z.object({
 });
 export type Yield = z.infer<typeof YieldSchema>;
 
-/**
- * ≈150-token receipt so a spec-authoring session survives many tasks
- * (§5.6). turns/costUsd/bundleHit are router feedback (FR-9/FR-10).
- *
- * Measured efficiency (NFR-3): costUsd and the token counters come from
- * the pi SDK session stats (`SessionHandle.stats()`) — the SDK prices
- * usage, the runner only records it. `cor` is the grounding ratio:
- * groundingTokens ÷ totalInputTokens, where groundingTokens approximates
- * the fixed grounding prefix as ceil(utf8Bytes(systemPrompt + spec)/4)
- * (the manifest phase data NFR-3 names does not exist yet) and
- * totalInputTokens = input + cacheRead + cacheWrite — everything billed
- * as prompt, cached or not. When stats are unavailable (or no session
- * ever spawned) every field below is 0 — accounting never fails a run.
- */
-export const TaskReceiptSchema = z.object({
-	taskId: z.string(),
-	verdict: z.enum(["ship", "escalate", "failed"]),
-	filesChanged: z.number(),
-	commitIds: z.array(z.string()),
-	turns: z.number(),
-	costUsd: z.number(),
-	inputTokens: z.number(),
-	outputTokens: z.number(),
-	cacheReadTokens: z.number(),
-	/** groundingTokens ÷ totalInputTokens (0 when nothing was billed). */
-	cor: z.number(),
-	/** Numeric zero remains compatible with older consumers; this field says
-	 * whether zero means measured zero or unavailable usage. */
-	usageStatus: z.enum(["measured", "unavailable"]).optional(),
-	/** mode-(b) telemetry: null = bundle not used. */
-	bundleHit: z.boolean().nullable(),
-});
-export type TaskReceipt = z.infer<typeof TaskReceiptSchema>;
-
 // ─── Sequential child continuation (M5) ─────────────────────────────
 
 /** Version of the prompt-bound child continuation vocabulary. */
@@ -192,6 +159,63 @@ export const ChildArtifactReferenceSchema = z
 	})
 	.strict();
 export type ChildArtifactReference = z.infer<typeof ChildArtifactReferenceSchema>;
+
+const receiptDependencyReference = ImmutableArtifactReferenceSchema.superRefine((reference, ctx) => {
+	if (reference.namespace !== "receipt" || reference.kind !== "receipt")
+		ctx.addIssue({ code: "custom", message: "child receipt reference must identify a receipt artifact" });
+});
+const traceDependencyReference = ImmutableArtifactReferenceSchema.superRefine((reference, ctx) => {
+	if (reference.namespace !== "trace" || reference.kind !== "trace")
+		ctx.addIssue({ code: "custom", message: "child trace reference must identify a trace artifact" });
+});
+
+/**
+ * ≈150-token receipt so a spec-authoring session survives many tasks
+ * (§5.6). turns/costUsd/bundleHit are router feedback (FR-9/FR-10).
+ *
+ * Measured efficiency (NFR-3): costUsd and the token counters come from
+ * the pi SDK session stats (`SessionHandle.stats()`) — the SDK prices
+ * usage, the runner only records it. `cor` is the grounding ratio:
+ * groundingTokens ÷ totalInputTokens, where groundingTokens approximates
+ * the fixed grounding prefix as ceil(utf8Bytes(systemPrompt + spec)/4)
+ * (the manifest phase data NFR-3 names does not exist yet) and
+ * totalInputTokens = input + cacheRead + cacheWrite — everything billed
+ * as prompt, cached or not. When stats are unavailable (or no session
+ * ever spawned) every field below is 0 — accounting never fails a run.
+ */
+export const ChildDependencySummarySchema = z.object({
+	childTaskId: childIdentity,
+	edgeId: childIdentity,
+	verdict: z.enum(["ship", "escalate", "failed"]),
+	receiptReference: receiptDependencyReference,
+	traceReference: traceDependencyReference,
+}).strict().superRefine((summary, ctx) => {
+	if (summary.receiptReference.sourceRevision !== summary.traceReference.sourceRevision)
+		ctx.addIssue({ code: "custom", message: "child receipt and trace references must share a source revision" });
+});
+export type ChildDependencySummary = z.infer<typeof ChildDependencySummarySchema>;
+
+export const TaskReceiptSchema = z.object({
+	taskId: z.string(),
+	verdict: z.enum(["ship", "escalate", "failed"]),
+	filesChanged: z.number(),
+	commitIds: z.array(z.string()),
+	turns: z.number(),
+	costUsd: z.number(),
+	inputTokens: z.number(),
+	outputTokens: z.number(),
+	cacheReadTokens: z.number(),
+	/** groundingTokens ÷ totalInputTokens (0 when nothing was billed). */
+	cor: z.number(),
+	/** Numeric zero remains compatible with older consumers; this field says
+	 * whether zero means measured zero or unavailable usage. */
+	usageStatus: z.enum(["measured", "unavailable"]).optional(),
+	/** mode-(b) telemetry: null = bundle not used. */
+	bundleHit: z.boolean().nullable(),
+	/** Present only on an aggregate receipt for a sequential child. */
+	childDependency: ChildDependencySummarySchema.optional(),
+});
+export type TaskReceipt = z.infer<typeof TaskReceiptSchema>;
 
 /** Declarative requirement progress, never a model conversation transcript. */
 export const ChildRequirementStateSchema = z.object({

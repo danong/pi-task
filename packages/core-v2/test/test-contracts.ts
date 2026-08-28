@@ -26,6 +26,7 @@ import { pathToFileURL } from "node:url";
 import {
 	ExecutionBundleSchema,
 	ChildArtifactReferenceSchema,
+	ChildDependencySummarySchema,
 	ChildHandoffSchema,
 	ChildResultSchema,
 	buildChildHandoff,
@@ -212,8 +213,55 @@ export async function runTests(): Promise<void> {
 			bundleHit: null,
 		});
 		check(
-			receipt.verdict === "ship" && receipt.bundleHit === null,
-			"TaskReceipt round-trip",
+			receipt.verdict === "ship" && receipt.bundleHit === null &&
+			!("childDependency" in receipt),
+			"TaskReceipt round-trip preserves legacy standalone shape",
+		);
+		const childReceiptReference = {
+			version: 1 as const,
+			id: "sha256:" + "c".repeat(64),
+			namespace: "receipt" as const,
+			kind: "receipt" as const,
+			mediaType: "application/json",
+			sizeBytes: 12,
+			sensitivity: "internal" as const,
+			sourceRevision: "revision-1",
+		};
+		const childTraceReference = {
+			...childReceiptReference,
+			id: "sha256:" + "d".repeat(64),
+			namespace: "trace" as const,
+			kind: "trace" as const,
+		};
+		const childDependency = ChildDependencySummarySchema.parse({
+			childTaskId: "child-1",
+			edgeId: "edge-1",
+			verdict: "ship",
+			receiptReference: childReceiptReference,
+			traceReference: childTraceReference,
+		});
+		const receiptWithChild = TaskReceiptSchema.parse({
+			...receipt,
+			childDependency,
+		});
+		const receiptRoundTrip = TaskReceiptSchema.parse(JSON.parse(JSON.stringify(receiptWithChild)));
+		check(
+			receiptRoundTrip.childDependency?.childTaskId === "child-1" &&
+			receiptRoundTrip.childDependency?.edgeId === "edge-1" &&
+			receiptRoundTrip.childDependency?.receiptReference.id === childReceiptReference.id &&
+			receiptRoundTrip.childDependency?.traceReference.id === childTraceReference.id &&
+			stableStringify(receiptRoundTrip.childDependency?.receiptReference) === stableStringify(childReceiptReference) &&
+			stableStringify(receiptRoundTrip.childDependency?.traceReference) === stableStringify(childTraceReference),
+			"TaskReceipt child dependency round-trip preserves exact identities and references",
+		);
+		const reorderedReceipt = {
+			childDependency,
+			...receipt,
+		};
+		check(
+			serializeForPrompt(TaskReceiptSchema, receiptWithChild) ===
+				serializeForPrompt(TaskReceiptSchema, reorderedReceipt),
+			"TaskReceipt child dependency serialization is deterministic",
 		);
 
 		const artifact = {
@@ -383,6 +431,44 @@ export async function runTests(): Promise<void> {
 				}),
 			),
 			"receipt missing usage fields rejected",
+		);
+		const dependencyReference = {
+			version: 1,
+			id: "sha256:" + "e".repeat(64),
+			namespace: "receipt",
+			kind: "receipt",
+			mediaType: "application/json",
+			sizeBytes: 1,
+			sensitivity: "internal",
+			sourceRevision: "revision-1",
+		};
+		const validReceiptFields = {
+			taskId: "t", verdict: "ship", filesChanged: 0, commitIds: [], turns: 1,
+			costUsd: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cor: 0,
+			bundleHit: null,
+		};
+		check(
+			!ok(() => TaskReceiptSchema.parse({
+				...validReceiptFields,
+				childDependency: {
+					childTaskId: "child-1", edgeId: "edge-1", verdict: "ship",
+					receiptReference: { ...dependencyReference, kind: "trace", namespace: "trace" },
+					traceReference: dependencyReference,
+				},
+			})),
+			"child dependency rejects references with mismatched artifact kinds",
+		);
+		check(
+			!ok(() => TaskReceiptSchema.parse({
+				...validReceiptFields,
+				childDependency: {
+					childTaskId: "child-1", edgeId: "edge-1", verdict: "ship",
+					receiptReference: dependencyReference, traceReference: {
+						...dependencyReference, namespace: "trace", kind: "trace",
+					}, transcript: "secret",
+				},
+			})),
+			"child dependency rejects transcript fields",
 		);
 
 		const childBase = {

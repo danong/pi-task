@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import type { SessionHandle, SessionHost, SessionHostConfig, SessionHostEvent } from "../src/sessions/host.ts";
 import { ContextArtifactStore } from "../src/context/artifact-store.ts";
 import { buildChildHandoff } from "../src/contracts/payloads.ts";
+import { stableStringify } from "../src/contracts/serialize.ts";
 import { WorkingCheckpointSchema } from "../src/contracts/context-lifecycle.ts";
 import { createWorkingCheckpoint, persistWorkingCheckpoint } from "../src/context/checkpoint.ts";
 import { InMemoryTaskGateway } from "../src/gateway/in-memory.ts";
@@ -112,6 +113,20 @@ export async function runTests(): Promise<void> {
 		const childTraceRef = childArtifacts.find((ref) => ref.role === "trace")?.reference;
 		const parentReceiptRef = parentArtifacts.find((ref) => ref.role === "receipt")?.reference;
 		const parentTraceRef = parentArtifacts.find((ref) => ref.role === "trace")?.reference;
+		const childDependency = result.parent.childDependency;
+		check(
+			childDependency !== undefined &&
+			childDependency.childTaskId === result.childTaskId &&
+			childDependency.edgeId === result.edgeId &&
+			childDependency.verdict === result.child?.verdict &&
+			childDependency.receiptReference.id === childReceiptRef?.id &&
+			childDependency.receiptReference.kind === "receipt" &&
+			stableStringify(childDependency.receiptReference) === stableStringify(childReceiptRef) &&
+			childDependency.traceReference.id === childTraceRef?.id &&
+			childDependency.traceReference.kind === "trace" &&
+			stableStringify(childDependency.traceReference) === stableStringify(childTraceRef),
+			"parent receipt records exact child identity, edge, verdict, receipt, and trace references",
+		);
 		check(childResultRef?.kind === "result" && childResultRef.namespace === "result" && childResultRef.sourceRevision === edgeConfig?.sourceRevision, "child result reference is typed and revision-bound");
 		check(childReceiptRef?.kind === "receipt" && childReceiptRef.namespace === "receipt" && childReceiptRef.sourceRevision === edgeConfig?.sourceRevision && parentReceiptRef?.id !== childReceiptRef.id, "parent and child receipts are distinct immutable artifacts");
 		check(childTraceRef?.kind === "trace" && childTraceRef.namespace === "trace" && childTraceRef.sourceRevision === edgeConfig?.sourceRevision && parentTraceRef?.kind === "trace" && parentTraceRef.namespace === "trace" && parentTraceRef.sourceRevision === edgeConfig?.sourceRevision && parentTraceRef.id !== childTraceRef.id, "parent and child traces are distinct typed artifacts");

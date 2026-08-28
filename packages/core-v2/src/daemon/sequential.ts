@@ -16,6 +16,8 @@ import {
 	buildChildHandoff,
 	CHILD_MAX_ITEMS,
 	ChildResultSchema,
+	ChildDependencySummarySchema,
+	type ChildDependencySummary,
 	type ChildHandoff,
 	type ChildResult,
 } from "../contracts/payloads.ts";
@@ -234,10 +236,10 @@ function id(prefix: string): string {
 function terminalStatus(receipt: TaskReceipt): "completed" | "failed" | "escalated" {
 	return receipt.verdict === "ship" ? "completed" : receipt.verdict === "escalate" ? "escalated" : "failed";
 }
-function parentOutcome(receipt: TaskReceipt, status: SequentialRunResult["status"], child?: TaskReceipt): TaskReceipt {
+function parentOutcome(receipt: TaskReceipt, status: SequentialRunResult["status"], child?: TaskReceipt, childDependency?: ChildDependencySummary): TaskReceipt {
 	const verdict = status === "completed" ? "ship" : status === "escalated" ? "escalate" : "failed";
-	if (child === undefined) return { ...receipt, verdict };
-	return {
+	if (child === undefined) return TaskReceiptSchema.parse({ ...receipt, verdict });
+	return TaskReceiptSchema.parse({
 		...receipt,
 		verdict,
 		filesChanged: receipt.filesChanged + child.filesChanged,
@@ -249,7 +251,8 @@ function parentOutcome(receipt: TaskReceipt, status: SequentialRunResult["status
 		cacheReadTokens: receipt.cacheReadTokens + child.cacheReadTokens,
 		cor: receipt.inputTokens + receipt.cacheReadTokens + child.inputTokens + child.cacheReadTokens === 0 ? 0 : (receipt.cor * (receipt.inputTokens + receipt.cacheReadTokens) + child.cor * (child.inputTokens + child.cacheReadTokens)) / (receipt.inputTokens + receipt.cacheReadTokens + child.inputTokens + child.cacheReadTokens),
 		usageStatus: receipt.usageStatus === "measured" && child.usageStatus === "measured" ? "measured" : "unavailable",
-	};
+		...(childDependency === undefined ? {} : { childDependency: ChildDependencySummarySchema.parse(childDependency) }),
+	});
 }
 function artifactJson(
 	store: ContextArtifactStore,
@@ -577,13 +580,17 @@ export async function resumeSequentialChild(edgeId: string, runtime: SequentialR
 		if (["completed", "failed", "escalated"].includes(edge.status)) {
 			const childRefs = ledger.listTaskArtifacts(edge.childTaskId);
 			const childRef = childRefs.find((ref) => ref.role === "receipt" && ref.reference)?.reference;
+			const childTraceRef = childRefs.find((ref) => ref.role === "trace" && ref.reference)?.reference;
 			const child = childRef ? parseJson(runtime.artifactStore, childRef, "child receipt", (value) => TaskReceiptSchema.parse(value)) : undefined;
+			const childDependency = child !== undefined && childRef !== undefined && childTraceRef !== undefined
+				? ChildDependencySummarySchema.parse({ childTaskId: edge.childTaskId, edgeId, verdict: child.verdict, receiptReference: childRef, traceReference: childTraceRef })
+				: undefined;
 			const aggregateRef = ledger.listTaskArtifacts(edge.parentTaskId)
 				.find((ref) => ref.role === "receipt" && ref.reference)?.reference;
+			const status = edge.status as "completed" | "failed" | "escalated";
 			const aggregate = aggregateRef
 				? parseJson(runtime.artifactStore, aggregateRef, "parent receipt", (value) => TaskReceiptSchema.parse(value))
-				: parentOutcome(parentReceipt, edge.status as "completed" | "failed" | "escalated", child);
-			const status = edge.status as "completed" | "failed" | "escalated";
+				: parentOutcome(parentReceipt, status, child, childDependency);
 			return { parent: aggregate, ...(child === undefined ? {} : { child }), parentTaskId: edge.parentTaskId, childTaskId: edge.childTaskId, edgeId, status };
 		}
 		if (edge.status === "claimed") return blockedResult(edge, "incompatible", parentReceipt);
@@ -705,11 +712,19 @@ export async function resumeSequentialChild(edgeId: string, runtime: SequentialR
 				evidence: verificationEvidence,
 			}, sha(config.sourceRevision), "verification");
 			const result = terminalChildResult(facts, edge.parentTaskId, edge.childTaskId, child.receipt, verificationRef);
-			const aggregateReceipt = parentOutcome(parentReceipt, status, child.receipt);
-			const traces = stream.finish(aggregateReceipt.verdict, child.receipt.verdict);
+			const aggregateVerdict = parentOutcome(parentReceipt, status, child.receipt).verdict;
+			const traces = stream.finish(aggregateVerdict, child.receipt.verdict);
 			const resultRef = artifactJson(runtime.artifactStore, result, config.sourceRevision, "result");
 			const receiptRef = artifactJson(runtime.artifactStore, child.receipt, config.sourceRevision, "receipt");
 			const traceRef = artifactJson(runtime.artifactStore, traces.child, config.sourceRevision, "trace");
+			const childDependency = ChildDependencySummarySchema.parse({
+				childTaskId: edge.childTaskId,
+				edgeId,
+				verdict: child.receipt.verdict,
+				receiptReference: receiptRef,
+				traceReference: traceRef,
+			});
+			const aggregateReceipt = parentOutcome(parentReceipt, status, child.receipt, childDependency);
 			const parentReceiptRef = artifactJson(runtime.artifactStore, aggregateReceipt, config.sourceRevision, "receipt");
 			const parentTraceRef = artifactJson(runtime.artifactStore, traces.parent, config.sourceRevision, "trace");
 			// Store complete references before the edge transaction. If any
