@@ -19,6 +19,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { JujutsuWorkspaceDriver } from "../src/workspaces/jj-driver.ts";
+import {
+	workspaceContinuationOf,
+	WorkspaceContinuationError,
+	type WorkspaceContinuation,
+	type WorkspaceDriver,
+} from "../src/contracts/workspace-driver.ts";
 import { parseMachineDiffPaths } from "../src/workspaces/jj.ts";
 
 function newRepo(dir: string): void {
@@ -287,6 +293,110 @@ export async function runTests(): Promise<void> {
 				"kept.txt",
 			"machine diff parser ignores human status prose",
 		);
+
+		// ─── Durable opaque continuation: restart with a new driver ────────
+		{
+			const repo = join(dir, "continuation");
+			newRepo(repo);
+			const firstDriver = new JujutsuWorkspaceDriver({ projectDir: repo });
+			await firstDriver.prepareIntegrationBase("continuation");
+			const ws = await firstDriver.createWorkspace("resume-1");
+			writeFileSync(join(ws.hostPath, "partial.txt"), "recover me\n", "utf-8");
+			const continuation = await firstDriver.continuation!.preserveContinuation(ws);
+			const serialized = JSON.stringify(continuation);
+			check(
+				!serialized.includes(ws.hostPath) && !serialized.includes(ws.branchName),
+				"continuation does not expose a host path or workspace name",
+			);
+			check(
+				/^[0-9a-f]{40}$/.test(continuation.revision) &&
+				/^jjc1_[0-9a-f]{64}$/.test(continuation.opaqueToken),
+				"continuation contains an opaque provider/version token and revision",
+			);
+
+			// A second driver has no in-memory context map; it resolves the live
+			// provider workspace and recovers the snapshotted partial tree.
+			const restarted = new JujutsuWorkspaceDriver({ projectDir: repo });
+			const resumed = await restarted.continuation!.resumeContinuation(
+				"resume-1",
+				continuation,
+			);
+			check(
+				readFileSync(join(resumed.hostPath, "partial.txt"), "utf-8") ===
+					"recover me\n",
+				"new driver resumes the same workspace tree",
+			);
+			const recovery = await firstDriver.recoverFailedRun({
+				workspaceNames: [ws.branchName],
+				cause: "interrupted",
+				workspaceDirs: { [ws.branchName]: ws.hostPath },
+			});
+			check(
+				recovery.stacked.length === 0 &&
+				(await firstDriver.continuation!.resumeContinuation("resume-1", continuation)).hostPath ===
+					ws.hostPath,
+				"failure hygiene leaves an explicitly preserved continuation resumable",
+			);
+			const again = await restarted.continuation!.preserveContinuation(resumed);
+			check(
+				JSON.stringify(again) === JSON.stringify(continuation),
+				"repeated preservation is idempotent",
+			);
+			const resumedAgain = await restarted.continuation!.resumeContinuation(
+				"resume-1",
+				continuation,
+			);
+			check(
+				resumedAgain.hostPath === resumed.hostPath,
+				"repeated resumption does not create a duplicate workspace",
+			);
+
+			writeFileSync(join(resumed.hostPath, "advanced.txt"), "new revision\n", "utf-8");
+			workerCommit(resumed.hostPath, "advance continuation");
+			let stale: WorkspaceContinuationError | undefined;
+			try {
+				await new JujutsuWorkspaceDriver({ projectDir: repo }).continuation!.resumeContinuation(
+					"resume-1",
+					continuation,
+				);
+			} catch (error: unknown) {
+				if (error instanceof WorkspaceContinuationError) stale = error;
+			}
+			check(stale?.code === "stale", "revision mismatch is a typed stale outcome");
+
+			const malformed: WorkspaceContinuation = {
+				opaqueToken: "jjc9_not-a-provider-token",
+				revision: continuation.revision,
+			};
+			let malformedError: WorkspaceContinuationError | undefined;
+			try {
+				await restarted.continuation!.resumeContinuation("resume-1", malformed);
+			} catch (error: unknown) {
+				if (error instanceof WorkspaceContinuationError) malformedError = error;
+			}
+			check(
+				malformedError?.code === "malformed_token",
+				"provider/version mismatch is a typed malformed-token outcome",
+			);
+			let unsupported: WorkspaceContinuationError | undefined;
+			try {
+				workspaceContinuationOf({ continuation: undefined } as unknown as WorkspaceDriver);
+			} catch (error: unknown) {
+				if (error instanceof WorkspaceContinuationError) unsupported = error;
+			}
+			check(unsupported?.code === "unsupported", "provider deletion is typed unsupported");
+			await restarted.cleanupWorkspace(resumed);
+			let missing: WorkspaceContinuationError | undefined;
+			try {
+				await new JujutsuWorkspaceDriver({ projectDir: repo }).continuation!.resumeContinuation(
+					"resume-1",
+					continuation,
+				);
+			} catch (error: unknown) {
+				if (error instanceof WorkspaceContinuationError) missing = error;
+			}
+			check(missing?.code === "missing", "deleted continuation is a typed missing outcome");
+		}
 
 		// ─── Feature-branch mode: bookmarks, no squash ───────────────────
 		{

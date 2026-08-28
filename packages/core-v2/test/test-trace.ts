@@ -115,6 +115,16 @@ export async function runTests(): Promise<void> {
 			),
 			"prompt detail rejected",
 		);
+		const childTrace = {
+			...base,
+			type: "child.completed" as const,
+			detail: {
+				parentTaskId: "parent", childTaskId: "child-1", relationship: "continuation" as const,
+				ordinal: 1, status: "completed" as const,
+				resultArtifactId: "sha256:" + "1".repeat(64), receiptArtifactId: "sha256:" + "2".repeat(64), traceArtifactId: "sha256:" + "3".repeat(64),
+			},
+		};
+		check(invalid(() => TraceEventSchema.parse(childTrace)), "trace rejects relationship-mismatched child event");
 		check(
 			invalid(() =>
 				TraceEventSchema.parse({
@@ -338,6 +348,15 @@ export async function runTests(): Promise<void> {
 				type: "task.escalated",
 				taskId: "projection-task",
 				detail: { verdict: "escalate" },
+			},
+			{
+				type: "child.queued",
+				taskId: "projection-task",
+				detail: {
+					parentTaskId: "projection-task", childTaskId: "projection-child",
+					relationship: "continuation", ordinal: 1, status: "ready",
+					handoffArtifactId: "sha256:" + "1".repeat(64),
+				},
 			},
 		];
 		const collector = new TraceCollector(

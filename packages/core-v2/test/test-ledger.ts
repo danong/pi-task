@@ -16,6 +16,7 @@
  */
 
 import { mkdtempSync, rmSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -23,6 +24,7 @@ import { pathToFileURL } from "node:url";
 import {
 	IN_FLIGHT_STATUSES,
 	LEDGER_SCHEMA_VERSION,
+	classifyChildRestart,
 	LedgerStore,
 	reconcileCrashedTask,
 } from "../src/ledger/store.ts";
@@ -271,6 +273,195 @@ export function runTests(): Promise<void> {
 			store.close();
 		}
 
+		// ─── M5 child edges, references, and transactional claims ────────
+		{
+			const store = new LedgerStore(tmp.path + ".m5");
+			store.insertTask({ id: "parent", goal: "parent goal" });
+			store.insertTask({ id: "child", goal: "child goal" });
+			const ready = store.persistReadyChildIntent({
+				edgeId: "edge-1",
+				parentTaskId: "parent",
+				childTaskId: "child",
+				ordinal: 1,
+				handoffArtifactId: "sha256:" + "1".repeat(64),
+				checkpointArtifactId: "sha256:" + "2".repeat(64),
+				artifacts: [
+					{
+						role: "plan",
+						artifactId: "sha256:" + "3".repeat(64),
+						mediaType: "application/json",
+						sourceRevision: "sha256:" + "4".repeat(64),
+					},
+				],
+				workspaceContinuation: {
+					id: "continuation-1",
+					taskId: "child",
+					driver: "fake",
+					providerVersion: "1",
+					opaqueToken: "opaque-provider-token",
+					revision: "rev-1",
+				},
+			});
+			check(ready.status === "ready", "ready child intent is durable");
+			check(
+			store.listTaskArtifacts("child").length === 3,
+			"handoff, checkpoint, and plan references commit with the intent",
+		);
+		check(
+			store.getWorkspaceContinuation("continuation-1")?.opaqueToken ===
+				"opaque-provider-token",
+			"workspace continuation record round-trips as opaque ledger state",
+		);
+		check(
+			store.getParentTask("child")?.id === "parent" &&
+				store.getParentEdge("child")?.ordinal === 1,
+			"parent lookup follows the durable edge",
+		);
+		const duplicateOrdinal = expectThrow(() =>
+			store.persistReadyChildIntent({
+				edgeId: "edge-duplicate",
+				parentTaskId: "parent",
+				childTaskId: "child",
+				ordinal: 1,
+				handoffArtifactId: "sha256:" + "8".repeat(64),
+			}),
+		);
+		check(
+			duplicateOrdinal.includes("UNIQUE"),
+			"parent and ordinal uniqueness is enforced",
+		);
+		check(
+			store.listTaskArtifacts("child").length === 3 &&
+			Number((store.db.prepare("SELECT COUNT(*) AS n FROM workspace_continuations").get() as { n: number }).n) === 1,
+			"failed duplicate intent rolls back all child rows",
+		);
+
+		// Two independent connections use the same conditional ownership update.
+		const claimed = store.claimReadyChild("edge-1");
+		check(claimed?.status === "claimed", "first ready claim succeeds");
+		const secondConnection = new LedgerStore(tmp.path + ".m5");
+		check(secondConnection.claimReadyChild("edge-1") === null, "second connection loses a ready claim cleanly");
+		secondConnection.close();
+		check(store.claimReadyChild("edge-1") === null, "second claim is a no-op");
+		store.markChildResumable("edge-1");
+		check(
+			store.findResumableChild("parent")?.edgeId === "edge-1",
+			"resumable child lookup is durable",
+		);
+		const resumableConnection = new LedgerStore(tmp.path + ".m5");
+		const resumableClaim = resumableConnection.claimResumableChild("edge-1");
+		check(
+			resumableClaim?.status === "claimed" &&
+				store.claimResumableChild("edge-1") === null,
+			"two connections make resumable compare-and-set exactly once",
+		);
+		resumableConnection.close();
+		const settlement = {
+			resultArtifactId: "sha256:" + "5".repeat(64),
+			receiptArtifactId: "sha256:" + "6".repeat(64),
+			traceArtifactId: "sha256:" + "7".repeat(64),
+		};
+		const terminal = store.settleChild("edge-1", "completed", settlement);
+		const repeated = store.settleChild("edge-1", "completed", settlement);
+		check(
+			terminal.status === "completed" &&
+			terminal.completedAt !== null &&
+			repeated.status === "completed" &&
+			repeated.completedAt === terminal.completedAt,
+			"terminal transition is idempotent",
+		);
+		check(
+			store.getWorkspaceContinuation("continuation-1")?.status === "completed" &&
+			store.getTask("parent")?.status === "completed" &&
+			store.getTask("child")?.status === "completed" &&
+			store.listTaskArtifacts("child").length === 6,
+			"atomic settlement updates continuation, both tasks, and all evidence references",
+		);
+		check(expectThrow(() => store.markChildResumable("edge-1")).length > 0, "terminal edge cannot become resumable");
+		check(expectThrow(() => store.markChildBlocked("edge-1")).length > 0, "terminal edge cannot become blocked");
+		check(expectThrow(() => store.settleChild("edge-1", "failed", settlement)).length > 0, "terminal outcome is immutable");
+		// Relational invariants are enforced below the convenience API too.
+		store.insertTask({ id: "other-child", goal: "g" });
+		store.insertWorkspaceContinuation({ id: "wrong-cont", taskId: "parent", driver: "fake", providerVersion: "1", opaqueToken: "x", revision: "r" });
+		const wrongContinuation = expectThrow(() => store.db.prepare(`INSERT INTO task_edges (edge_id, parent_task_id, child_task_id, ordinal, relationship, status, handoff_artifact_id, workspace_continuation_id) VALUES ('wrong-edge', 'parent', 'other-child', 2, 'continuation', 'ready', ?, 'wrong-cont')`).run("sha256:" + "8".repeat(64)));
+		check(wrongContinuation.includes("FOREIGN KEY"), "edge cannot reference another task's continuation");
+		const duplicateParent = expectThrow(() => store.db.prepare(`INSERT INTO task_edges (edge_id, parent_task_id, child_task_id, ordinal, relationship, status, handoff_artifact_id) VALUES ('duplicate-child-edge', 'parent', 'child', 3, 'continuation', 'ready', ?)`).run("sha256:" + "8".repeat(64)));
+		check(duplicateParent.includes("UNIQUE"), "non-null child has one parent edge");
+		store.close();
+		const reopened = new LedgerStore(tmp.path + ".m5");
+		check(
+			reopened.getTask("parent")?.goal === "parent goal" &&
+				reopened.getTaskEdge("edge-1")?.status === "completed",
+			"old and child rows survive reopen/migration",
+		);
+		reopened.close();
+		// True pre-v3 fixture: build only the v1/v2 tables, rather than opening
+		// LedgerStore and merely changing user_version after v3 already exists.
+		const legacyPath = tmp.path + ".legacy";
+		const legacyDb = new DatabaseSync(legacyPath);
+		legacyDb.exec(`
+			PRAGMA foreign_keys = ON;
+			CREATE TABLE tasks (id TEXT PRIMARY KEY, status TEXT NOT NULL CHECK (status IN ('queued','planning','executing','verifying','reviewing','completed','failed','escalated')), goal TEXT NOT NULL, parent_branch TEXT, plan_mode TEXT, retry_count INTEGER NOT NULL DEFAULT 0, max_retries INTEGER NOT NULL DEFAULT 2, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP);
+			CREATE TABLE micro_sessions (id TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE, role TEXT NOT NULL, status TEXT NOT NULL, turn_count INTEGER DEFAULT 0, yield_payload JSON, last_heartbeat_at DATETIME);
+			CREATE TABLE routing_feedback (repo TEXT NOT NULL, mode TEXT NOT NULL, hit INTEGER NOT NULL, recorded_at DATETIME DEFAULT CURRENT_TIMESTAMP);
+			CREATE TABLE workspaces (id TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE, driver TEXT NOT NULL, host_path TEXT NOT NULL, container_path TEXT, branch_name TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'provisioning', created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP);
+			CREATE TABLE workflow_approvals (dag_id TEXT PRIMARY KEY, approved INTEGER NOT NULL, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP);
+			PRAGMA user_version = 2;
+		`);
+		legacyDb.prepare("INSERT INTO tasks (id, status, goal) VALUES (?, 'queued', ?)").run("legacy", "preserve me");
+		legacyDb.prepare("INSERT INTO micro_sessions (id, task_id, role, status) VALUES (?, ?, ?, 'active')").run("legacy-session", "legacy", "worker");
+		legacyDb.close();
+		const migrated = new LedgerStore(legacyPath);
+		check(
+			migrated.getTask("legacy")?.goal === "preserve me" &&
+			migrated.getMicroSession("legacy-session")?.taskId === "legacy" &&
+			(Number((migrated.db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version) === LEDGER_SCHEMA_VERSION) &&
+			migrated.db.prepare("SELECT name FROM sqlite_master WHERE name = 'task_edges'").get() !== undefined,
+			"true pre-v3 migration preserves legacy rows and installs child schema",
+		);
+		migrated.close();
+	}
+
+		// ─── R2 regression: isolated/parallel worker+aggregate finalization must not be blocked by global terminal immutability ───
+		{
+			const store = new LedgerStore(tmp.path + ".regression");
+			// Simulate the isolated/parallel pipeline's existing task lifecycle:
+			// aggregate and workers are set to executing, then workers complete, then healthy workers are
+			// moved to verifying for the shared verification gate, then back to completed, and aggregate completes.
+			// The hardened global check `terminal task status is immutable` would reject the completed -> verifying step.
+			store.insertTask({ id: "agg", goal: "aggregate" });
+			store.insertTask({ id: "worker-0", goal: "worker 0" });
+			store.insertTask({ id: "worker-1", goal: "worker 1" });
+			store.setTaskStatus("agg", "executing");
+			store.setTaskStatus("worker-0", "executing");
+			store.setTaskStatus("worker-1", "executing");
+			// Workers yield → completed (parallel.ts:720)
+			store.setTaskStatus("worker-0", "completed");
+			store.setTaskStatus("worker-1", "completed");
+			check(store.getTask("worker-0")!.status === "completed" && store.getTask("worker-1")!.status === "completed", "workers completed after yield");
+			// M4 verification gate: healthy workers sit in `verifying` until aggregate ships (parallel.ts:915)
+			let threw = "";
+			try {
+				store.setTaskStatus("worker-0", "verifying");
+				store.setTaskStatus("worker-1", "verifying");
+			} catch (err) {
+				threw = err instanceof Error ? err.message : String(err);
+			}
+			check(threw === "", `worker completed -> verifying must not throw terminal immutability, got: ${threw || "no error"} but pipeline requires it`);
+			check(store.getTask("worker-0")!.status === "verifying" && store.getTask("worker-1")!.status === "verifying", "workers verifying after completed");
+			// Verification passed → workers back to completed (parallel.ts:1194) and aggregate completed (1200)
+			store.setTaskStatus("worker-0", "completed");
+			store.setTaskStatus("worker-1", "completed");
+			store.setTaskStatus("agg", "completed");
+			check(store.getTask("worker-0")!.status === "completed" && store.getTask("agg")!.status === "completed", "workers and aggregate re-completed after verification");
+			// Idempotent re-completion must also not throw; child-edge APIs remain strict on their own paths (tested above)
+			threw = "";
+			try { store.setTaskStatus("worker-0", "completed"); } catch (err) { threw = err instanceof Error ? err.message : String(err); }
+			check(threw === "", `repeated completed -> completed must not throw terminal immutability, got: ${threw}`);
+			check(!threw.includes("terminal task status is immutable"), "generic setTaskStatus does not impose terminal immutability");
+			store.close();
+		}
+
 		// ─── Boot reconciliation (pure policy + store method) ─────────
 		{
 			check(
@@ -306,6 +497,9 @@ export function runTests(): Promise<void> {
 				}).action === "keep",
 				"completed is not touched",
 			);
+			check(classifyChildRestart({ status: "claimed", checkpointPresent: true, continuationPresent: true }) === "resumable", "valid claimed child is resumable without a session");
+			check(classifyChildRestart({ status: "claimed", checkpointPresent: false, continuationPresent: true }) === "blocked", "missing checkpoint blocks restart");
+			check(classifyChildRestart({ status: "completed", checkpointPresent: false, continuationPresent: false }) === "completed", "terminal child restart is immutable");
 
 			const store = new LedgerStore(tmp.path + ".rec");
 			store.insertTask({ id: "r1", goal: "g", maxRetries: 2 }); // executing, 0 retries → requeue
@@ -315,6 +509,27 @@ export function runTests(): Promise<void> {
 			store.insertTask({ id: "r3", goal: "g" }); // queued → keep
 			store.insertTask({ id: "r4", goal: "g" }); // completed → keep
 			store.setTaskStatus("r4", "completed");
+
+			// Restart classification is deterministic and ledger-only. Incomplete
+			// ingress is blocked; a complete immutable manifest is required before
+			// a claimed edge can become resumable.
+			store.insertTask({ id: "edge-parent", goal: "g" });
+			store.insertTask({ id: "r5-child", goal: "g" });
+			store.persistReadyChildIntent({
+				edgeId: "r5-edge", parentTaskId: "edge-parent", childTaskId: "r5-child", ordinal: 1,
+				handoffArtifactId: "sha256:" + "9".repeat(64),
+			});
+			store.claimReadyChild("r5-edge");
+			store.insertTask({ id: "r6-child", goal: "g" });
+			store.persistReadyChildIntent({
+				edgeId: "r6-edge", parentTaskId: "edge-parent", childTaskId: "r6-child", ordinal: 2,
+				handoffArtifactId: "sha256:" + "a".repeat(64),
+				checkpointArtifactId: "sha256:" + "b".repeat(64),
+				workspaceContinuation: { id: "r6-cont", taskId: "r6-child", driver: "fake", providerVersion: "1", opaqueToken: "token", revision: "rev" },
+			});
+			store.claimReadyChild("r6-edge");
+			const childRestart = store.reconcileChildEdgesOnBoot();
+			check(childRestart.blocked.includes("r5-edge") && childRestart.blocked.includes("r6-edge") && childRestart.resumable.length === 0, "restart blocks claims without a complete immutable ingress manifest");
 
 			const result = store.reconcileOnBoot();
 			check(
@@ -336,6 +551,59 @@ export function runTests(): Promise<void> {
 					store.getTask("r4")!.status === "completed",
 				"queued/completed untouched",
 			);
+
+			// Active M5 edges, rather than the generic task loop, own recovery of
+			// both linked rows. A blocked edge is no longer active ownership and
+			// therefore retains ordinary retry behavior.
+			const authority = new LedgerStore(tmp.path + ".authority");
+			const activeStatuses = ["preparing", "ready", "claimed", "resumable"] as const;
+			const activeTaskIds: string[] = [];
+			for (const [index, status] of activeStatuses.entries()) {
+				const parentTaskId = `authority-${status}-parent`;
+				const childTaskId = `authority-${status}-child`;
+				const edgeId = `authority-${status}-edge`;
+				activeTaskIds.push(parentTaskId, childTaskId);
+				authority.insertTask({ id: parentTaskId, goal: "g", maxRetries: 2 });
+				authority.insertTask({ id: childTaskId, goal: "g", maxRetries: 2 });
+				authority.setTaskStatus(parentTaskId, "executing");
+				authority.setTaskStatus(childTaskId, "executing");
+				authority.db.prepare(
+					`INSERT INTO task_edges
+					 (edge_id, parent_task_id, child_task_id, ordinal, relationship, status, handoff_artifact_id)
+					 VALUES (?, ?, ?, ?, 'continuation', ?, ?)`,
+				).run(edgeId, parentTaskId, childTaskId, index + 1, status === "preparing" ? "ready" : status, "sha256:" + "0".repeat(64));
+				if (status === "preparing")
+					authority.db.prepare("INSERT INTO task_edge_status_overrides (edge_id, status) VALUES (?, ?)").run(edgeId, status);
+			}
+			authority.insertTask({ id: "authority-blocked-parent", goal: "g", maxRetries: 2 });
+			authority.insertTask({ id: "authority-blocked-child", goal: "g", maxRetries: 2 });
+			authority.setTaskStatus("authority-blocked-parent", "executing");
+			authority.setTaskStatus("authority-blocked-child", "executing");
+			authority.db.prepare(
+				`INSERT INTO task_edges
+				 (edge_id, parent_task_id, child_task_id, ordinal, relationship, status, handoff_artifact_id)
+				 VALUES (?, ?, ?, ?, 'continuation', 'blocked', ?)`,
+			).run("authority-blocked-edge", "authority-blocked-parent", "authority-blocked-child", 5, "sha256:" + "0".repeat(64));
+			authority.insertTask({ id: "authority-standalone", goal: "g", maxRetries: 2 });
+			authority.setTaskStatus("authority-standalone", "executing");
+			const authorityResult = authority.reconcileOnBoot();
+			check(
+				activeTaskIds.every((id) => !authorityResult.requeued.includes(id) && !authorityResult.failed.includes(id) && authority.getTask(id)?.status === "executing" && authority.getTask(id)?.retryCount === 0),
+				"preparing/ready/claimed/resumable edges retain authority over parent and child restart",
+			);
+			check(
+				authorityResult.requeued.includes("authority-blocked-parent") &&
+					authorityResult.requeued.includes("authority-blocked-child") &&
+					authorityResult.requeued.includes("authority-standalone") &&
+					authorityResult.failed.length === 0,
+				"blocked-edge and standalone tasks retain generic retry behavior",
+			);
+			check(
+				authority.getTask("authority-blocked-parent")?.retryCount === 1 &&
+					authority.getTask("authority-standalone")?.status === "queued",
+				"generic retry increments and requeues unowned task rows",
+			);
+			authority.close();
 
 			// Idempotent: a second boot finds nothing in flight.
 			const second = store.reconcileOnBoot();

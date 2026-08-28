@@ -44,6 +44,12 @@ const CANONICAL_NAMESPACES = new Set([
 	"checkpoint",
 	"plan",
 	"tool-result",
+	"handoff",
+	"result",
+	"receipt",
+	"trace",
+	"verification",
+	"failure",
 ]);
 function validNamespace(value: string): boolean {
 	return (
@@ -97,13 +103,7 @@ export class ContextArtifactStore {
 		this.#maxBytes = options.maxBytes ?? DEFAULT_CONTEXT_ARTIFACT_MAX_BYTES;
 		if (!Number.isSafeInteger(this.#maxBytes) || this.#maxBytes < 1)
 			throw new RangeError("artifact maxBytes must be a positive safe integer");
-		const namespaces = options.allowedNamespaces ?? [
-			"context",
-			"source-view",
-			"checkpoint",
-			"plan",
-			"tool-result",
-		];
+		const namespaces = options.allowedNamespaces ?? [...CANONICAL_NAMESPACES];
 		if (
 			namespaces.length === 0 ||
 			namespaces.some((value) => !validNamespace(value))

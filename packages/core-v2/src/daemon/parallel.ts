@@ -47,7 +47,10 @@ import { rawContextAcquisitionFactory } from "../context/raw-provider.ts";
 import { assembleContext } from "../context/assembler.ts";
 import { deriveInformationNeeds, planContext } from "../context/planner.ts";
 import { startExecutionEpoch } from "../context/epoch.ts";
-import type { ContextPlan } from "../contracts/context-lifecycle.ts";
+import type { ContextPlan, WorkingCheckpoint } from "../contracts/context-lifecycle.ts";
+import type { ChildHandoff } from "../contracts/payloads.ts";
+import { serializeForPrompt } from "../contracts/serialize.ts";
+import { ChildHandoffSchema } from "../contracts/payloads.ts";
 import type { ContextArtifactStore } from "../context/artifact-store.ts";
 import type { SessionHostEvent } from "../sessions/host.ts";
 import { InMemoryTaskGateway } from "../gateway/index.ts";
@@ -104,6 +107,22 @@ export interface RunParallelOptions {
 	onEvent?: (workerIndex: number, event: SessionHostEvent) => void;
 	/** Single-task composition reuses this core without parallel identities. */
 	singleTask?: boolean;
+	/** Daemon compositions may reserve a durable task identity before execution. */
+	taskId?: string;
+	/** The task row was inserted by the owning daemon transaction. */
+	reuseExistingTask?: boolean;
+	/** Run one attempt in a provider-resolved continuation workspace. */
+	workspace?: WorkspaceContext;
+	/** Keep a successful workspace live for a daemon-owned continuation. */
+	retainWorkspace?: boolean;
+	/** A sequential parent is not terminal until its direct child settles. */
+	deferSuccessfulTerminal?: boolean;
+	/** Distinguishes repeated sessions for one durable resumable task. */
+	sessionAttemptId?: string;
+	/** New child epoch references the revalidated durable checkpoint. */
+	resumeCheckpoint?: WorkingCheckpoint;
+	/** Already revalidated bounded continuation state, appended at session ingress. */
+	childHandoff?: ChildHandoff;
 	/** Explicit acquisition/materialization capability; raw is the default. */
 	contextCapabilitiesFactory?: ContextAcquisitionFactory;
 	/** Optional user-state artifact store. Raw execution never requires it. */
@@ -162,6 +181,8 @@ function makeReceipt(
 export interface RunParallelResult {
 	aggregate: TaskReceipt;
 	perWorker: TaskReceipt[];
+	/** A watchdog/cap ended useful work at a resumable boundary. */
+	interruption?: { reason: "budget_exceeded" | "wall_timeout" | "no_progress" | "tool_timeout" | "settled_without_yield" };
 	/** The combined base commit id (task-base mode; undefined in feature-branch). */
 	mergedCommitId?: string;
 	conflicts: string[];
@@ -240,7 +261,7 @@ async function runWithStore(
 	// Attempt-discriminated ids FIRST (review M1/P0): every re-run of the
 	// same specs gets fresh ledger rows and fresh jj workspace names —
 	// before any repo mutation (an orphan AI base must be impossible).
-	const aggregateId = resolveAttemptId(
+	const aggregateId = options.taskId ?? resolveAttemptId(
 		store,
 		singleTask ? familyBase : `${familyBase}-p`,
 	);
@@ -252,14 +273,18 @@ async function runWithStore(
 					? `${familyBase}-${i}`
 					: `${familyBase}-${i}-a${attemptNumber}`,
 			);
+	const sessionIdFor = (taskId: string) =>
+		`${taskId}-worker${options.sessionAttemptId === undefined ? "" : `-${options.sessionAttemptId}`}`;
 
-	store.insertTask({
-		id: aggregateId,
-		goal: parsed[0]?.goal ?? (singleTask ? "task" : "parallel"),
-		planMode: null,
-	});
+	if (!options.reuseExistingTask) {
+		store.insertTask({
+			id: aggregateId,
+			goal: parsed[0]?.goal ?? (singleTask ? "task" : "parallel"),
+			planMode: null,
+		});
+		gateway.emit({ type: "task.queued", taskId: aggregateId });
+	}
 	store.setTaskStatus(aggregateId, "executing");
-	gateway.emit({ type: "task.queued", taskId: aggregateId });
 
 	// Compile one bounded initial artifact from the validated task before any
 	// worker session is spawned. Index/retrieval failure is an explicit raw
@@ -481,26 +506,39 @@ async function runWithStore(
 	// Create workspaces from this attempt's base. A reused provider may leave
 	// the main working copy on an empty child of the previous merged base.
 	for (let i = 0; i < options.subTasks.length; i += 1) {
-		const context = await options.workspaceDriver.createWorkspace(
-			workerIds[i]!,
-		);
+		const context = i === 0 && options.workspace !== undefined
+			? options.workspace
+			: await options.workspaceDriver.createWorkspace(workerIds[i]!);
+		if (context.taskId !== workerIds[i]!)
+			throw new Error("continuation workspace task identity does not match attempt");
 		contexts.push(context);
-		store.insertWorkspace({
-			id: `${workerIds[i]}-workspace`,
-			taskId: workerIds[i]!,
-			driver: options.workspaceDriver.name,
-			hostPath: context.hostPath,
-			...(context.containerPath === undefined
-				? {}
-				: { containerPath: context.containerPath }),
-			branchName: context.branchName,
-		});
-		store.setWorkspaceStatus(`${workerIds[i]}-workspace`, "active");
+		const workspaceId = `${workerIds[i]}-workspace`;
+		const existingWorkspace = store.getWorkspace(workspaceId);
+		if (existingWorkspace === null) {
+			store.insertWorkspace({
+				id: workspaceId,
+				taskId: workerIds[i]!,
+				driver: options.workspaceDriver.name,
+				hostPath: context.hostPath,
+				...(context.containerPath === undefined
+					? {}
+					: { containerPath: context.containerPath }),
+				branchName: context.branchName,
+			});
+		} else if (
+			existingWorkspace.taskId !== workerIds[i] ||
+			existingWorkspace.driver !== options.workspaceDriver.name ||
+			existingWorkspace.hostPath !== context.hostPath ||
+			existingWorkspace.branchName !== context.branchName
+		) {
+			throw new Error("durable continuation workspace does not match provider context");
+		}
+		store.setWorkspaceStatus(workspaceId, "active");
 	}
 
 	for (const ctx of contexts) {
 		store.insertMicroSession({
-			id: `${ctx.taskId}-worker`,
+			id: sessionIdFor(ctx.taskId),
 			taskId: ctx.taskId,
 			role: "worker",
 		});
@@ -517,6 +555,7 @@ async function runWithStore(
 			role: `worker-${index}`,
 			modelId: options.model,
 			plan: contextPlan,
+			...(options.resumeCheckpoint === undefined ? {} : { checkpoint: options.resumeCheckpoint }),
 		}),
 	);
 	for (const epoch of contextEpochs) {
@@ -539,7 +578,7 @@ async function runWithStore(
 				role: `worker-${i}`,
 				modelId: options.model,
 				cwd: contexts[i]!.hostPath,
-				systemPrompt: `${contextPrompt}${contextPrompt.length > 0 ? "\n\n" : ""}${buildWorkerSystemPrompt(
+				systemPrompt: `${contextPrompt}${contextPrompt.length > 0 ? "\n\n" : ""}${options.childHandoff === undefined ? "" : `Continuation state (bounded, declarative):\n${serializeForPrompt(ChildHandoffSchema, options.childHandoff)}\n\n`}${buildWorkerSystemPrompt(
 					options.subTasks[i]!,
 					parsed[i]!.requirements.length,
 				)}`,
@@ -576,7 +615,7 @@ async function runWithStore(
 			gateway.emit({
 				type: "session.spawned",
 				taskId: contexts[i]!.taskId,
-				sessionId: `${contexts[i]!.taskId}-worker`,
+				sessionId: sessionIdFor(contexts[i]!.taskId),
 			});
 			handle.subscribe((event) => {
 				options.onEvent?.(i, event);
@@ -702,7 +741,7 @@ async function runWithStore(
 			gateway.emit({
 				type: "session.exhausted",
 				taskId: ctx.taskId,
-				sessionId: `${ctx.taskId}-worker`,
+				sessionId: sessionIdFor(ctx.taskId),
 			});
 			return makeReceipt(ctx.taskId, "failed", 0, [], obs.turns, usages[i]);
 		}
@@ -717,16 +756,17 @@ async function runWithStore(
 			obs.turns,
 			usages[i],
 		);
-		store.setTaskStatus(ctx.taskId, "completed");
+		if (!(singleTask && options.deferSuccessfulTerminal))
+			store.setTaskStatus(ctx.taskId, "completed");
 		store.setSessionStatus(
-			`${ctx.taskId}-worker`,
+			sessionIdFor(ctx.taskId),
 			"yielded",
 			JSON.stringify(yieldPayload),
 		);
 		gateway.emit({
 			type: "session.yielded",
 			taskId: ctx.taskId,
-			sessionId: `${ctx.taskId}-worker`,
+			sessionId: sessionIdFor(ctx.taskId),
 		});
 		return receipt;
 	});
@@ -742,7 +782,7 @@ async function runWithStore(
 				gateway.emit({
 					type: "task.completed",
 					taskId: receipt.taskId,
-					sessionId: `${receipt.taskId}-worker`,
+					sessionId: sessionIdFor(receipt.taskId),
 					detail: { verdict: "ship" },
 				});
 			} else {
@@ -752,7 +792,7 @@ async function runWithStore(
 				gateway.emit({
 					type: "task.failed",
 					taskId: receipt.taskId,
-					sessionId: `${receipt.taskId}-worker`,
+					sessionId: sessionIdFor(receipt.taskId),
 					detail: {
 						cause: isBudget
 							? `budget_exceeded:maxTurns=${options.maxTurns ?? 0}`
@@ -768,32 +808,37 @@ async function runWithStore(
 
 	// ── Integrate. ────────────────────────────────────────────────────────
 	const anyFailed = perWorker.some((r) => r.verdict !== "ship");
+	const watchdogInterruption = observations.find((observation) => observation.watchdogAbort !== undefined)?.watchdogAbort;
+	const interruption = watchdogInterruption === undefined ? undefined : { reason: watchdogInterruption.reason };
 
 	if (!baseChangeId) {
 		// Feature-branch mode: bookmarks only; no automatic integration.
 		const published =
 			(await options.workspaceDriver.publishBookmarks?.(contexts)) ?? [];
 		for (const ctx of contexts) {
-			await options.workspaceDriver.cleanupWorkspace?.(ctx);
-			store.setWorkspaceStatus(`${ctx.taskId}-workspace`, "released");
+			if (!options.retainWorkspace) {
+				await options.workspaceDriver.cleanupWorkspace?.(ctx);
+				store.setWorkspaceStatus(`${ctx.taskId}-workspace`, "released");
+			}
 		}
-		store.setTaskStatus(aggregateId, anyFailed ? "failed" : "completed");
+		if (anyFailed || !options.deferSuccessfulTerminal)
+			store.setTaskStatus(aggregateId, anyFailed ? "failed" : "completed");
 		if (anyFailed) {
 			gateway.emit({
 				type: "task.failed",
 				taskId: aggregateId,
-				sessionId: `${aggregateId}-worker`,
+				sessionId: sessionIdFor(aggregateId),
 				detail: {
 					cause: "one or more workers failed",
 					stage: "session",
 					code: "worker_failed",
 				},
 			});
-		} else {
+		} else if (!options.deferSuccessfulTerminal) {
 			gateway.emit({
 				type: "task.completed",
 				taskId: aggregateId,
-				sessionId: `${aggregateId}-worker`,
+				sessionId: sessionIdFor(aggregateId),
 				detail: { verdict: "ship" },
 			});
 		}
@@ -807,6 +852,7 @@ async function runWithStore(
 				sumUsage(usages),
 			),
 			perWorker,
+			...(interruption === undefined ? {} : { interruption }),
 			conflicts: [],
 		};
 	}
@@ -892,7 +938,7 @@ async function runWithStore(
 		gateway.emit({
 			type: "task.failed",
 			taskId: aggregateId,
-			sessionId: `${aggregateId}-worker`,
+			sessionId: sessionIdFor(aggregateId),
 			detail: { cause, stage: "workspace", code: "merge_failed" },
 		});
 		return {
@@ -905,6 +951,7 @@ async function runWithStore(
 				sumUsage(usages),
 			),
 			perWorker,
+			...(interruption === undefined ? {} : { interruption }),
 			conflicts: [],
 		};
 	}
@@ -949,7 +996,7 @@ async function runWithStore(
 		gateway.emit({
 			type: "task.escalated",
 			taskId: aggregateId,
-			sessionId: `${aggregateId}-worker`,
+			sessionId: sessionIdFor(aggregateId),
 			detail: { verdict: "escalate" },
 		});
 		return {
@@ -998,21 +1045,9 @@ async function runWithStore(
 		const hasBudgetWatchdog = observations.some((o) => o.watchdogAbort?.reason === "budget_exceeded");
 		const budgetTripped = reason !== null || hasBudgetWatchdog;
 		if (budgetTripped) {
-			options.onContextEvent?.({
-				type: "checkpoint.saved",
-				provider: { id: "budget", version: "1" },
-				detail: {
-					cause: `budget_exceeded:${reason ?? "turns"}`,
-					reason: reason ?? "turns",
-					stage: "session",
-					code: "budget_exceeded",
-					turns: observedTurns,
-					costUsd: totalCost,
-					maxTurns: caps.maxTurns,
-					maxCostUsd: caps.maxCostUsd,
-					wallTimeoutMs: options.sessionTimeoutMs,
-				},
-			});
+			// Budget exhaustion is not a durable checkpoint. Do not emit
+			// checkpoint.saved here: that event is reserved for the explicit
+			// artifact-store operation after it has verified immutable storage.
 			options.onContextEvent?.({
 				type: "epoch.transitioned",
 				provider: { id: "budget", version: "1" },
@@ -1039,7 +1074,7 @@ async function runWithStore(
 			gateway.emit({
 				type: "task.failed",
 				taskId: aggregateId,
-				sessionId: `${aggregateId}-worker`,
+				sessionId: sessionIdFor(aggregateId),
 				detail: {
 					cause,
 					stage: "session",
@@ -1052,6 +1087,7 @@ async function runWithStore(
 			return {
 				aggregate: makeReceipt(aggregateId, "failed", 0, [], observedTurns, sumUsage(usages)),
 				perWorker,
+				interruption: { reason: "budget_exceeded" },
 				conflicts: [],
 			};
 		}
@@ -1123,8 +1159,10 @@ async function runWithStore(
 	// escalated runs PRESERVE their workspaces and name them in the artifact.
 	const cleanupHealthy = async (): Promise<void> => {
 		for (const ctx of healthyContexts) {
-			await options.workspaceDriver.cleanupWorkspace?.(ctx);
-			store.setWorkspaceStatus(`${ctx.taskId}-workspace`, "released");
+			if (!options.retainWorkspace) {
+				await options.workspaceDriver.cleanupWorkspace?.(ctx);
+				store.setWorkspaceStatus(`${ctx.taskId}-workspace`, "released");
+			}
 		}
 	};
 
@@ -1157,7 +1195,7 @@ async function runWithStore(
 		gateway.emit({
 			type: "task.failed",
 			taskId: aggregateId,
-			sessionId: `${aggregateId}-worker`,
+			sessionId: sessionIdFor(aggregateId),
 			detail: {
 				cause,
 				stage:
@@ -1191,19 +1229,22 @@ async function runWithStore(
 
 	await cleanupHealthy();
 	for (const ctx of healthyContexts)
-		store.setTaskStatus(ctx.taskId, "completed");
+		if (!(singleTask && options.deferSuccessfulTerminal))
+			store.setTaskStatus(ctx.taskId, "completed");
 	store.recordRoutingFeedback(
 		options.projectDir.split("/").pop() ?? options.projectDir,
 		"task-base",
 		1,
 	);
-	store.setTaskStatus(aggregateId, "completed");
-	gateway.emit({
-		type: "task.completed",
-		taskId: aggregateId,
-		sessionId: `${aggregateId}-worker`,
-		detail: { verdict: "ship" },
-	});
+	if (!options.deferSuccessfulTerminal) {
+		store.setTaskStatus(aggregateId, "completed");
+		gateway.emit({
+			type: "task.completed",
+			taskId: aggregateId,
+			sessionId: sessionIdFor(aggregateId),
+			detail: { verdict: "ship" },
+		});
+	}
 	return {
 		aggregate: makeReceipt(
 			aggregateId,

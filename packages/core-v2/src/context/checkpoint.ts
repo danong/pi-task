@@ -21,6 +21,8 @@ export interface CheckpointSummary {
 	openQuestions?: readonly string[];
 	nextActions?: readonly string[];
 }
+export const MAX_WORKING_CHECKPOINT_BYTES = 64 * 1024;
+
 export interface WorkingCheckpointInput {
 	epochId: string;
 	workspaceRevision: string;
@@ -34,9 +36,35 @@ export interface WorkingCheckpointInput {
 	};
 	artifactIds?: readonly string[];
 }
+function assertSafeIdentity(value: string, label: string): void {
+	if (
+		value.length === 0 ||
+		/[\\/\u0000-\u001f]/.test(value) ||
+		/^(?:[A-Za-z]:|\\\\|refs(?:\/|$))/i.test(value)
+	)
+		throw new Error(`${label} must be a provider-neutral identity`);
+}
+
+function assertSafeDeclarative(value: string): void {
+	// This is a lexical defence-in-depth check. The kernel is the trusted
+	// producer of summaries; free-form session output is never an input here.
+	if (
+		/(?:private\s+reasoning|chain[- ]of[- ]thought|transcript|stdout|stderr|command\s+output|hostpath|host\s+path)/i.test(
+			value,
+		) ||
+		/(?:^|\s)(?:[A-Za-z]:[\\/]|\\\\|\/tmp\/|\/home\/|\/Users\/)/.test(value) ||
+		/(?:refs\/heads|refs\/tags)\//i.test(value)
+	)
+		throw new Error("checkpoint summary contains prohibited session or host data");
+}
+
 function declarative(values: readonly string[] | undefined): string[] {
 	return (values ?? [])
-		.map((value) => value.trim())
+		.map((value) => {
+			const trimmed = value.trim();
+			assertSafeDeclarative(trimmed);
+			return trimmed;
+		})
 		.filter(Boolean)
 		.slice(0, 16)
 		.map((value) => value.slice(0, 512));
@@ -52,11 +80,14 @@ export function createWorkingCheckpoint(
 	const evidence = [...(input.evidence ?? [])]
 		.slice(0, 64)
 		.map((ref) => validateReference(ref, "evidence"));
-	const requirements = (input.requirements ?? []).slice(0, 128).map((item) => ({
-		id: item.id,
-		status: item.status,
-		evidenceIds: [...(item.evidenceIds ?? [])].slice(0, 64),
-	}));
+	const requirements = (input.requirements ?? []).slice(0, 128).map((item) => {
+		assertSafeIdentity(item.id, "checkpoint requirement id");
+		return {
+			id: item.id,
+			status: item.status,
+			evidenceIds: [...(item.evidenceIds ?? [])].slice(0, 64),
+		};
+	});
 	const summary = {
 		decisions: declarative(input.summary?.decisions),
 		openQuestions: declarative(input.summary?.openQuestions),
@@ -66,6 +97,8 @@ export function createWorkingCheckpoint(
 		status: "not-run" as const,
 		evidenceIds: [],
 	};
+	assertSafeIdentity(input.epochId, "checkpoint epochId");
+	assertSafeIdentity(input.workspaceRevision, "checkpoint workspaceRevision");
 	const body = {
 		version: 1 as const,
 		epochId: input.epochId,
@@ -89,28 +122,63 @@ function validateReference(
 	const parsed = ImmutableArtifactReferenceSchema.parse(ref);
 	if (expectedKind === "plan" && parsed.kind !== "plan")
 		throw new Error("checkpoint plan must reference a plan artifact");
+	assertSafeIdentity(parsed.sourceRevision, `${expectedKind} sourceRevision`);
 	return parsed;
 }
 export function persistWorkingCheckpoint(
 	store: ContextArtifactStore,
 	checkpoint: WorkingCheckpoint,
 ): ImmutableArtifactReference {
-	const checked = WorkingCheckpointSchema.parse(checkpoint);
-	return store.putJson(checked, {
+	const checked = validatePersistableCheckpoint(checkpoint);
+	const encoded = Buffer.from(`${stableStringify(checked)}\n`, "utf8");
+	if (encoded.byteLength > MAX_WORKING_CHECKPOINT_BYTES)
+		throw new RangeError(
+			`working checkpoint exceeds ${MAX_WORKING_CHECKPOINT_BYTES} byte limit`,
+		);
+	const reference = store.putJson(checked, {
 		namespace: "checkpoint",
 		kind: "checkpoint",
 		mediaType: "application/json",
 		sensitivity: "internal",
 		sourceRevision: checked.workspaceRevision,
 	});
+	// The event/caller may claim a checkpoint only after the immutable bytes
+	// can be read back and validate as the exact checkpoint we accepted.
+	const persisted = store.read(reference);
+	if (persisted.status !== "present")
+		throw new Error(`checkpoint storage did not succeed: ${persisted.status}`);
+	const roundTrip = WorkingCheckpointSchema.parse(
+		JSON.parse(persisted.bytes.toString("utf8")),
+	);
+	if (stableStringify(roundTrip) !== stableStringify(checked))
+		throw new Error("checkpoint storage returned different content");
+	return Object.freeze({ ...reference });
 }
+function validatePersistableCheckpoint(
+	checkpoint: WorkingCheckpoint,
+): WorkingCheckpoint {
+	const checked = WorkingCheckpointSchema.parse(checkpoint);
+	const { id: checkpointId, ...checkpointBody } = checked;
+	if (checkpointId !== idFor(checkpointBody))
+		throw new Error("working checkpoint id does not match its content");
+	return checked;
+}
+
 export function loadWorkingCheckpoint(
 	store: ContextArtifactStore,
 	reference: ImmutableArtifactReference,
 ): WorkingCheckpoint | undefined {
-	const bytes = store.get(reference);
+	const checkedReference = ImmutableArtifactReferenceSchema.parse(reference);
+	if (checkedReference.kind !== "checkpoint" || checkedReference.namespace !== "checkpoint")
+		throw new Error("checkpoint reference must point to checkpoint storage");
+	const bytes = store.get(checkedReference);
 	if (bytes === undefined) return undefined;
-	return WorkingCheckpointSchema.parse(JSON.parse(bytes.toString("utf8")));
+	const checkpoint = validatePersistableCheckpoint(
+		JSON.parse(bytes.toString("utf8")),
+	);
+	if (checkpoint.workspaceRevision !== checkedReference.sourceRevision)
+		throw new Error("checkpoint reference revision does not match its content");
+	return checkpoint;
 }
 export function checkpointForPlan(
 	plan: ContextPlan,

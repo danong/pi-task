@@ -32,6 +32,8 @@ import {
 	SpecValidationError,
 	totalInputTokens,
 } from "../src/daemon/task-runner.ts";
+import type { ImmutableArtifactReference } from "../src/contracts/context-lifecycle.ts";
+import type { SequentialEdgeConfig } from "../src/ledger/store.ts";
 import { LedgerStore } from "../src/ledger/store.ts";
 
 const GOOD_SPEC = `## Goal
@@ -134,6 +136,35 @@ function fakeHost(
 ): SessionHost {
 	return {
 		spawn: () => Promise.resolve(new FakeHandle(behavior, files, statsThrows)),
+	};
+}
+
+function recoveryReference(index: number, kind: ImmutableArtifactReference["kind"]): ImmutableArtifactReference {
+	return {
+		version: 1,
+		id: `sha256:${index.toString(16).padStart(64, "0")}`,
+		namespace: "daemon-test",
+		kind,
+		mediaType: "application/json",
+		sizeBytes: 1,
+		sensitivity: "public",
+		sourceRevision: "source-1",
+	};
+}
+
+function recoveryConfig(edgeId: string, offset = 1): SequentialEdgeConfig {
+	return {
+		edgeId,
+		handoffReference: recoveryReference(offset, "handoff"),
+		checkpointReference: recoveryReference(offset + 1, "checkpoint"),
+		childSpecReference: recoveryReference(offset + 2, "context"),
+		planReference: recoveryReference(offset + 3, "plan"),
+		ingressConfigReference: recoveryReference(offset + 4, "context"),
+		parentReceiptReference: recoveryReference(offset + 5, "receipt"),
+		modelIdentity: "fake/model",
+		sourceRevision: "source-1",
+		capabilityIdentity: "fake-provider",
+		capabilityVersion: "v1",
 	};
 }
 
@@ -408,6 +439,100 @@ export async function runTests(): Promise<void> {
 				"terminal rows untouched",
 			);
 			daemon.store.close();
+		}
+
+		// ─── M5 edge-owned boot recovery (close/reopen SQLite) ─────────────
+		{
+			const seedEdge = (dbPath: string, edgeId: string, state: "preparing" | "ready" | "claimed" | "resumable"): void => {
+				const seed = new LedgerStore(dbPath);
+				seed.insertTask({ id: `${edgeId}-parent`, goal: "parent" });
+				seed.insertTask({ id: `${edgeId}-child`, goal: "child" });
+				const config = recoveryConfig(edgeId, edgeId.length);
+				const intent = {
+					edgeId,
+					parentTaskId: `${edgeId}-parent`,
+					childTaskId: `${edgeId}-child`,
+					ordinal: 1,
+					handoffArtifactId: config.handoffReference.id,
+					checkpointArtifactId: config.checkpointReference.id,
+					workspaceContinuation: {
+						id: `${edgeId}-continuation`,
+						taskId: `${edgeId}-child`,
+						driver: "fake",
+						capabilityIdentity: config.capabilityIdentity,
+						capabilityVersion: config.capabilityVersion,
+						opaqueToken: "opaque",
+						revision: "provider-rev",
+					},
+					sequentialConfig: config,
+				};
+				if (state === "preparing") {
+					seed.persistPreparingChildIntent({
+						...intent,
+						preparationId: `${edgeId}-preparation`,
+						preparationDriver: "fake",
+						preparationCapabilityIdentity: config.capabilityIdentity,
+						preparationCapabilityVersion: config.capabilityVersion,
+					});
+				} else {
+					seed.persistReadyChildIntent(intent);
+					if (state === "claimed" || state === "resumable")
+						check(seed.claimReadyChild(edgeId) !== null, `${state} edge can be claimed`);
+					if (state === "resumable") seed.markChildResumable(edgeId);
+				}
+				// Make both rows look like generic in-flight work. Edge ownership,
+				// not task status, must decide boot reconciliation.
+				seed.setTaskStatus(`${edgeId}-parent`, "executing");
+				seed.setTaskStatus(`${edgeId}-child`, "executing");
+				seed.close();
+			};
+
+			const bootAndCheck = async (edgeId: string, state: string, expected: "preparing" | "ready" | "resumable"): Promise<void> => {
+				const daemon = await startDaemon(join(dir, `${edgeId}.db`));
+				const edge = daemon.store.getTaskEdge(edgeId);
+				check(edge?.status === expected, `${state} edge remains ${expected}`);
+				check(!daemon.reconciled.requeued.includes(`${edgeId}-parent`), `${state} parent not generically requeued`);
+				check(!daemon.reconciled.requeued.includes(`${edgeId}-child`), `${state} child not generically requeued`);
+				check(daemon.store.listSessions(`${edgeId}-child`).length === 0, `${state} boot creates no session`);
+				check(daemon.store.listWorkspaces(`${edgeId}-child`).length === 0, `${state} boot creates no workspace`);
+				daemon.store.close();
+			};
+
+			const preparingDb = join(dir, "edge-preparing.db");
+			seedEdge(preparingDb, "edge-preparing", "preparing");
+			await bootAndCheck("edge-preparing", "preparing", "preparing");
+
+			const readyDb = join(dir, "edge-ready.db");
+			seedEdge(readyDb, "edge-ready", "ready");
+			await bootAndCheck("edge-ready", "ready", "ready");
+
+			const claimedDb = join(dir, "edge-claimed.db");
+			seedEdge(claimedDb, "edge-claimed", "claimed");
+			const claimedDaemon = await startDaemon(claimedDb);
+			check(claimedDaemon.childReconciled.resumable.includes("edge-claimed"), "complete claimed edge becomes resumable");
+			check(claimedDaemon.store.getTaskEdge("edge-claimed")?.status === "resumable", "claimed edge is durably resumable");
+			check(!claimedDaemon.reconciled.requeued.includes("edge-claimed-parent") && !claimedDaemon.reconciled.requeued.includes("edge-claimed-child"), "claimed linked tasks bypass generic requeue");
+			claimedDaemon.store.close();
+
+			const resumableDb = join(dir, "edge-resumable.db");
+			seedEdge(resumableDb, "edge-resumable", "resumable");
+			await bootAndCheck("edge-resumable", "resumable", "resumable");
+
+			const blockedDb = join(dir, "edge-blocked.db");
+			seedEdge(blockedDb, "edge-blocked", "claimed");
+			const corrupt = new LedgerStore(blockedDb);
+			corrupt.db.prepare("DELETE FROM sequential_edge_configs WHERE edge_id = ?").run("edge-blocked");
+			corrupt.close();
+			const blockedDaemon = await startDaemon(blockedDb);
+			check(
+				blockedDaemon.childReconciled.blocked.length === 1 &&
+					blockedDaemon.childReconciled.blocked[0] === "edge-blocked",
+				"incomplete claimed ingress has one typed blocked classification",
+			);
+			check(blockedDaemon.store.getTaskEdge("edge-blocked")?.status === "blocked", "blocked edge stays authoritative");
+			check(!blockedDaemon.reconciled.requeued.includes("edge-blocked-parent") && !blockedDaemon.reconciled.requeued.includes("edge-blocked-child"), "blocked linked tasks bypass generic requeue");
+			check(blockedDaemon.store.getTask("edge-blocked-parent")?.status === "failed" && blockedDaemon.store.getTask("edge-blocked-child")?.status === "failed", "blocked edge fails both linked task rows");
+			blockedDaemon.store.close();
 		}
 
 		// ─── Spawn-failure path (typed host error → failed receipt) ──────

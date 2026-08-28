@@ -16,7 +16,9 @@
  * The driver NEVER pushes. Publishing is the operator's act in both modes.
  */
 
+import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
+import { resolve } from "node:path";
 
 import {
 	dispatchBaseOf,
@@ -28,9 +30,13 @@ import type {
 	CombineOutcome,
 	IntegrationMode,
 	WorkspaceContext,
+	WorkspaceContinuation,
+	WorkspaceContinuationCapability,
+	WorkspaceContinuationPreparation,
 	WorkspaceDriver,
 	WorkspaceFinalization,
 } from "../contracts/index.ts";
+import { WorkspaceContinuationError } from "../contracts/workspace-driver.ts";
 import {
 	assertCleanWorkingCopy,
 	assertMerged,
@@ -45,6 +51,8 @@ import {
 	removeWorkspace,
 	resolveCommitId,
 	revisionIdentity,
+	workspaceRevision,
+	parseMachineWorkspaceList,
 	writeIdentityFile,
 } from "./jj.ts";
 
@@ -63,6 +71,29 @@ export interface JujutsuDriverOptions {
 const DEFAULT_AUTHOR_NAME = "pi-task-v2";
 const DEFAULT_AUTHOR_EMAIL = "noreply@pi-task-v2.local";
 
+/** Versioned provider-owned token format. The workspace name is only an
+ * input to the digest; it is never serialized into the continuation. */
+export const JUJUTSU_CONTINUATION_VERSION = "1" as const;
+const CONTINUATION_TOKEN_PREFIX = `jjc${JUJUTSU_CONTINUATION_VERSION}_`;
+const CONTINUATION_TOKEN_RE = /^jjc1_[a-f0-9]{64}$/;
+
+function continuationToken(
+	taskId: string,
+	workspaceName: string,
+	revision: string,
+): string {
+	const digest = createHash("sha256")
+		.update(
+			`jj\u0000${JUJUTSU_CONTINUATION_VERSION}\u0000${taskId}\u0000${workspaceName}\u0000${revision}`,
+		)
+		.digest("hex");
+	return `${CONTINUATION_TOKEN_PREFIX}${digest}`;
+}
+
+function malformedContinuation(message: string): WorkspaceContinuationError {
+	return new WorkspaceContinuationError("malformed_token", message);
+}
+
 export class JujutsuWorkspaceDriver implements WorkspaceDriver {
 	readonly name = "jj";
 	readonly integrationMode: IntegrationMode;
@@ -78,7 +109,22 @@ export class JujutsuWorkspaceDriver implements WorkspaceDriver {
 	>;
 	#prepared = false;
 	readonly #contexts = new Map<string, WorkspaceContext>();
+	/** A live continuation is a preservation boundary: failure hygiene must
+	 * not stack/forget that workspace after its token has been handed off. */
+	readonly #preservedContinuations = new Map<string, string>();
 	#baseChangeId: string | undefined;
+	/** Optional capability is present for jj, but reports typed unsupported
+	 * failures when the provider executable is unavailable. */
+	readonly continuation: WorkspaceContinuationCapability = {
+		supported: true,
+		identity: "jj.workspace-continuation",
+		version: JUJUTSU_CONTINUATION_VERSION,
+		prepareContinuation: (taskId, preparationId) =>
+			this.prepareContinuation(taskId, preparationId),
+		preserveContinuation: (context) => this.preserveContinuation(context),
+		resumeContinuation: (taskId, token) =>
+			this.resumeContinuation(taskId, token),
+	};
 
 	constructor(options: JujutsuDriverOptions) {
 		if (!existsSync(options.projectDir)) {
@@ -124,6 +170,192 @@ export class JujutsuWorkspaceDriver implements WorkspaceDriver {
 			status: "active",
 		};
 		this.#contexts.set(name, context);
+		return context;
+	}
+
+	/** Discover-or-create the workspace owned by a durable preparation id.
+	 * The id is never a path or a daemon-side jj name; it is reduced to a
+	 * provider-owned stable workspace identity here. */
+	private async prepareContinuation(
+		taskId: string,
+		preparationId: string,
+	): Promise<WorkspaceContinuationPreparation> {
+		if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(taskId) ||
+			!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(preparationId))
+			throw new WorkspaceContinuationError("malformed_token", "continuation preparation identity is malformed");
+		if (!this.#prepared) await this.prepare();
+		const stableName = `${this.#opts.namePrefix}-continuation-${createHash("sha256").update(preparationId).digest("hex").slice(0, 24)}`;
+		let context: WorkspaceContext | undefined;
+		try {
+			const listed = await execJj(["workspace", "list", "--ignore-working-copy"], this.#opts.projectDir);
+			if (listed.code === 0 && listed.stdout.split("\\n").some((line) => line.includes(stableName))) {
+				const root = await execJj(["workspace", "root", "--name", stableName, "--ignore-working-copy"], this.#opts.projectDir);
+				if (root.code === 0 && root.stdout.trim()) context = {
+					taskId, hostPath: resolve(root.stdout.trim()), branchName: stableName, status: "active",
+				};
+			}
+		} catch { /* the create/reconcile attempt below supplies the typed result */ }
+		if (context === undefined) {
+			try {
+				const dir = await createWorkerWorkspace(this.#opts.projectDir, stableName);
+				context = { taskId, hostPath: dir, branchName: stableName, status: "active" };
+			} catch {
+				// A concurrent daemon may have won the add. Reconcile by the
+				// provider-owned identity rather than creating a second workspace.
+				const root = await execJj(["workspace", "root", "--name", stableName, "--ignore-working-copy"], this.#opts.projectDir);
+				if (root.code !== 0 || !root.stdout.trim()) throw new WorkspaceContinuationError("missing", "prepared workspace could not be reconciled");
+				context = { taskId, hostPath: resolve(root.stdout.trim()), branchName: stableName, status: "active" };
+			}
+		}
+		this.#contexts.set(stableName, context);
+		const continuation = await this.preserveContinuation(context);
+		return Object.freeze({ context, continuation });
+	}
+
+	/** Snapshot and preserve a workspace without putting its jj name or host
+	 * path into the provider-neutral handle. Repeating this operation for the
+	 * same tree returns the same token and does not create another commit. */
+	private async preserveContinuation(
+		context: WorkspaceContext,
+	): Promise<WorkspaceContinuation> {
+		if (!(await this.isSupported()))
+			throw new WorkspaceContinuationError(
+				"unsupported",
+				"jj continuation is unsupported because jj is unavailable",
+			);
+		if (
+			!context.taskId ||
+			!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(context.branchName)
+		)
+			throw new WorkspaceContinuationError(
+				"missing",
+				"workspace is not owned by this jj driver",
+			);
+		const root = await execJj(
+			["workspace", "root", "--name", context.branchName, "--ignore-working-copy"],
+			this.#opts.projectDir,
+		);
+		if (root.code !== 0)
+			throw new WorkspaceContinuationError(
+				"missing",
+				"workspace continuation target is missing",
+			);
+		if (resolve(root.stdout.trim()) !== resolve(context.hostPath))
+			throw new WorkspaceContinuationError(
+				"missing",
+				"workspace continuation target is not owned by this context",
+			);
+		// A status probe is intentionally the only snapshotting operation here:
+		// it captures an interrupted dirty tail while preserving all user files.
+		const status = await execJj(["status"], context.hostPath);
+		if (status.code !== 0)
+			throw new WorkspaceContinuationError(
+				"missing",
+				"workspace continuation target cannot be read",
+			);
+		let revision: string;
+		try {
+			revision = (await workspaceRevision(this.#opts.projectDir, context.branchName)).commitId;
+		} catch {
+			throw new WorkspaceContinuationError(
+				"missing",
+				"workspace continuation revision is unavailable",
+			);
+		}
+		const opaqueToken = continuationToken(
+			context.taskId,
+			context.branchName,
+			revision,
+		);
+		this.#preservedContinuations.set(context.branchName, opaqueToken);
+		return Object.freeze({ opaqueToken, revision });
+	}
+
+	/** Resolve a token after restart by checking every provider-owned workspace
+	 * identity. No driver instance state, path supplied by the caller, or jj
+	 * branch name crosses this API. */
+	private async resumeContinuation(
+		taskId: string,
+		continuation: WorkspaceContinuation,
+	): Promise<WorkspaceContext> {
+		if (
+			taskId.length === 0 ||
+			taskId.length > 256 ||
+			/[\u0000-\u001f]/.test(taskId) ||
+			typeof continuation !== "object" ||
+			continuation === null ||
+			typeof continuation.opaqueToken !== "string" ||
+			typeof continuation.revision !== "string"
+		)
+			throw malformedContinuation("continuation identity is malformed");
+		if (!CONTINUATION_TOKEN_RE.test(continuation.opaqueToken))
+			throw malformedContinuation("continuation token has an unknown provider or version");
+		if (!/^[0-9a-f]{40}$/.test(continuation.revision))
+			throw malformedContinuation("continuation revision is malformed");
+		if (!(await this.isSupported()))
+			throw new WorkspaceContinuationError(
+				"unsupported",
+				"jj continuation is unsupported because jj is unavailable",
+			);
+		const listed = await execJj(
+			[
+				"workspace",
+				"list",
+				"-T",
+				'self.name() ++ "\\t" ++ self.target().change_id() ++ "\\t" ++ self.target().commit_id() ++ "\\n"',
+				"--ignore-working-copy",
+			],
+			this.#opts.projectDir,
+		);
+		if (listed.code !== 0)
+			throw new WorkspaceContinuationError(
+				"missing",
+				"workspace continuation registry is unavailable",
+			);
+		const workspaces = parseMachineWorkspaceList(listed.stdout);
+		let ownedName: string | undefined;
+		for (const [name, revision] of workspaces) {
+			if (
+				continuationToken(taskId, name, continuation.revision) ===
+				continuation.opaqueToken
+			) {
+				ownedName = name;
+				if (revision.commitId !== continuation.revision)
+					throw new WorkspaceContinuationError(
+						"stale",
+						"workspace continuation revision no longer matches",
+					);
+				break;
+			}
+		}
+		if (ownedName === undefined) {
+			const sameRevision = [...workspaces.values()].some(
+				(revision) => revision.commitId === continuation.revision,
+			);
+			throw new WorkspaceContinuationError(
+				sameRevision ? "malformed_token" : "missing",
+				sameRevision
+					? "continuation token is not owned by this jj provider"
+					: "workspace continuation target is missing",
+			);
+		}
+		const root = await execJj(
+			["workspace", "root", "--name", ownedName, "--ignore-working-copy"],
+			this.#opts.projectDir,
+		);
+		if (root.code !== 0 || root.stdout.trim().length === 0)
+			throw new WorkspaceContinuationError(
+				"missing",
+				"workspace continuation root is missing",
+			);
+		const context = {
+			taskId,
+			hostPath: resolve(root.stdout.trim()),
+			branchName: ownedName,
+			status: "active" as const,
+		};
+		this.#contexts.set(ownedName, context);
+		this.#preservedContinuations.set(ownedName, continuation.opaqueToken);
 		return context;
 	}
 
@@ -203,6 +435,7 @@ export class JujutsuWorkspaceDriver implements WorkspaceDriver {
 			context.hostPath,
 		);
 		this.#contexts.delete(context.branchName);
+		this.#preservedContinuations.delete(context.branchName);
 	}
 
 	/** AI-authored empty base parented on @- (task-base mode). */
@@ -306,9 +539,18 @@ export class JujutsuWorkspaceDriver implements WorkspaceDriver {
 		workspaceDirs?: Record<string, string> | undefined;
 	}): Promise<ParallelRecoveryInfo> {
 		const base = this.#requireBase();
+		// A handed-off continuation is intentionally left live. The post-mortem
+		// still applies all existing cleanup rules to workspaces that were not
+		// explicitly preserved, while the opaque token remains resumable.
+		const disposableNames = opts.workspaceNames.filter(
+			(name) => !this.#preservedContinuations.has(name),
+		);
 		return parallelRunPostMortem({
 			projectDir: this.#opts.projectDir,
-			workspaceNames: opts.workspaceNames,
+			workspaceNames: disposableNames,
+			protectedWorkspaceNames: opts.workspaceNames.filter((name) =>
+				this.#preservedContinuations.has(name),
+			),
 			// The workspaces branched from the AI base's PARENT in identity
 			// mode (createAiTaskBase parents it on @-) — that is the dispatch
 			// base the chains hang off.

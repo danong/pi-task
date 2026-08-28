@@ -29,6 +29,83 @@ export interface WorkspaceContext {
 /** How finished worker work integrates back (config-selected). */
 export type IntegrationMode = "task-base" | "feature-branch";
 
+/**
+ * Provider-neutral continuation handle. Its value is opaque to the kernel and
+ * must be stored as ledger state, not interpreted or rendered in a prompt.
+ * A continuation contains no workspace path or VCS name as a contract field.
+ */
+export interface WorkspaceContinuation {
+	readonly opaqueToken: string;
+	/** Provider-observed revision used to validate a later resume. */
+	readonly revision: string;
+}
+
+/** Result of the provider-owned, idempotent preparation boundary.  The
+ * preparation identity is durable ledger data; the returned context is only
+ * used by the coordinator to record provider facts. */
+export interface WorkspaceContinuationPreparation {
+	readonly context: WorkspaceContext;
+	readonly continuation: WorkspaceContinuation;
+}
+
+/** Runtime-safe shape for values crossing the kernel/provider boundary. */
+export type WorkspaceContinuationErrorCode =
+	| "unsupported"
+	| "missing"
+	| "stale"
+	| "revision_mismatch"
+	| "malformed_token";
+
+export interface WorkspaceContinuationFailure {
+	readonly ok: false;
+	readonly code: WorkspaceContinuationErrorCode;
+	readonly message: string;
+}
+
+/** Typed failure used by optional continuation providers. */
+export class WorkspaceContinuationError extends Error {
+	readonly code: WorkspaceContinuationErrorCode;
+	constructor(
+		code: WorkspaceContinuationErrorCode,
+		message: string,
+	) {
+		super(message);
+		this.name = "WorkspaceContinuationError";
+		this.code = code;
+	}
+}
+
+export function isWorkspaceContinuationError(
+	error: unknown,
+): error is WorkspaceContinuationError {
+	return error instanceof WorkspaceContinuationError;
+}
+
+/** Optional capability implemented by drivers that can preserve and resume. */
+export interface WorkspaceContinuationCapability {
+	readonly supported: boolean;
+	/** Provider-declared compatibility identity and version. These values are
+	 * persisted with a continuation; the daemon never invents them. */
+	readonly identity?: string;
+	readonly version?: string;
+	/** Explicit aliases for adapters that use capability terminology. */
+	readonly capabilityIdentity?: string;
+	readonly capabilityVersion?: string;
+	/** Discover or create the provider workspace owned by preparationId.  It
+	 * must be safe to call again after a process restart. */
+	prepareContinuation?(
+		taskId: string,
+		preparationId: string,
+	): Promise<WorkspaceContinuationPreparation>;
+	preserveContinuation(
+		context: WorkspaceContext,
+	): Promise<WorkspaceContinuation>;
+	resumeContinuation(
+		taskId: string,
+		continuation: WorkspaceContinuation,
+	): Promise<WorkspaceContext>;
+}
+
 /** Engine-owned evidence for one finalized worker workspace. */
 export interface WorkspaceFinalization {
 	/** Stable jj change id for the committed worker tip. */
@@ -64,6 +141,8 @@ export interface CombineOutcome {
 
 export interface WorkspaceDriver {
 	name: string;
+	/** The one optional provider-neutral continuation capability. */
+	readonly continuation?: WorkspaceContinuationCapability;
 	/** The driver's integration mode when it declares one (task-base |
 	 *  feature-branch); undefined = single-workspace driver. */
 	readonly integrationMode?: IntegrationMode | undefined;
@@ -107,6 +186,22 @@ export interface WorkspaceDriver {
 	/** feature-branch mode: leave each worker's tip under a named bookmark
 	 *  for human review; returns the created bookmark names. */
 	publishBookmarks?(contexts: readonly WorkspaceContext[]): Promise<string[]>;
+}
+
+/**
+ * A driver may omit continuation entirely. Kernel callers use this guard
+ * rather than inferring provider behavior from a driver name.
+ */
+export function workspaceContinuationOf(
+	driver: WorkspaceDriver,
+): WorkspaceContinuationCapability {
+	const continuation = driver.continuation;
+	if (continuation?.supported !== true)
+		throw new WorkspaceContinuationError(
+			"unsupported",
+			"workspace provider does not support continuation",
+		);
+	return continuation;
 }
 
 /**

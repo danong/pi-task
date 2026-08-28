@@ -38,6 +38,9 @@ export interface StartedDaemon {
 	store: LedgerStore;
 	/** Reconciliation outcome: task ids requeued vs failed at boot. */
 	reconciled: { requeued: string[]; failed: string[] };
+	/** Child edges classified from complete durable ingress only; preparing and
+	 * ready edges remain owned by sequential recovery, and no sessions run. */
+	childReconciled: { resumable: string[]; blocked: string[] };
 	/** Repo-artifact hygiene result (default-lineage strays). `undefined`
 	 *  when no projectDir was configured or the sweep was skipped. */
 	repoHygiene?: RepoHygieneReport | undefined;
@@ -51,6 +54,11 @@ export async function startDaemon(
 	options: StartDaemonOptions = {},
 ): Promise<StartedDaemon> {
 	const store = new LedgerStore(dbPath);
+	// Edge ownership is authoritative: classify/recover child work before the
+	// generic task retry policy can see either side of the composition. The
+	// ledger method leaves preparing/ready edges untouched for sequential
+	// recovery and blocks incomplete claimed/resumable ingress.
+	const childReconciled = store.reconcileChildEdgesOnBoot();
 	const reconciled = store.reconcileOnBoot();
 	let repoHygiene: RepoHygieneReport | undefined;
 	if (options.projectDir !== undefined) {
@@ -67,6 +75,7 @@ export async function startDaemon(
 	return {
 		store,
 		reconciled,
+		childReconciled,
 		...(repoHygiene === undefined ? {} : { repoHygiene }),
 	};
 }

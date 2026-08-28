@@ -25,6 +25,11 @@ import { pathToFileURL } from "node:url";
 
 import {
 	ExecutionBundleSchema,
+	ChildArtifactReferenceSchema,
+	ChildHandoffSchema,
+	ChildResultSchema,
+	buildChildHandoff,
+	CHILD_MAX_SERIALIZED_BYTES,
 	HandoffBundleSchema,
 	ModelAssignmentSchema,
 	TargetFileSchema,
@@ -44,6 +49,9 @@ import type {
 	TaskReceipt,
 	VerificationResult,
 	WorkspaceContext,
+	WorkspaceContinuation,
+	ChildHandoff,
+	ChildResult,
 } from "../src/contracts/index.ts";
 
 // ─── Compile-time subscription-level typing (enforced by tsc) ────────
@@ -165,17 +173,17 @@ export async function runTests(): Promise<void> {
 		) as ExecutionBundle;
 		check(jsonRoundTrip.taskId === "t1", "ExecutionBundle survives JSON");
 
-		const handoff = HandoffBundleSchema.parse(makeHandoff("sess-1"));
+		const legacyHandoff = HandoffBundleSchema.parse(makeHandoff("sess-1"));
 		check(
-			handoff.verificationFailures.length === 2,
+			legacyHandoff.verificationFailures.length === 2,
 			"HandoffBundle round-trip",
 		);
 		check(
-			"precedingSessionId" in handoff === false,
+			"precedingSessionId" in legacyHandoff === false,
 			"ledger-only field stripped from the schema shape",
 		);
 		check(
-			"attemptNumber" in handoff === false,
+			"attemptNumber" in legacyHandoff === false,
 			"attempt-varying field stripped from the prompt-bound payload (deterministic-prefix rule)",
 		);
 
@@ -207,6 +215,72 @@ export async function runTests(): Promise<void> {
 			receipt.verdict === "ship" && receipt.bundleHit === null,
 			"TaskReceipt round-trip",
 		);
+
+		const artifact = {
+			version: 1 as const,
+			id: "sha256:" + "a".repeat(64),
+			namespace: "test",
+			kind: "handoff" as const,
+			mediaType: "application/json",
+			sizeBytes: 12,
+			sensitivity: "internal" as const,
+			sourceRevision: "sha256:" + "b".repeat(64),
+		};
+		const childHandoff: ChildHandoff = ChildHandoffSchema.parse({
+			version: 1,
+			parentTaskId: "parent-1",
+			childTaskId: "child-1",
+			relationship: "continuation",
+			checkpointId: "sha256:" + "c".repeat(64),
+			planId: "sha256:" + "d".repeat(64),
+			sourceRevision: "sha256:" + "b".repeat(64),
+			requirementState: [{ id: "R1", status: "complete", summary: "implemented" }],
+			decisions: ["Use the existing contract boundary."],
+			openQuestions: [],
+			nextActions: ["Run the declared verification."],
+			changedPaths: [{ path: "a.ts", change: "modified", evidenceReferences: [artifact] }],
+			verification: { status: "passed", evidenceReferences: [artifact] },
+			artifactReferences: [artifact],
+		});
+		check(childHandoff.childTaskId === "child-1", "ChildHandoff round-trip");
+		const childPrompt = serializeForPrompt(ChildHandoffSchema, childHandoff);
+		check(
+			!childPrompt.includes("opaqueToken") && !childPrompt.includes("hostPath"),
+			"child prompt contains no workspace-provider details",
+		);
+		check(
+			ChildArtifactReferenceSchema.parse(artifact).id === artifact.id,
+			"immutable child artifact reference round-trip",
+		);
+		const result: ChildResult = ChildResultSchema.parse({
+			version: 1,
+			parentTaskId: "parent-1",
+			childTaskId: "child-1",
+			status: "completed",
+			summary: "child accepted",
+			requirementState: childHandoff.requirementState,
+			changedPaths: childHandoff.changedPaths,
+			verification: childHandoff.verification,
+			artifactReferences: [artifact],
+		});
+		check(result.status === "completed", "ChildResult round-trip");
+		// Handoff arrays are canonicalized and deduplicated at the sole builder.
+		const canonicalA = buildChildHandoff({ ...childHandoff, decisions: ["z", "z", "a"] });
+		const canonicalB = buildChildHandoff({ ...childHandoff, decisions: ["a", "z"] });
+		check(serializeForPrompt(ChildHandoffSchema, canonicalA) === serializeForPrompt(ChildHandoffSchema, canonicalB), "canonical handoff arrays serialize byte-identically");
+		// Changed paths are canonicalized as well — order and duplication do not affect bytes.
+		const handoffWithPathsA = buildChildHandoff({ ...childHandoff, changedPaths: [
+			{ path: "b.ts", change: "modified", evidenceReferences: [] },
+			{ path: "a.ts", change: "added", evidenceReferences: [] },
+			{ path: "b.ts", change: "modified", evidenceReferences: [] },
+		]});
+		const handoffWithPathsB = buildChildHandoff({ ...childHandoff, changedPaths: [
+			{ path: "a.ts", change: "added", evidenceReferences: [] },
+			{ path: "b.ts", change: "modified", evidenceReferences: [] },
+		]});
+		check(serializeForPrompt(ChildHandoffSchema, handoffWithPathsA) === serializeForPrompt(ChildHandoffSchema, handoffWithPathsB), "canonical changedPaths serialize byte-identically");
+		const opaque: WorkspaceContinuation = { opaqueToken: "opaque", revision: "rev-1" };
+		check(opaque.opaqueToken === "opaque", "workspace continuation is opaque");
 	}
 
 	// ─── Constraint negatives (schema caps from the docs) ──────────────
@@ -309,6 +383,71 @@ export async function runTests(): Promise<void> {
 				}),
 			),
 			"receipt missing usage fields rejected",
+		);
+
+		const childBase = {
+			version: 1,
+			parentTaskId: "p",
+			childTaskId: "c",
+			relationship: "continuation",
+			checkpointId: "sha256:" + "c".repeat(64),
+			planId: "sha256:" + "d".repeat(64),
+			sourceRevision: "sha256:" + "b".repeat(64),
+			requirementState: [],
+			decisions: [],
+			openQuestions: [],
+			nextActions: [],
+			changedPaths: [],
+			verification: { status: "not-run", evidenceReferences: [] },
+			artifactReferences: [],
+		};
+		check(
+			!ok(() => ChildHandoffSchema.parse({ ...childBase, transcript: "secret" })),
+			"ChildHandoff rejects transcript and unknown fields",
+		);
+		check(
+			!ok(() => ChildHandoffSchema.parse({ ...childBase, privateReasoning: "secret" })),
+			"ChildHandoff rejects private reasoning",
+		);
+		check(
+			!ok(() => ChildHandoffSchema.parse({ ...childBase, commandOutput: "tail" })),
+			"ChildHandoff rejects command output",
+		);
+		check(
+			!ok(() => ChildHandoffSchema.parse({ ...childBase, sourceBody: "arbitrary source" })),
+			"ChildHandoff rejects arbitrary source bodies",
+		);
+		check(
+			!ok(() => ChildHandoffSchema.parse({ ...childBase, unknownField: true })),
+			"ChildHandoff rejects unknown fields",
+		);
+		for (const hostile of ["/etc/passwd", "C:/Users/me/x", "\\\\server\\share", "../secret", "refs/heads/main", "2026-01-01T00:00:00Z", "task-attempt-7"]) {
+			check(!ok(() => ChildHandoffSchema.parse({ ...childBase, sourceRevision: hostile })), `hostile identity rejected: ${hostile}`);
+		}
+		check(!ok(() => ChildHandoffSchema.parse({ ...childBase, changedPaths: [{ path: "C:/secret", change: "modified", evidenceReferences: [] }] })), "hostile changed path rejected");
+		for (const hostilePath of ["foo/./bar.ts", "./foo.ts", "a/b/./c.ts", "a/./b", "foo/.", ".", "a//b.ts"]) {
+			check(!ok(() => ChildHandoffSchema.parse({ ...childBase, changedPaths: [{ path: hostilePath, change: "modified", evidenceReferences: [] }] })), `hostile dot/empty changed path rejected: ${hostilePath}`);
+		}
+		check(!ok(() => ChildHandoffSchema.parse({ ...childBase, decisions: ["transcript sentinel"] })), "sensitive declarative sentinel rejected");
+		check(!ok(() => ChildHandoffSchema.parse({ ...childBase, openQuestions: ["private reasoning sentinel"] })), "reasoning sentinel rejected in every text collection");
+		check(!ok(() => ChildHandoffSchema.parse({ ...childBase, nextActions: ["command output sentinel"] })), "output sentinel rejected in every text collection");
+		check(!ok(() => ChildHandoffSchema.parse({ ...childBase, requirementState: [{ id: "r", status: "pending", summary: "source body sentinel" }] })), "source sentinel rejected in requirement state");
+		const fullText = Array.from({ length: 32 }, () => "x".repeat(256));
+		const tooLarge = {
+			...childBase,
+			requirementState: fullText.map((summary, index) => ({ id: `r${index}`, status: "pending", summary })),
+			decisions: fullText,
+			openQuestions: fullText,
+			nextActions: fullText,
+		};
+		check(!ok(() => ChildHandoffSchema.parse(tooLarge)), `whole handoff byte budget ${CHILD_MAX_SERIALIZED_BYTES} enforced`);
+		check(
+			!ok(() => ChildHandoffSchema.parse({ ...childBase, decisions: ["x".repeat(2_001)] })),
+			"ChildHandoff caps declarative text",
+		);
+		check(
+			!ok(() => ChildHandoffSchema.parse({ ...childBase, attemptId: "attempt-1" })),
+			"ChildHandoff keeps attempt ids ledger-side",
 		);
 	}
 

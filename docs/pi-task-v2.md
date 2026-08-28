@@ -361,29 +361,37 @@ M4.1 hardens verification and trace debuggability without adding transcripts
 or private reasoning. Verification measures per-command `durationMs` (injectable
 clock for determinism), emits bounded structural evidence (`index/digest/exitCode/timedOut/durationMs` with `executed/expected/omitted/capped` capped at 24), and rejects impossible counts. The CLI announces `run: <attemptId>` before execution and prints `receipt/trace/failure artifact:` paths at termination; `model.assigned` now carries `engineVersion/milestone/specHash/familyId/attemptId/attemptNumber`. Every terminal `task.failed` carries a stable `stage`/`code` taxonomy (`setup/context/session/workspace/verification/acceptance/delivery/workflow/internal` × `session_timed_out/worker_failed/verification_failed/...`) for both CLI and daemon paths, and `mise run trace-report -- <trace.json> [report.md]` renders a bounded single-run explanation. The first useful dogfood timeout (67 turns, 108 tool calls, `$0.19`, `prompt exceeded 600000ms`) is retained as `test/fixtures/dogfood/m41-verification-timeout.trace.json` — not a performance baseline, but the evidence that prompted independent execution caps for M5.
 
-M5 will consume the checkpoint/epoch contracts for
-durable sequential continuation and self-hosting.
+### M5 — durable sequential composition and self-hosting
 
-### M5 — sequential composition and self-hosting
+M5 is shipped. The ordinary v2 CLI can select one explicit raw-context
+continuation child with `--child-spec`. A child receives its own validated spec,
+provider-owned workspace continuation, context plan, and bounded declarative
+checkpoint/handoff—not a transcript. Parent/child edges, complete immutable
+ingress references, provider compatibility, checkpoints, evidence, and terminal
+settlement are durable.
 
-M5 builds typed sequential child tasks on M4 artifacts. A child gets its own
-spec, workspace snapshot, context plan, and relevant parent checkpoint—not a
-transcript. It returns changes, evidence references, verification, context
-discoveries, and a receipt. Parent/child edges, interruption, recovery, and
-bounded continuation are durable.
+Preparation records provider ownership before workspace mutation. On restart,
+an edge can reconcile provider preparation and resume with newly constructed
+ledger, artifact store, driver, and session host instances without replaying the
+parent. Interrupted or capped child work preserves its workspace and writes a
+replacement bounded checkpoint before becoming resumable. Missing, corrupt,
+stale, revision-mismatched, unsupported, or incompatible dependencies block
+with a typed outcome rather than guessing provider state.
 
-M5's exit is a usable bootstrap loop, not merely ledger tables: the ordinary
-pi task surface can select v2, v2 can complete focused changes to this
-repository, interrupted work can continue from workspace plus structured
-state, and accepted results pass the repository's real gates with canonical
-receipts/traces. V1 remains available until repeated dogfood evidence supports
-a migration decision.
+The normal surface and the hermetic M5 conformance suites exercise parent/child
+isolation, bounded handoffs, boot authority, close/reopen recovery, interruption
+continuation, admitted lifecycle traces, truthful child evidence, and parent
+non-ship on child failure. V1 remains the fallback until M6 adoption evidence
+supports a task-class migration decision.
 
-### M6 — scope intentionally open
+### M6 — measured adoption and cutover
 
-M6 has no approved implementation scope. Cutover policy, additional surfaces,
-scale, and broader autonomy will be discussed after the M5 bootstrap gate.
-Existing enabling modules do not pre-decide that discussion.
+M6 is not a scale-infrastructure milestone. It will shadow normal task use,
+compare matched v1/v2 outcomes by model, specification, revision, verification,
+quality, cost, latency, and intervention, then flip only documented task classes
+with immediate v1 fallback. Raw context remains the baseline; retain symbol-tree
+only when repeated matched evidence demonstrates accepted-result value. Delete
+superseded v1 paths only after the v2 default slice and deletion tests pass.
 
 Each milestone gate publishes canonical traces, benchmark evidence, and
 conformance results. No model/provider default or performance claim is implied

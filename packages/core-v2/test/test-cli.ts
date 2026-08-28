@@ -317,6 +317,7 @@ export async function runTests(): Promise<void> {
 		if (priorModel === undefined) delete process.env.PI_TASK_V2_MODEL;
 		else process.env.PI_TASK_V2_MODEL = priorModel;
 	}
+	check(cliHelp().includes("--child-spec <file>"), "help documents durable child continuation");
 	check(
 		cliHelp().includes("--project-dir <directory>"),
 		"help documents project dir",
@@ -330,6 +331,10 @@ export async function runTests(): Promise<void> {
 		parseCliArgs(["--spec", "task.md", "--model", "fake/model"]).specPath ===
 			"task.md",
 		"CLI parses required values",
+	);
+	check(
+		parseCliArgs(["--spec", "parent.md", "--child-spec", "child.md", "--model", "fake/model"]).childSpecPath === "child.md",
+		"CLI parses one explicit continuation child",
 	);
 	for (const argv of [["--spec"], ["--unknown", "x"]]) {
 		try {
@@ -591,6 +596,97 @@ export async function runTests(): Promise<void> {
 			!workspaces.includes("v2-task-"),
 			"successful worker workspace is cleaned up",
 		);
+
+		// The ordinary v2 CLI exposes the daemon-owned parent→child path as a
+		// thin adapter; both sessions run through the same jj/verify pipeline.
+		const sequentialRepo = join(root, "sequential-repo"); initRepo(sequentialRepo);
+		const sequentialDb = join(root, "sequential.sqlite"); const sequentialArtifacts = join(root, "sequential-artifacts"); const sequentialSpawns = { value: 0 };
+		const sequential = await runCli([
+			"--spec", specPath, "--child-spec", specPath,
+			"--project-dir", sequentialRepo, "--model", "fake/model",
+			"--db", sequentialDb, "--artifacts-dir", sequentialArtifacts,
+		], {
+			host: fakeHost("ok", sequentialSpawns),
+			workspaceDriver: new JujutsuWorkspaceDriver({ projectDir: sequentialRepo }),
+			write: () => undefined,
+		});
+		const sequentialLedger = new LedgerStore(sequentialDb);
+		const sequentialEdges = sequential.receipt === undefined ? [] : sequentialLedger.listChildEdges(sequential.receipt.taskId);
+		check(
+			sequential.exitCode === 0 &&
+				sequential.receipt?.verdict === "ship" &&
+				sequentialSpawns.value === 2,
+			`CLI parent and child complete through the normal surface (exit=${sequential.exitCode}, verdict=${sequential.receipt?.verdict}, spawns=${sequentialSpawns.value}, error=${sequential.error ?? ""})`,
+		);
+		check(
+			sequentialEdges[0]?.status === "completed" &&
+				sequential.receipt !== undefined &&
+				sequentialLedger.listSessions(sequential.receipt.taskId).length === 1 &&
+				sequentialLedger.listSessions(`${sequential.receipt.taskId}-child`).length === 1,
+			`CLI persists separate parent/child sessions and terminal edge evidence (edge=${sequentialEdges[0]?.status ?? "missing"})`,
+		);
+		const sequentialTrace = readTrace(sequential.tracePath);
+		const sequentialTaskId = sequential.receipt?.taskId;
+		const sequentialChildTaskId =
+			sequentialTaskId === undefined ? undefined : `${sequentialTaskId}-child`;
+		const sequentialChildEvents = sequentialTrace.events.filter(
+			(event) =>
+				event.type.startsWith("child.") ||
+				event.type.startsWith("continuation."),
+		);
+		const childCompleted = sequentialChildEvents.find(
+			(event) => event.type === "child.completed",
+		);
+		check(
+			sequentialTrace.taskId === sequentialTaskId &&
+				sequentialTrace.runId === sequentialTaskId,
+			"CLI sequential receipt and trace share one aggregate identity",
+		);
+		check(
+			sequentialChildEvents.length > 0 &&
+				sequentialChildEvents.every((event) => {
+					const detail = event.detail;
+					return event.type === "child.queued"
+						? event.taskId === detail?.parentTaskId
+						: event.taskId === detail?.childTaskId;
+				}),
+			"CLI trace preserves admitted child endpoint identities",
+		);
+		check(
+			childCompleted?.taskId === sequentialChildTaskId &&
+				childCompleted?.detail?.parentTaskId === sequentialTaskId &&
+				childCompleted?.detail?.childTaskId === sequentialChildTaskId &&
+				childCompleted?.detail?.status === "completed",
+			"CLI trace carries the admitted terminal child lifecycle fact",
+		);
+		check(
+			sequentialTrace.events.every(
+				(event) =>
+					event.type.startsWith("child.") ||
+					event.type.startsWith("continuation.") ||
+					event.taskId === sequentialTaskId,
+			),
+			"CLI trace keeps non-child events on the aggregate identity",
+		);
+		check(
+			sequentialTrace.events.filter((event) => event.type === "session.spawned").length === 1 &&
+				!sequentialTrace.events.some(
+					(event) =>
+						event.taskId === sequentialChildTaskId &&
+						!event.type.startsWith("child.") &&
+						!event.type.startsWith("continuation."),
+				),
+			"CLI trace does not create a second child execution lifecycle",
+		);
+		const sequentialTraceText = JSON.stringify(sequentialTrace);
+		check(
+			!sequentialTraceText.includes(sequentialRepo) &&
+				!sequentialTraceText.includes("opaqueToken") &&
+				!sequentialTraceText.includes("fake worker") &&
+				!sequentialTraceText.includes("reasoning"),
+			"CLI trace omits child workspace, provider, transcript, and reasoning data",
+		);
+		sequentialLedger.close();
 
 		// A warm ledger allocates a fresh attempt while preserving the same
 		// task-family identity. The trace, receipt, and artifact names must all

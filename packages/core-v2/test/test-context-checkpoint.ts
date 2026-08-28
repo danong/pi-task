@@ -56,6 +56,33 @@ export function runTests(): Promise<void> {
 				.success && !JSON.stringify(first).includes("transcript"),
 			"checkpoint shape cannot carry a transcript or undeclared reasoning field",
 		);
+		const secondStore = new ContextArtifactStore({ root });
+		const reopened = loadWorkingCheckpoint(secondStore, reference);
+		check(
+			reopened !== undefined &&
+			JSON.stringify(reopened) === JSON.stringify(first) &&
+			Object.isFrozen(reference),
+			"checkpoint round-trips through a newly constructed artifact store",
+		);
+		check(
+			!JSON.stringify(first).includes("/tmp/") &&
+			!JSON.stringify(first).includes("refs/heads") &&
+			!JSON.stringify(first).includes("stdout"),
+			"checkpoint contract contains no host path, branch, or output",
+		);
+		let rejected = false;
+		try {
+			createWorkingCheckpoint({
+				...input,
+				summary: {
+					...input.summary,
+					nextActions: ["private reasoning: /tmp/secret stdout"],
+				},
+			});
+		} catch {
+			rejected = true;
+		}
+		check(rejected, "prohibited session and host data is rejected");
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}

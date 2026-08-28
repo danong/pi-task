@@ -15,6 +15,7 @@
  * lives ledger-side; the event carries only capped, structural detail.
  */
 
+import { z } from "zod";
 import type { VerificationEvidence } from "./verification-driver.ts";
 
 /** The event vocabulary (subsystems §3 initial set). Additive-only. */
@@ -32,6 +33,15 @@ export const TASK_LIFECYCLE_EVENTS = [
 	"task.failed",
 	"task.escalated",
 	"permission.requested",
+	"child.queued",
+	"child.claimed",
+	"child.resumable",
+	"child.blocked",
+	"child.completed",
+	"child.failed",
+	"child.escalated",
+	"continuation.checkpointed",
+	"continuation.resumed",
 ] as const;
 
 export type TaskLifecycleEventType = (typeof TASK_LIFECYCLE_EVENTS)[number];
@@ -79,6 +89,72 @@ export interface TaskFailureDetail {
 
 /** The receipt verdicts a terminal task.* event can carry (payloads.ts). */
 export type TaskVerdict = "ship" | "escalate" | "failed";
+export type ChildRelationship = "continuation";
+
+/** Bounded relationship metadata shared by additive child events. */
+export type ChildLifecycleStatus =
+	| "ready" | "claimed" | "resumable" | "blocked"
+	| "completed" | "failed" | "escalated";
+
+/** IDs in a gateway event are logical identities, never paths, refs, attempts,
+ * timestamps, or host locations. Artifact identities are content addressed. */
+const gatewayId = z.string().min(1).max(128)
+	.regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/)
+	.refine((value) => !/(?:^|[-_.])attempt(?:[-_.]|$)/i.test(value))
+	.refine((value) => !/^\d{4}-\d{2}-\d{2}/.test(value));
+const gatewayArtifactId = z.string().regex(/^sha256:[a-f0-9]{64}$/);
+
+export const ChildLifecycleDetailSchema = z.object({
+	parentTaskId: gatewayId,
+	childTaskId: gatewayId,
+	relationship: z.literal("continuation"),
+	ordinal: z.number().int().positive().max(1),
+	status: z.enum(["ready", "claimed", "resumable", "blocked", "completed", "failed", "escalated"]),
+	handoffArtifactId: gatewayArtifactId.optional(),
+	checkpointArtifactId: gatewayArtifactId.optional(),
+	resultArtifactId: gatewayArtifactId.optional(),
+	receiptArtifactId: gatewayArtifactId.optional(),
+	traceArtifactId: gatewayArtifactId.optional(),
+}).strict();
+export type ChildLifecycleDetail = z.infer<typeof ChildLifecycleDetailSchema>;
+
+const CHILD_EVENT_TYPES = [
+	"child.queued", "child.claimed", "child.resumable", "child.blocked",
+	"child.completed", "child.failed", "child.escalated",
+	"continuation.checkpointed", "continuation.resumed",
+] as const;
+export const ChildLifecycleEventSchema = z.object({
+	type: z.enum(CHILD_EVENT_TYPES),
+	taskId: gatewayId,
+	detail: ChildLifecycleDetailSchema,
+}).strict().superRefine((event, ctx) => {
+	const expected: Record<typeof event.type, ChildLifecycleStatus> = {
+		"child.queued": "ready", "child.claimed": "claimed",
+		"child.resumable": "resumable", "child.blocked": "blocked",
+		"child.completed": "completed", "child.failed": "failed",
+		"child.escalated": "escalated", "continuation.checkpointed": "resumable",
+		"continuation.resumed": "claimed",
+	};
+	if (event.detail.status !== expected[event.type])
+		ctx.addIssue({ code: "custom", path: ["detail", "status"], message: "event status does not match event type" });
+	const taskMustBeParent = event.type === "child.queued";
+	if (event.taskId !== (taskMustBeParent ? event.detail.parentTaskId : event.detail.childTaskId))
+		ctx.addIssue({ code: "custom", path: ["taskId"], message: "event taskId does not match its relationship endpoint" });
+	if (event.type === "child.queued" && event.detail.handoffArtifactId === undefined)
+		ctx.addIssue({ code: "custom", path: ["detail", "handoffArtifactId"], message: "queued child requires its handoff reference" });
+	if ((event.type === "child.resumable" || event.type === "continuation.checkpointed" || event.type === "continuation.resumed") && event.detail.checkpointArtifactId === undefined)
+		ctx.addIssue({ code: "custom", path: ["detail", "checkpointArtifactId"], message: "continuation event requires its checkpoint reference" });
+	if (["child.completed", "child.failed", "child.escalated"].includes(event.type) &&
+		(event.detail.resultArtifactId === undefined || event.detail.receiptArtifactId === undefined || event.detail.traceArtifactId === undefined))
+		ctx.addIssue({ code: "custom", path: ["detail"], message: "terminal child event requires result, receipt, and trace references" });
+});
+
+/** Validate before gateway retention and before trace projection. */
+export function admitTaskLifecycleEvent(event: TaskLifecycleEvent): TaskLifecycleEvent {
+	if ((CHILD_EVENT_TYPES as readonly string[]).includes(event.type))
+		return ChildLifecycleEventSchema.parse(event) as TaskLifecycleEvent;
+	return event;
+}
 
 /**
  * One lifecycle event crossing the gateway. Diagnostics only — never a
@@ -137,7 +213,16 @@ export type TaskLifecycleEvent =
 			taskId: string;
 			sessionId?: string;
 			detail: { verdict: Extract<TaskVerdict, "escalate"> };
-	  };
+	  }
+	| { type: "child.queued"; taskId: string; detail: ChildLifecycleDetail }
+	| { type: "child.claimed"; taskId: string; detail: ChildLifecycleDetail }
+	| { type: "child.resumable"; taskId: string; detail: ChildLifecycleDetail }
+	| { type: "child.blocked"; taskId: string; detail: ChildLifecycleDetail }
+	| { type: "child.completed"; taskId: string; detail: ChildLifecycleDetail }
+	| { type: "child.failed"; taskId: string; detail: ChildLifecycleDetail }
+	| { type: "child.escalated"; taskId: string; detail: ChildLifecycleDetail }
+	| { type: "continuation.checkpointed"; taskId: string; detail: ChildLifecycleDetail }
+	| { type: "continuation.resumed"; taskId: string; detail: ChildLifecycleDetail };
 
 /** Event-name pattern for on() subscriptions: an exact type ("task.routed"),
  *  a family wildcard ("task.*"), or the catch-all ("*"). */
@@ -171,6 +256,15 @@ export function eventTypeOf(event: TaskLifecycleEvent): TaskLifecycleEventType {
 		case "task.failed":
 		case "task.escalated":
 		case "permission.requested":
+		case "child.queued":
+		case "child.claimed":
+		case "child.resumable":
+		case "child.blocked":
+		case "child.completed":
+		case "child.failed":
+		case "child.escalated":
+		case "continuation.checkpointed":
+		case "continuation.resumed":
 			return event.type;
 		default: {
 			const exhaustive: never = event;

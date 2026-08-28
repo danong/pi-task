@@ -29,6 +29,7 @@ import type {
 	Unsubscribe,
 } from "../contracts/gateway-events.ts";
 import {
+	admitTaskLifecycleEvent,
 	eventMatchesPattern,
 	eventTypeOf,
 } from "../contracts/gateway-events.ts";
@@ -38,6 +39,13 @@ import { GatewayError } from "./errors.ts";
 interface Subscription {
 	readonly pattern: EventPattern;
 	readonly handler: (event: TaskLifecycleEvent) => void;
+}
+
+function freezeEvent(value: unknown, seen = new Set<object>()): void {
+	if (value === null || typeof value !== "object" || seen.has(value)) return;
+	seen.add(value);
+	for (const nested of Object.values(value as Record<string, unknown>)) freezeEvent(nested, seen);
+	Object.freeze(value);
 }
 
 export interface InMemoryTaskGatewayOptions {
@@ -68,14 +76,17 @@ export class InMemoryTaskGateway implements TaskGateway {
 	// ─── events ────────────────────────────────────────────────────────
 
 	emit(event: TaskLifecycleEvent): void {
-		// eventTypeOf doubles as the exhaustive-switch guard: an unknown
-		// discriminant cannot reach here (add-only versioning, R1).
-		void eventTypeOf(event);
-		this.events.push(event);
+		// Admission is deliberately before retention: malformed child metadata
+		// must never reach an observer or the trace projection.
+		const admitted = admitTaskLifecycleEvent(event);
+		void eventTypeOf(admitted);
+		const retained = structuredClone(admitted);
+		freezeEvent(retained);
+		this.events.push(retained);
 		for (const sub of [...this.subscriptions]) {
 			if (!eventMatchesPattern(event.type, sub.pattern)) continue;
 			try {
-				sub.handler(event);
+				sub.handler(retained);
 			} catch (err) {
 				const sink =
 					this.options.onHandlerError ??

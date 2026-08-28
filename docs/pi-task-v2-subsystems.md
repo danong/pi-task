@@ -378,20 +378,22 @@ for M5. M5 owns the parent/child continuation workflow and self-hosting proof.
 
 ### M5 status
 
-M5 remains unimplemented. It adds durable sequential parent/child composition
-using M4 context plans and checkpoints rather than transcripts. Conformance
-must cover child workspace isolation, bounded handoff and return artifacts,
-parent integration, interruption/recovery, provider deletion, and canonical
-receipts/traces.
+M5 is implemented and hermetically conformant. Durable sequential parent/child
+composition uses M4 context plans and checkpoints rather than transcripts.
+Conformance covers child workspace isolation, bounded handoff and return
+artifacts, parent integration, preparing-edge boot authority, close/reopen
+provider continuation, capped/interrupted-child recovery, typed dependency
+blocking, admitted lifecycle evidence, and canonical receipts/traces.
 
-The product gate is self-hosting: the normal pi task surface can choose v2 and
-use it for focused work on this repository; continuation reuses workspace and
-structured state; accepted output passes the repository's actual verification
-and artifact policy. Internal ledger rows alone do not satisfy the gate.
+The product gate is self-hosting: the normal v2 task surface can select one
+explicit continuation child and use it for focused work on this repository;
+continuation reuses provider workspace state plus structured checkpoints; and
+accepted output passes the repository's verification and artifact policy.
+Internal ledger rows alone do not satisfy the gate.
 
-M6 scope is intentionally undecided until this bootstrap loop is demonstrated
-and discussed. Existing remote, parallel, plugin, or benchmark foundations do
-not imply a cutover or scale decision.
+M6 remains an adoption decision rather than an implied cutover. Existing remote,
+parallel, plugin, or benchmark foundations do not establish a default task
+class, measured quality/cost advantage, or v1 deletion.
 
 ## 11. Evidence and migration
 

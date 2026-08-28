@@ -31,10 +31,13 @@ export interface RunIsolatedTaskResult {
 	/** The only user-facing receipt for this single-task run. */
 	receipt: TaskReceipt;
 	conflicts: string[];
+	interruption?: { reason: "budget_exceeded" | "wall_timeout" | "no_progress" | "tool_timeout" | "settled_without_yield" };
 	mergedCommitId?: string;
 }
 
-/** Execute exactly one worker through the existing workspace provider. */
+/** Execute exactly one worker through the existing workspace provider.
+ * Sequential composition supplies its durable task/workspace overrides through
+ * this same adapter; it never creates a second session/workspace loop. */
 export async function runIsolatedTask(
 	options: RunIsolatedTaskOptions,
 ): Promise<RunIsolatedTaskResult> {
@@ -47,6 +50,7 @@ export async function runIsolatedTask(
 	return {
 		receipt: result.aggregate,
 		conflicts: result.conflicts,
+		...(result.interruption === undefined ? {} : { interruption: result.interruption }),
 		...(result.mergedCommitId === undefined
 			? {}
 			: { mergedCommitId: result.mergedCommitId }),

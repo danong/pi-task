@@ -353,6 +353,9 @@ export async function parallelRunPostMortem(opts: {
 	 *  the forget). A workspace without a dir here is stacked but kept
 	 *  live. */
 	workspaceDirs?: Record<string, string> | undefined;
+	/** Provider-owned continuations remain live and must be excluded from
+	 *  global empty-stub cleanup as well as workspace stacking. */
+	protectedWorkspaceNames?: string[] | undefined;
 }): Promise<ParallelRecoveryInfo> {
 	const timeout = { timeoutMs: FAILURE_PATH_JJ_TIMEOUT_MS };
 	const cause = (opts.cause || "task run failed").slice(0, 140);
@@ -496,7 +499,13 @@ export async function parallelRunPostMortem(opts: {
 			projectDir: opts.projectDir,
 			aiAuthorEmail: opts.aiAuthorEmail,
 		});
+		const protectedChangeIds = new Set(
+			(opts.protectedWorkspaceNames ?? [])
+				.map((name) => wsEntries.get(name)?.changeId ?? "")
+				.filter((id) => id.length > 0),
+		);
 		for (const changeId of stubs.engine) {
+			if (protectedChangeIds.has(changeId)) continue;
 			try {
 				await execJj(["abandon", changeId], opts.projectDir, timeout);
 			} catch {
@@ -508,7 +517,9 @@ export async function parallelRunPostMortem(opts: {
 		// anchors — listing them would send the user hunting for commits the
 		// engine itself is about to hide.
 		const wsAtChangeIds = new Set(
-			opts.workspaceNames.map((n) => wsEntries.get(n)?.changeId ?? ""),
+			[...(opts.workspaceNames), ...(opts.protectedWorkspaceNames ?? [])].map(
+				(n) => wsEntries.get(n)?.changeId ?? "",
+			),
 		);
 		preserved.push(...stubs.preserved.filter((id) => !wsAtChangeIds.has(id)));
 	}

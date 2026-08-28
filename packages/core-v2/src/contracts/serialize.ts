@@ -13,6 +13,7 @@
  */
 
 import type { z } from "zod";
+import { ChildHandoffSchema, buildChildHandoff } from "./payloads.ts";
 
 /** Order an object's keys recursively (leaves). */
 function sortKeys(value: unknown): unknown {
@@ -45,5 +46,10 @@ export function serializeForPrompt(
 	schema: z.ZodType,
 	payload: unknown,
 ): string {
+	// Child handoffs have a stronger admission contract than legacy payloads:
+	// revalidate, canonicalize every collection, then serialize. Keeping this
+	// check here prevents a caller from accidentally bypassing the sole prompt
+	// ingress builder by using the generic serializer.
+	if (schema === ChildHandoffSchema) return stableStringify(buildChildHandoff(payload));
 	return stableStringify(schema.parse(payload));
 }

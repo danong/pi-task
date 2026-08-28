@@ -33,6 +33,8 @@ import type {
 } from "../src/contracts/index.ts";
 import {
 	TASK_LIFECYCLE_EVENTS,
+	ChildLifecycleDetailSchema,
+	admitTaskLifecycleEvent,
 	eventMatchesPattern,
 	eventTypeOf,
 } from "../src/contracts/index.ts";
@@ -57,6 +59,10 @@ Create a greeting file.
 `;
 
 // ─── Compile-time add-only versioning (R1) — enforced by tsc ─────────
+
+function invalidGateway(fn: () => unknown): boolean {
+	try { fn(); return false; } catch { return true; }
+}
 
 type Expect<T extends true> = T;
 
@@ -94,6 +100,15 @@ function assertExhaustive(event: TaskLifecycleEvent): string {
 		case "task.escalated":
 			return event.type;
 		case "permission.requested":
+		case "child.queued":
+		case "child.claimed":
+		case "child.resumable":
+		case "child.blocked":
+		case "child.completed":
+		case "child.failed":
+		case "child.escalated":
+		case "continuation.checkpointed":
+		case "continuation.resumed":
 			return event.type;
 		default: {
 			const exhaustive: never = event;
@@ -436,6 +451,15 @@ export async function runTests(): Promise<void> {
 				"task.failed",
 				"task.escalated",
 				"permission.requested",
+				"child.queued",
+				"child.claimed",
+				"child.resumable",
+				"child.blocked",
+				"child.completed",
+				"child.failed",
+				"child.escalated",
+				"continuation.checkpointed",
+				"continuation.resumed",
 			]) {
 				check(
 					(TASK_LIFECYCLE_EVENTS as readonly string[]).includes(literal),
@@ -487,6 +511,18 @@ export async function runTests(): Promise<void> {
 				eventMatchesPattern("task.queued", "*"),
 				"the catch-all still matches everything",
 			);
+
+			const hash = (digit: string): string => `sha256:${digit.repeat(64)}`;
+			const childDetail = {
+				parentTaskId: "parent", childTaskId: "child", relationship: "continuation" as const,
+				ordinal: 1, status: "completed" as const,
+				resultArtifactId: hash("1"), receiptArtifactId: hash("2"), traceArtifactId: hash("3"),
+			};
+			check(!invalidGateway(() => ChildLifecycleDetailSchema.parse(childDetail)), "valid child detail parses");
+			check(!invalidGateway(() => admitTaskLifecycleEvent({ type: "child.completed", taskId: "child", detail: childDetail })), "valid child event admits");
+			check(invalidGateway(() => admitTaskLifecycleEvent({ type: "child.completed", taskId: "other", detail: childDetail })), "relationship-mismatched task id rejected");
+			check(invalidGateway(() => admitTaskLifecycleEvent({ type: "child.completed", taskId: "child", detail: { ...childDetail, status: "claimed" } })), "event-specific status rejected");
+			check(invalidGateway(() => admitTaskLifecycleEvent({ type: "child.completed", taskId: "child", detail: { ...childDetail, resultArtifactId: "/tmp/output" } })), "path-like artifact rejected");
 		}
 	} finally {
 		rmSync(dir, { recursive: true, force: true });

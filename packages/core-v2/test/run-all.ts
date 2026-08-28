@@ -35,6 +35,7 @@ import { runTests as runGatewayPluginsTests } from "./test-gateway-plugins.ts";
 import { runTests as runGroundingEvalTests } from "./test-grounding-eval.ts";
 import { runTests as runJjDriverTests } from "./test-jj-driver.ts";
 import { runTests as runParallelTests } from "./test-parallel.ts";
+import { runTests as runSequentialTests } from "./test-sequential.ts";
 import { runTests as runPrewalkTests } from "./test-prewalk.ts";
 import { runTests as runReviewForkTests } from "./test-review-fork.ts";
 import { runTests as runLedgerTests } from "./test-ledger.ts";
@@ -103,6 +104,7 @@ const SUITES: Array<{ name: string; run: () => Promise<void> }> = [
 	{ name: "jj-driver", run: runJjDriverTests },
 	{ name: "failure-hygiene", run: runFailureHygieneTests },
 	{ name: "parallel", run: runParallelTests },
+	{ name: "sequential", run: runSequentialTests },
 	{ name: "prewalk", run: runPrewalkTests },
 	{ name: "review-fork", run: runReviewForkTests },
 	{ name: "budget", run: runBudgetTests },

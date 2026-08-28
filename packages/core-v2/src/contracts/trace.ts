@@ -10,6 +10,7 @@ import { join } from "node:path";
 import { z } from "zod";
 import { stableStringify } from "./serialize.ts";
 import { boundVerificationEvidence } from "./verification-driver.ts";
+import { admitTaskLifecycleEvent, ChildLifecycleEventSchema } from "./gateway-events.ts";
 
 export const TRACE_VERSION = 1;
 export const TRACE_MAX_EVENTS = 2_000;
@@ -48,6 +49,16 @@ export const TraceEventTypeSchema = z.enum([
 	"task.completed",
 	"task.failed",
 	"task.escalated",
+	// M5 additive child/continuation relationships.
+	"child.queued",
+	"child.claimed",
+	"child.resumable",
+	"child.blocked",
+	"child.completed",
+	"child.failed",
+	"child.escalated",
+	"continuation.checkpointed",
+	"continuation.resumed",
 ]);
 export type TraceEventType = z.infer<typeof TraceEventTypeSchema>;
 
@@ -162,7 +173,16 @@ export const TraceEventSchema = z
 		config: providerValue.optional(),
 		detail: TraceDetailSchema.optional(),
 	})
-	.strict();
+	.strict()
+	.superRefine((event, ctx) => {
+		if (event.type.startsWith("child.") || event.type.startsWith("continuation.")) {
+			try {
+				ChildLifecycleEventSchema.parse({ type: event.type, taskId: event.taskId, detail: event.detail });
+			} catch {
+				ctx.addIssue({ code: "custom", path: ["detail"], message: "child trace detail failed lifecycle admission" });
+			}
+		}
+	});
 export type TraceEvent = z.infer<typeof TraceEventSchema>;
 
 export const TraceUsageSchema = z
@@ -200,7 +220,8 @@ export const TraceArtifactSchema = z
 				});
 			}
 			expected += 1;
-			if (event.runId !== artifact.runId || event.taskId !== artifact.taskId) {
+			const isChildEvent = event.type.startsWith("child.") || event.type.startsWith("continuation.");
+			if (event.runId !== artifact.runId || (!isChildEvent && event.taskId !== artifact.taskId)) {
 				ctx.addIssue({
 					code: "custom",
 					path: ["events", index],
@@ -260,7 +281,8 @@ export class TraceCollector {
 	record(
 		input: Omit<TraceEvent, "version" | "sequence" | "at" | "runId">,
 	): TraceEvent {
-		if (input.taskId !== this.taskId)
+		const isChildEvent = input.type.startsWith("child.") || input.type.startsWith("continuation.");
+		if (!isChildEvent && input.taskId !== this.taskId)
 			throw new Error("trace event taskId does not match collector taskId");
 		if (this.#events.length >= TRACE_MAX_EVENTS)
 			return this.#events[this.#events.length - 1]!;
@@ -307,10 +329,15 @@ export class TraceCollector {
 
 function phaseForTraceType(type: TraceEventType): TraceEvent["phase"] {
 	if (type.startsWith("session")) return "session";
+	if (type.startsWith("child")) return "task";
 	if (type.startsWith("turn")) return "turn";
 	if (type.startsWith("tool")) return "tool";
 	if (type.startsWith("context")) return "context";
-	if (type.startsWith("checkpoint") || type.startsWith("epoch"))
+	if (
+		type.startsWith("checkpoint") ||
+		type.startsWith("epoch") ||
+		type.startsWith("continuation")
+	)
 		return "recovery";
 	if (type.startsWith("model")) return "model";
 	if (type.startsWith("usage")) return "usage";
@@ -327,6 +354,10 @@ export function traceEventFromGateway(
 	event: import("./gateway-events.ts").TaskLifecycleEvent,
 	_runId: string,
 ): Omit<TraceEvent, "version" | "sequence" | "at" | "runId"> {
+	// The trace projector is also an ingress boundary for callers that do not
+	// use InMemoryTaskGateway. Validate child relationships before copying any
+	// detail into retained structural evidence.
+	event = admitTaskLifecycleEvent(event);
 	let type: TraceEventType;
 	let detail: Record<string, unknown> | undefined;
 	switch (event.type) {
@@ -397,6 +428,18 @@ export function traceEventFromGateway(
 			type = "task.escalated";
 			detail = { verdict: event.detail.verdict };
 			break;
+		case "child.queued":
+		case "child.claimed":
+		case "child.resumable":
+		case "child.blocked":
+		case "child.completed":
+		case "child.failed":
+		case "child.escalated":
+		case "continuation.checkpointed":
+		case "continuation.resumed":
+			type = event.type;
+			detail = { ...event.detail };
+			break;
 	}
 	const sessionId = "sessionId" in event ? event.sessionId : undefined;
 	return {
@@ -406,6 +449,26 @@ export function traceEventFromGateway(
 		type,
 		...(detail === undefined ? {} : { detail: boundedDetail(detail) }),
 	};
+}
+
+/**
+ * Project the gateway stream into the one trace owned by the CLI invocation.
+ * Child lifecycle events are the only cross-task evidence admitted by the
+ * trace contract; ordinary child task/session events belong to the daemon's
+ * child execution and must not become a second CLI lifecycle. Admission is
+ * deliberately performed by traceEventFromGateway before this filtering so a
+ * retained child event cannot lose its endpoint identity or references.
+ */
+export function projectCliGatewayEvent(
+	event: import("./gateway-events.ts").TaskLifecycleEvent,
+	runId: string,
+	aggregateTaskId: string,
+): Omit<TraceEvent, "version" | "sequence" | "at" | "runId"> | undefined {
+	const projected = traceEventFromGateway(event, runId);
+	const isChildLifecycle =
+		event.type.startsWith("child.") || event.type.startsWith("continuation.");
+	if (!isChildLifecycle && event.taskId !== aggregateTaskId) return undefined;
+	return projected;
 }
 
 export interface TraceWriteSuccess {

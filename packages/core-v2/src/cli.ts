@@ -19,7 +19,7 @@ import type {
 import {
 	TraceCollector,
 	finalizeArtifactAcceptance,
-	traceEventFromGateway,
+	projectCliGatewayEvent,
 	writeTraceArtifact,
 	type TraceWriteResult,
 } from "./contracts/index.ts";
@@ -34,6 +34,7 @@ import { writeReceiptArtifact } from "./guards/receipts.ts";
 import { writeFailureArtifact } from "./guards/artifacts.ts";
 import { startDaemon } from "./daemon/start.ts";
 import { runIsolatedTask } from "./daemon/isolated.ts";
+import { runSequentialTask } from "./daemon/sequential.ts";
 import { parseTaskSpecForCli } from "./daemon/task-runner.ts";
 import { JujutsuWorkspaceDriver } from "./workspaces/jj-driver.ts";
 import { LedgerStore } from "./ledger/store.ts";
@@ -62,6 +63,7 @@ export class CliUsageError extends Error {
 export interface ParsedCliArgs {
 	help: boolean;
 	specPath?: string;
+	childSpecPath?: string;
 	projectDir: string;
 	model: string;
 	dbPath?: string;
@@ -70,6 +72,7 @@ export interface ParsedCliArgs {
 	context: "raw" | "symbol-tree";
 	maxTurns?: number;
 	maxCostUsd?: number;
+	wallTimeoutMs?: number;
 }
 
 export interface CliPaths {
@@ -105,6 +108,7 @@ Execute exactly one pi-task-v2 task in an isolated jj workspace.
 
 Options:
   --spec, -s <file>             Task markdown file (Goal, Requirements, Verification)
+  --child-spec <file>           One durable continuation child (raw context only)
   --project-dir <directory>     Project jj repository (default: current directory)
   --model, -m <provider/model>  Worker model (required unless PI_TASK_V2_MODEL is set)
   --state-dir <directory>       State root for the ledger and artifacts
@@ -113,6 +117,7 @@ Options:
   --context <raw|symbol-tree>   Explicit context provider (default: raw)
   --max-turns <n>               Independent maxTurns cap (0 = no cap, default unset)
   --max-cost-usd <n>            Independent maxCostUsd cap in USD (0 = no cap, default unset)
+  --wall-timeout-ms <n>         Session wall timeout in ms (positive integer, default host timeout)
   --help, -h                    Show this help
 
 Defaults are outside the repository: XDG_STATE_HOME/pi-task-v2/<project>/.
@@ -134,6 +139,7 @@ function valueFor(
 export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
 	let help = false;
 	let specPath: string | undefined;
+	let childSpecPath: string | undefined;
 	let projectDir = process.cwd();
 	let model = process.env.PI_TASK_V2_MODEL ?? "";
 	let dbPath: string | undefined;
@@ -142,6 +148,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
 	let context: "raw" | "symbol-tree" = "raw";
 	let maxTurns: number | undefined;
 	let maxCostUsd: number | undefined;
+	let wallTimeoutMs: number | undefined;
 	const seen = new Set<string>();
 
 	for (let i = 0; i < argv.length; i += 1) {
@@ -165,6 +172,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
 		if (
 			![
 				"--spec",
+				"--child-spec",
 				"--project-dir",
 				"--model",
 				"--state-dir",
@@ -173,6 +181,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
 				"--context",
 				"--max-turns",
 				"--max-cost-usd",
+				"--wall-timeout-ms",
 			].includes(key)
 		)
 			throw new CliUsageError(`unknown option: ${arg}`);
@@ -192,6 +201,9 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
 		switch (key) {
 			case "--spec":
 				specPath = value;
+				break;
+			case "--child-spec":
+				childSpecPath = value;
 				break;
 			case "--project-dir":
 				projectDir = value;
@@ -227,10 +239,19 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
 				maxCostUsd = n;
 				break;
 			}
+			case "--wall-timeout-ms": {
+				const n = Number(value);
+				if (!Number.isInteger(n) || n <= 0)
+					throw new CliUsageError("--wall-timeout-ms must be a positive integer");
+				wallTimeoutMs = n;
+				break;
+			}
 		}
 	}
 	if (!help && specPath === undefined)
 		throw new CliUsageError("--spec is required");
+	if (!help && childSpecPath !== undefined && context !== "raw")
+		throw new CliUsageError("--child-spec currently requires --context raw");
 	if (!help && model.trim().length === 0)
 		throw new CliUsageError(
 			"--model is required (or set PI_TASK_V2_MODEL to a non-empty model id)",
@@ -238,6 +259,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
 	return {
 		help,
 		...(specPath === undefined ? {} : { specPath }),
+		...(childSpecPath === undefined ? {} : { childSpecPath }),
 		projectDir,
 		model,
 		...(dbPath === undefined ? {} : { dbPath }),
@@ -246,6 +268,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
 		context,
 		...(maxTurns === undefined ? {} : { maxTurns }),
 		...(maxCostUsd === undefined ? {} : { maxCostUsd }),
+		...(wallTimeoutMs === undefined ? {} : { wallTimeoutMs }),
 	};
 }
 
@@ -322,6 +345,24 @@ function renderGatewayEvent(event: TaskLifecycleEvent): string {
 			return `review: ${event.detail.verdict}`;
 		case "permission.requested":
 			return "permission requested";
+		case "child.queued":
+			return "child queued";
+		case "child.claimed":
+			return "child claimed";
+		case "child.resumable":
+			return "child resumable";
+		case "child.blocked":
+			return "child blocked";
+		case "child.completed":
+			return "child completed";
+		case "child.failed":
+			return "child failed";
+		case "child.escalated":
+			return "child escalated";
+		case "continuation.checkpointed":
+			return "continuation checkpointed";
+		case "continuation.resumed":
+			return "continuation resumed";
 	}
 }
 
@@ -513,6 +554,7 @@ export async function runCli(
 
 	const projectDir = resolvePath(args.projectDir);
 	let specMarkdown: string;
+	let childSpecMarkdown: string | undefined;
 	try {
 		const projectStat = statSync(projectDir);
 		if (!projectStat.isDirectory())
@@ -525,6 +567,10 @@ export async function runCli(
 		// path resolution for runtime state and before daemon/workspace/session
 		// construction so providers cannot observe an invalid task input.
 		parseTaskSpecForCli(specMarkdown);
+		if (args.childSpecPath !== undefined) {
+			childSpecMarkdown = readFileSync(resolvePath(args.childSpecPath), "utf8");
+			parseTaskSpecForCli(childSpecMarkdown);
+		}
 	} catch (error) {
 		const message = validationError(error);
 		writeError(`error: ${message}`);
@@ -532,7 +578,7 @@ export async function runCli(
 	}
 
 	const paths = pathsFor(args, projectDir);
-	const familyId = deriveTaskId(specMarkdown, projectDir);
+	const familyId = deriveTaskId(childSpecMarkdown === undefined ? specMarkdown : `${specMarkdown}\n<!-- continuation -->\n${childSpecMarkdown}`, projectDir);
 	let trace: TraceCollector | undefined;
 	let traceTaskId = familyId;
 	let runAnnounced = false;
@@ -552,6 +598,7 @@ export async function runCli(
 		trace ??= createCliTrace(traceTaskId, familyId, args.model, specMarkdown, {
 			...(args.maxTurns === undefined ? {} : { maxTurns: args.maxTurns }),
 			...(args.maxCostUsd === undefined ? {} : { maxCostUsd: args.maxCostUsd }),
+			...(args.wallTimeoutMs === undefined ? {} : { wallTimeoutMs: args.wallTimeoutMs }),
 		});
 		announceRun();
 		trace.record({
@@ -609,6 +656,7 @@ export async function runCli(
 		trace = createCliTrace(traceTaskId, familyId, args.model, specMarkdown, {
 			...(args.maxTurns === undefined ? {} : { maxTurns: args.maxTurns }),
 			...(args.maxCostUsd === undefined ? {} : { maxCostUsd: args.maxCostUsd }),
+			...(args.wallTimeoutMs === undefined ? {} : { wallTimeoutMs: args.wallTimeoutMs }),
 		});
 		announceRun();
 		const daemonStarter = dependencies.startDaemon ?? startDaemon;
@@ -630,7 +678,12 @@ export async function runCli(
 		const tracedGateway: TaskGateway = {
 			emit: (event) => {
 				gateway.emit(event);
-				trace!.record(traceEventFromGateway(event, trace!.runId));
+				const projected = projectCliGatewayEvent(
+					event,
+					trace!.runId,
+					trace!.taskId,
+				);
+				if (projected !== undefined) trace!.record(projected);
 			},
 			on: (pattern, handler) => gateway.on(pattern, handler),
 			getTaskState: (taskId) => gateway.getTaskState(taskId),
@@ -654,42 +707,54 @@ export async function runCli(
 					: new ContextArtifactStore({
 							root: join(dirname(paths.artifactsDir), "context-cache"),
 						});
-			const result = await runIsolatedTask({
-				specMarkdown,
+			const sharedExecution = {
 				projectDir,
 				artifactsDir: paths.artifactsDir,
 				dbPath: paths.dbPath,
 				model: args.model,
 				...(args.maxTurns === undefined ? {} : { maxTurns: args.maxTurns }),
 				...(args.maxCostUsd === undefined ? {} : { maxCostUsd: args.maxCostUsd }),
-				contextCapabilitiesFactory: acquisitionFactoryFromLegacy(
-					selectedContextFactory,
-				),
-				...(contextArtifactStore === undefined ? {} : { contextArtifactStore }),
-				onContextEvent: (event: ContextEvidenceEvent) =>
-					trace!.record({
-						type: event.type,
-						phase:
-							event.type.startsWith("epoch") ||
-							event.type.startsWith("checkpoint")
-								? "recovery"
-								: "context",
-						taskId: trace!.taskId,
-						provider: event.provider.id,
-						config: event.provider.version,
-						detail: event.detail,
-					}),
+				...(args.wallTimeoutMs === undefined ? {} : { sessionTimeoutMs: args.wallTimeoutMs }),
 				workspaceDriver,
-				...(dependencies.environmentDriver === undefined
-					? {}
-					: { environmentDriver: dependencies.environmentDriver }),
+				...(dependencies.environmentDriver === undefined ? {} : { environmentDriver: dependencies.environmentDriver }),
 				...(dependencies.host === undefined ? {} : { host: dependencies.host }),
 				gateway: tracedGateway,
-				onEvent: (event) => {
-					write(renderProgress(event));
-					recordSessionEvent(trace!, event, turnState);
-				},
-			});
+			};
+			const result = childSpecMarkdown === undefined
+				? await runIsolatedTask({
+						...sharedExecution,
+						specMarkdown,
+						contextCapabilitiesFactory: acquisitionFactoryFromLegacy(selectedContextFactory),
+						...(contextArtifactStore === undefined ? {} : { contextArtifactStore }),
+						onContextEvent: (event: ContextEvidenceEvent) =>
+							trace!.record({
+								type: event.type,
+								phase: event.type.startsWith("epoch") || event.type.startsWith("checkpoint") ? "recovery" : "context",
+								taskId: trace!.taskId,
+								provider: event.provider.id,
+								config: event.provider.version,
+								detail: event.detail,
+							}),
+						onEvent: (event) => {
+							write(renderProgress(event));
+							recordSessionEvent(trace!, event, turnState);
+						},
+					})
+				: await (async () => {
+						const sequential = await runSequentialTask({
+							...sharedExecution,
+							parentSpecMarkdown: specMarkdown,
+							childSpecMarkdown,
+							artifactStore: new ContextArtifactStore({ root: join(dirname(paths.artifactsDir), "continuations") }),
+							parentTaskId: traceTaskId,
+							childTaskId: `${traceTaskId}-child`,
+							edgeId: `${traceTaskId}-edge`,
+							contextCapabilitiesFactory: acquisitionFactoryFromLegacy(selectedContextFactory),
+							...(contextArtifactStore === undefined ? {} : { contextArtifactStore }),
+							onEvent: (event) => write(renderProgress(event)),
+						});
+						return { receipt: sequential.parent, conflicts: sequential.status === "escalated" ? ["child escalation"] : [] };
+					})();
 			const receipt = result.receipt;
 			if (receipt.taskId !== trace.taskId)
 				throw new Error(

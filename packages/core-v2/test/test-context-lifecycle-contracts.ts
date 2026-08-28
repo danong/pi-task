@@ -59,8 +59,8 @@ export function runTests(): Promise<void> {
 		if (!value) errors.push(message);
 	};
 	check(
-		CORE_V2_MILESTONE === "M4.1" && CORE_V2_VERSION === "0.0.0-m4.1",
-		"package identity records the implemented M4.1 milestone",
+		CORE_V2_MILESTONE === "M5" && CORE_V2_VERSION === "0.0.0-m5",
+		"package identity records the implemented M5 milestone",
 	);
 	const candidate = item("candidate-1");
 	const planningInput = {
