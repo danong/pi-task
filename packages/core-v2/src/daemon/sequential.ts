@@ -501,6 +501,30 @@ export async function resumeSequentialChild(edgeId: string, runtime: SequentialR
 		try { config = ledger.getSequentialEdgeConfig(edgeId); }
 		catch { return blockedResult(edge, "corrupt"); }
 		if (config === null) return blockedResult(edge, "missing");
+		// Validate all runtime identities before reading executable child inputs or
+		// allowing a provider resume. A mismatch is durably blocked, never spawned.
+		let runtimeCapability: ReturnType<typeof workspaceContinuationOf> | undefined;
+		try { runtimeCapability = workspaceContinuationOf(workspaceDriver); }
+		catch { /* converted to the stable incompatible disposition below */ }
+		const runtimeIdentity = capabilityIdentity(runtimeCapability ?? {});
+		const runtimeVersion = capabilityVersion(runtimeCapability ?? {});
+		const continuation = edge.workspaceContinuationId === null
+			? null
+			: ledger.getWorkspaceContinuation(edge.workspaceContinuationId);
+		const preparation = edge.status === "preparing" ? ledger.getChildPreparation(edgeId) : null;
+		const identityMismatch = config.modelIdentity !== runtime.model ||
+			runtimeIdentity !== config.capabilityIdentity ||
+			runtimeVersion !== config.capabilityVersion ||
+			(continuation !== null && (continuation.driver !== workspaceDriver.name ||
+				continuation.capabilityIdentity !== runtimeIdentity ||
+				continuation.capabilityVersion !== runtimeVersion)) ||
+			(preparation !== null && (preparation.driver !== workspaceDriver.name ||
+				preparation.capabilityIdentity !== config.capabilityIdentity ||
+				preparation.capabilityVersion !== config.capabilityVersion));
+		if (identityMismatch) {
+			ledger.blockChild(edgeId);
+			return blockedResult(edge, "incompatible");
+		}
 		let parentReceipt: TaskReceipt | undefined;
 		try {
 			parentReceipt = parseJson(runtime.artifactStore, config.parentReceiptReference, "parent receipt", (value) => TaskReceiptSchema.parse(value));

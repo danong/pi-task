@@ -29,6 +29,8 @@ Fixtures under [`test/fixtures/`](./test/fixtures/) are evidence inputs for deri
 mise run v2 -- --spec ./task.md --project-dir . --model provider/model
 # One bounded durable continuation child (raw context in the M5 surface):
 mise run v2 -- --spec ./parent.md --child-spec ./child.md --project-dir . --model provider/model
+# Resume a durable edge by its id after a restart:
+mise run v2 -- --resume <edge-id> --project-dir . --model provider/model
 # or PI_TASK_V2_MODEL=provider/model mise run v2 -- --spec ./task.md --project-dir .
 ```
 
@@ -45,7 +47,7 @@ Spec must contain `Goal`, `Requirements`, `Verification`, and a strict `## Artif
 
 Paths are repository-relative; strict ingress rejects missing/empty/unsafe/duplicate/contradictory/unknown entries. The CLI validates before provider work, provisions an isolated jj workspace, runs and verifies the task, and atomically delivers `<runId>.trace.json` + `<runId>.receipt.json` under project-keyed user state (`XDG_STATE_HOME` when set, else `~/.local/state`). `--child-spec` selects the M5 daemon-owned parent→child path: the child receives bounded declarative state, not a transcript; its workspace continuation and checkpoint can be resumed from durable state after restart. The aggregate receipt ships only after child settlement and admitted evidence persistence. It announces `run: <attemptId>` early and prints `receipt/trace/failure artifact:` at termination. `attemptId` is `familyId` or `familyId-a2…`; `specHash`/`familyId`/`engineVersion` are on `model.assigned`.
 
-Context: `--context raw` (default, empty plan) or `--context symbol-tree` (opt-in bounded handles + `context` query/resolve tool). Raw has no index dependency; symbol-tree failures degrade explicitly. See [context-control-plane ADR](../../docs/adr/context-control-plane.md).
+Context: `--context raw` (default, empty plan) or `--context symbol-tree` (opt-in bounded handles + `context` query/resolve tool). Raw has no index dependency; symbol-tree failures degrade explicitly. `--resume <edge-id>` is mutually exclusive with submission options; unknown edges are usage errors, durably blocked edges fail, and selecting a terminal edge is an idempotent success. See [context-control-plane ADR](../../docs/adr/context-control-plane.md).
 
 ## Observability
 

@@ -24,9 +24,10 @@ import type {
 import type {
 	TaskGateway,
 	TaskLifecycleEvent,
+	WorkspaceDriver,
 } from "../src/contracts/index.ts";
 import { runCli, type CliDependencies, CliUsageError } from "../src/cli.ts";
-import { parseCliArgs, cliHelp, cliExitCode } from "../src/cli.ts";
+import { parseCliArgs, cliHelp, cliExitCode, CLI_EDGE_BLOCKED_EXIT, CLI_EDGE_TERMINAL_EXIT, CLI_EDGE_UNKNOWN_EXIT } from "../src/cli.ts";
 import { LedgerStore } from "../src/ledger/store.ts";
 import { prepareSequentialChild } from "../src/daemon/sequential.ts";
 import { ContextArtifactStore } from "../src/context/artifact-store.ts";
@@ -220,6 +221,22 @@ function fakeHost(
 	};
 }
 
+function providerIdentityMismatch(driver: JujutsuWorkspaceDriver): WorkspaceDriver {
+	const continuation = driver.continuation;
+	if (continuation === undefined) throw new Error("test driver has no continuation");
+	return {
+		name: driver.name,
+		integrationMode: driver.integrationMode,
+		continuation: { ...continuation, identity: "incompatible.provider" },
+		isSupported: driver.isSupported.bind(driver),
+		createWorkspace: driver.createWorkspace.bind(driver),
+		mergeWorkspace: driver.mergeWorkspace.bind(driver),
+		cleanupWorkspace: driver.cleanupWorkspace.bind(driver),
+		...(driver.prepare === undefined ? {} : { prepare: driver.prepare.bind(driver) }),
+		...(driver.finalizeWorkspace === undefined ? {} : { finalizeWorkspace: driver.finalizeWorkspace.bind(driver) }),
+	};
+}
+
 class CapturingGateway implements TaskGateway {
 	readonly events: TaskLifecycleEvent[] = [];
 	private readonly handlers = new Set<(event: TaskLifecycleEvent) => void>();
@@ -321,6 +338,7 @@ export async function runTests(): Promise<void> {
 	}
 	check(cliHelp().includes("--child-spec <file>"), "help documents durable child continuation");
 	check(cliHelp().includes("--resume <edge-id>"), "help documents durable edge resume");
+	check(cliHelp().includes("terminal is a no-op"), "help documents terminal edge idempotence");
 	check(
 		cliHelp().includes("--project-dir <directory>"),
 		"help documents project dir",
@@ -753,6 +771,136 @@ export async function runTests(): Promise<void> {
 			existsSync(join(resumeRepo, "result.txt")),
 			`CLI resumes a ready edge without replaying its parent (exit=${resumedCli.exitCode}, verdict=${resumedCli.receipt?.verdict ?? "none"}, parent=${beforeParentSessions}/${afterParentSessions}, child=${afterChildSessions}, spawns=${resumeSpawns.value}, error=${resumedCli.error ?? ""})`,
 		);
+
+		// Selector outcomes are resolved before provider construction. A terminal
+		// repeat is a successful no-op, while an absent edge is a usage error.
+		const terminalOutput: string[] = [];
+		const terminalBefore = new LedgerStore(resumeDb);
+		const terminalSessions = terminalBefore.listSessions(preparedResume.childTaskId).length;
+		const terminalParentStatus = terminalBefore.getTask(preparedResume.parentTaskId)?.status;
+		const terminalChildStatus = terminalBefore.getTask(preparedResume.childTaskId)?.status;
+		const terminalEdge = terminalBefore.getTaskEdge(preparedResume.edgeId!);
+		const terminalStatus = terminalEdge?.status;
+		const terminalCompletedAt = terminalEdge?.completedAt;
+		terminalBefore.close();
+		const terminalRepeat = await runCli([
+			"--resume", preparedResume.edgeId!, "--project-dir", resumeRepo,
+			"--model", "fake/model", "--db", resumeDb, "--artifacts-dir", resumeArtifacts,
+		], {
+			host: fakeHost("ok", resumeSpawns),
+			workspaceDriver: new JujutsuWorkspaceDriver({ projectDir: resumeRepo }),
+			write: (line) => terminalOutput.push(line),
+		});
+		const terminalAfter = new LedgerStore(resumeDb);
+		check(
+			terminalRepeat.exitCode === CLI_EDGE_TERMINAL_EXIT &&
+			terminalOutput.length === 1 &&
+			terminalOutput[0] === `edge ${preparedResume.edgeId} is already terminal: ${terminalStatus}` &&
+			terminalAfter.getTaskEdge(preparedResume.edgeId!)?.status === terminalStatus &&
+			terminalAfter.getTaskEdge(preparedResume.edgeId!)?.completedAt === terminalCompletedAt &&
+			terminalAfter.getTask(preparedResume.parentTaskId)?.status === terminalParentStatus &&
+			terminalAfter.getTask(preparedResume.childTaskId)?.status === terminalChildStatus &&
+			terminalAfter.listSessions(preparedResume.childTaskId).length === terminalSessions &&
+			resumeSpawns.value === 1,
+			"repeating a terminal edge selector is an idempotent no-op",
+		);
+		terminalAfter.close();
+		const unknownErrors: string[] = [];
+		const unknown = await runCli([
+			"--resume", "missing-edge", "--project-dir", resumeRepo,
+			"--model", "fake/model", "--db", resumeDb, "--artifacts-dir", resumeArtifacts,
+		], {
+			host: fakeHost("ok", resumeSpawns),
+			workspaceDriver: new JujutsuWorkspaceDriver({ projectDir: resumeRepo }),
+			writeError: (line) => unknownErrors.push(line),
+		});
+		check(
+			unknown.exitCode === CLI_EDGE_UNKNOWN_EXIT &&
+			unknown.error === "unknown edge id: missing-edge" &&
+			unknownErrors[0] === "error: unknown edge id: missing-edge" &&
+			resumeSpawns.value === 1,
+			"unknown edge selector has a deterministic usage error and no spawn",
+		);
+
+		// A runtime model mismatch is rejected before child spawn and leaves a
+		// durable block; repeating that selector takes the stable blocked branch.
+		const mismatchRepo = join(root, "mismatch-repo");
+		initRepo(mismatchRepo);
+		const mismatchDb = join(root, "mismatch.sqlite");
+		const mismatchArtifacts = join(root, "mismatch-artifacts");
+		const mismatchPrepared = await prepareSequentialChild({
+			parentSpecMarkdown: SPEC, childSpecMarkdown: SPEC, projectDir: mismatchRepo,
+			artifactsDir: join(root, "mismatch-failures"), dbPath: mismatchDb,
+			model: "fake/model",
+			workspaceDriver: new JujutsuWorkspaceDriver({ projectDir: mismatchRepo }),
+			host: fakeHost("ok", { value: 0 }),
+			artifactStore: new ContextArtifactStore({ root: join(root, "mismatch-continuations") }),
+		});
+		const mismatchSpawns = { value: 0 };
+		const mismatchErrors: string[] = [];
+		const mismatched = await runCli([
+			"--resume", mismatchPrepared.edgeId!, "--project-dir", mismatchRepo,
+			"--model", "other/model", "--db", mismatchDb, "--artifacts-dir", mismatchArtifacts,
+		], {
+			host: fakeHost("ok", mismatchSpawns),
+			workspaceDriver: new JujutsuWorkspaceDriver({ projectDir: mismatchRepo }),
+			writeError: (line) => mismatchErrors.push(line),
+		});
+		const mismatchLedger = new LedgerStore(mismatchDb);
+		check(
+			mismatched.exitCode === CLI_EDGE_BLOCKED_EXIT &&
+			mismatchErrors[0] === `error: edge ${mismatchPrepared.edgeId} is durably blocked` &&
+			mismatchLedger.getTaskEdge(mismatchPrepared.edgeId!)?.status === "blocked" &&
+			mismatchSpawns.value === 0,
+			"incompatible runtime model is rejected before session spawn",
+		);
+		mismatchLedger.close();
+		const blockedErrors: string[] = [];
+		const blockedRepeat = await runCli([
+			"--resume", mismatchPrepared.edgeId!, "--project-dir", mismatchRepo,
+			"--model", "other/model", "--db", mismatchDb, "--artifacts-dir", mismatchArtifacts,
+		], {
+			host: fakeHost("ok", mismatchSpawns),
+			workspaceDriver: new JujutsuWorkspaceDriver({ projectDir: mismatchRepo }),
+			writeError: (line) => blockedErrors.push(line),
+		});
+		check(
+			blockedRepeat.exitCode === CLI_EDGE_BLOCKED_EXIT &&
+			blockedRepeat.error === `edge ${mismatchPrepared.edgeId} is durably blocked` &&
+			blockedErrors[0] === `error: edge ${mismatchPrepared.edgeId} is durably blocked` &&
+			mismatchSpawns.value === 0,
+			"durably blocked edge selector has a deterministic failure message",
+		);
+
+		const providerMismatchRepo = join(root, "provider-mismatch-repo");
+		initRepo(providerMismatchRepo);
+		const providerMismatchDb = join(root, "provider-mismatch.sqlite");
+		const providerBaseDriver = new JujutsuWorkspaceDriver({ projectDir: providerMismatchRepo });
+		const providerPrepared = await prepareSequentialChild({
+			parentSpecMarkdown: SPEC, childSpecMarkdown: SPEC, projectDir: providerMismatchRepo,
+			artifactsDir: join(root, "provider-mismatch-failures"), dbPath: providerMismatchDb,
+			model: "fake/model", workspaceDriver: providerBaseDriver,
+			host: fakeHost("ok", { value: 0 }),
+			artifactStore: new ContextArtifactStore({ root: join(root, "provider-mismatch-continuations") }),
+		});
+		const providerMismatchSpawns = { value: 0 };
+		const providerMismatch = await runCli([
+			"--resume", providerPrepared.edgeId!, "--project-dir", providerMismatchRepo,
+			"--model", "fake/model", "--db", providerMismatchDb,
+			"--artifacts-dir", join(root, "provider-mismatch-artifacts"),
+		], {
+			host: fakeHost("ok", providerMismatchSpawns),
+			workspaceDriver: providerIdentityMismatch(new JujutsuWorkspaceDriver({ projectDir: providerMismatchRepo })),
+			writeError: () => undefined,
+		});
+		const providerMismatchLedger = new LedgerStore(providerMismatchDb);
+		check(
+			providerMismatch.exitCode === CLI_EDGE_BLOCKED_EXIT &&
+			providerMismatchLedger.getTaskEdge(providerPrepared.edgeId!)?.status === "blocked" &&
+			providerMismatchSpawns.value === 0,
+			"incompatible runtime provider identity is rejected before session spawn",
+		);
+		providerMismatchLedger.close();
 
 		// A warm ledger allocates a fresh attempt while preserving the same
 		// task-family identity. The trace, receipt, and artifact names must all

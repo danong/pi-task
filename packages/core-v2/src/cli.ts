@@ -52,6 +52,11 @@ const DEFAULT_STATE_ROOT = ".local/state";
 export const CLI_USAGE_EXIT = 2;
 export const CLI_TASK_EXIT = 1;
 export const CLI_ARTIFACT_EXIT = 3;
+/** Stable selector outcomes: an absent edge is a usage error, a durable
+ * block is a task failure, and a terminal edge is an idempotent success. */
+export const CLI_EDGE_UNKNOWN_EXIT = CLI_USAGE_EXIT;
+export const CLI_EDGE_BLOCKED_EXIT = CLI_TASK_EXIT;
+export const CLI_EDGE_TERMINAL_EXIT = 0;
 
 export class CliUsageError extends Error {
 	constructor(message: string) {
@@ -110,7 +115,7 @@ Execute exactly one pi-task-v2 task in an isolated jj workspace.
 Options:
   --spec, -s <file>             Task markdown file (Goal, Requirements, Verification)
   --child-spec <file>           One durable continuation child (raw context only)
-  --resume <edge-id>            Resume one ready durable continuation edge (raw context only)
+  --resume <edge-id>            Resume one durable continuation edge (raw context only; terminal is a no-op)
   --project-dir <directory>     Project jj repository (default: current directory)
   --model, -m <provider/model>  Worker model (required unless PI_TASK_V2_MODEL is set)
   --state-dir <directory>       State root for the ledger and artifacts
@@ -677,11 +682,29 @@ export async function runCli(
 		}
 		daemon = await daemonStarter(paths.dbPath, { projectDir });
 		if (args.resumeEdgeId !== undefined) {
+			// Select non-runnable states before constructing providers or traces. This
+			// keeps selector outcomes deterministic and makes terminal selection a
+			// genuinely side-effect-free idempotent operation.
+			const selectedEdge = daemon.store.getTaskEdge(args.resumeEdgeId);
+			if (selectedEdge === null) {
+				const message = `unknown edge id: ${args.resumeEdgeId}`;
+				writeError(`error: ${message}`);
+				return { exitCode: CLI_EDGE_UNKNOWN_EXIT, error: message };
+			}
+			if (selectedEdge.status === "blocked") {
+				const message = `edge ${args.resumeEdgeId} is durably blocked`;
+				writeError(`error: ${message}`);
+				return { exitCode: CLI_EDGE_BLOCKED_EXIT, error: message };
+			}
+			if (["completed", "failed", "escalated"].includes(selectedEdge.status)) {
+				const message = `edge ${args.resumeEdgeId} is already terminal: ${selectedEdge.status}`;
+				write(message);
+				return { exitCode: CLI_EDGE_TERMINAL_EXIT };
+			}
 			// The parent id is only a correlation identity for the adapter trace;
 			// all executable child inputs remain inside resumeSequentialChild's
 			// durable manifest.
-			const selectedEdge = daemon.store.getTaskEdge(args.resumeEdgeId);
-			traceTaskId = selectedEdge?.parentTaskId ?? args.resumeEdgeId;
+			traceTaskId = selectedEdge.parentTaskId;
 			familyId = traceTaskId;
 		} else {
 			const daemonAttemptId = resolveAttemptId(daemon.store, familyId);
@@ -750,6 +773,7 @@ export async function runCli(
 				...(dependencies.host === undefined ? {} : { host: dependencies.host }),
 				gateway: tracedGateway,
 			};
+			let resumeBlocked = false;
 			const result = args.resumeEdgeId !== undefined
 				? await (async () => {
 						const sequential = await resumeSequentialChild(args.resumeEdgeId!, {
@@ -771,6 +795,7 @@ export async function runCli(
 								recordSessionEvent(trace!, event, turnState);
 							},
 						});
+						resumeBlocked = sequential.status === "blocked";
 						return { receipt: sequential.parent, conflicts: sequential.status === "escalated" ? ["child escalation"] : [] };
 					})()
 				: childSpecMarkdown === undefined
@@ -808,6 +833,11 @@ export async function runCli(
 							});
 							return { receipt: sequential.parent, conflicts: sequential.status === "escalated" ? ["child escalation"] : [] };
 						})();
+			if (resumeBlocked) {
+				const message = `edge ${args.resumeEdgeId!} is durably blocked`;
+				writeError(`error: ${message}`);
+				return { exitCode: CLI_EDGE_BLOCKED_EXIT, error: message };
+			}
 			const receipt = result.receipt;
 			if (receipt.taskId !== trace.taskId)
 				throw new Error(
