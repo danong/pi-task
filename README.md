@@ -145,9 +145,10 @@ and validated with `mise run m4-proof -- <evidence.json> [report.md]`. It record
 measured accepted runs without claiming a general quality or cost advantage or
 adopting symbol-tree as the default. The first useful implementation dogfood
 failure is retained under `packages/core-v2/test/fixtures/dogfood/`; it exposed
-that the CLI prompt wall was not paired with an independent turn/spend bound.
-Continued dogfood therefore requires explicit execution caps rather than
-relying on model discipline. M5 will use the checkpoint/epoch contracts for
+that the CLI prompt wall was not paired with an independent turn bound.
+Continued dogfood therefore requires the supported turn and wall-time bounds;
+measured final cost remains reporting-only until provider-neutral live cost
+signals exist. M5 will use the checkpoint/epoch contracts for
 typed sequential children and a usable v2 self-hosting loop. M6 scope remains
 intentionally open.
 

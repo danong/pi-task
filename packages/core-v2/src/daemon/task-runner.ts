@@ -105,6 +105,7 @@ import {
 	transformHandoffThrough,
 } from "../plugins/index.ts";
 import { InMemoryTaskGateway } from "../gateway/index.ts";
+import { assertNoMaxCostUsd } from "../budget/execution-budget.ts";
 
 /** Default AI identity email — the provenance test failure hygiene
  *  applies before abandoning empty stubs (matches the workspace driver's
@@ -433,7 +434,7 @@ export interface RunTaskOptions {
 	sessionTimeoutMs?: number;
 	/** Independent turn cap (R1): 0/unset = no cap, separate from wall time, tier-configurable. */
 	maxTurns?: number;
-	/** Independent cost cap (R1): 0/unset = no cap, separate from wall time. */
+	/** Historical config compatibility only; new execution rejects this field. */
 	maxCostUsd?: number;
 
 	/** AI identity email configured for the run's jj commits (the
@@ -494,6 +495,7 @@ interface RunObservation {
  *  Note: the former inline describeTool() helper moved verbatim to
  *  plugins/builtin/lifecycle-collector.ts (R2 — no duplicated copy). */
 export async function runTask(options: RunTaskOptions): Promise<RunTaskResult> {
+	assertNoMaxCostUsd(options.maxCostUsd);
 	if (!existsSync(options.cwd)) {
 		throw new Error(`runTask: cwd does not exist: ${options.cwd}`);
 	}
@@ -623,7 +625,6 @@ async function runWithStore(
 			classification.code === "budget_exceeded"
 				? {
 						...(options.maxTurns !== undefined ? { maxTurns: options.maxTurns } : {}),
-						...(options.maxCostUsd !== undefined ? { maxCostUsd: options.maxCostUsd } : {}),
 						...(options.sessionTimeoutMs !== undefined ? { wallTimeoutMs: options.sessionTimeoutMs } : {}),
 				  }
 				: {};

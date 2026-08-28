@@ -65,7 +65,7 @@ import { InMemoryTaskGateway } from "../gateway/index.ts";
 import { registerPluginTriggers } from "../plugins/index.ts";
 import { HostEnvironmentDriver } from "../environments/drivers.ts";
 import { verifyThroughEnvironment } from "../verify/adapter.ts";
-import { budgetReason } from "../budget/execution-budget.ts";
+import { assertNoMaxCostUsd } from "../budget/execution-budget.ts";
 import {
 	createSessionHost,
 	workerToolSchemaIdentity,
@@ -112,8 +112,9 @@ export interface RunParallelOptions {
 	environmentDriver?: EnvironmentDriver;
 	/** Dependency injection for tests. */
 	host?: SessionHost;
-	/** Independent execution budgets (R1/R3): 0 = no cap, separate from wall time. */
+	/** Supported independent turn cap: 0/unset = no cap, separate from wall time. */
 	maxTurns?: number;
+	/** Historical config compatibility only; new execution rejects this field. */
 	maxCostUsd?: number;
 
 	/** Lifecycle event sink (R4); defaults to an InMemoryTaskGateway over
@@ -229,6 +230,7 @@ export interface RunParallelResult {
 export async function runParallelTask(
 	options: RunParallelOptions,
 ): Promise<RunParallelResult> {
+	assertNoMaxCostUsd(options.maxCostUsd);
 	if (options.subTasks.length === 0)
 		throw new Error("runParallelTask: no subTasks");
 	const store = new LedgerStore(options.dbPath);
@@ -874,7 +876,6 @@ async function runWithStore(
 							: "worker attempt failed",
 						stage: "session",
 						code: isBudget ? "budget_exceeded" : isWall ? "session_timed_out" : "worker_failed",
-						...(isBudget ? { maxTurns: options.maxTurns ?? 0, maxCostUsd: options.maxCostUsd ?? 0 } : {}),
 					} as any,
 				});
 			}
@@ -1107,66 +1108,6 @@ async function runWithStore(
 		taskId: aggregateId,
 		detail: { passed: verification.passed, evidence: verification.evidence },
 	});
-	// R1/R2: independent execution budgets (maxTurns / maxCostUsd) separate from wall time.
-	// Zero/unset = no cap. Cap triggers → task.failed stage=session code=budget_exceeded (R2),
-	// independent of wall timeout, with bounded failure artifact and cap observability (R3).
-	{
-		const caps = {
-			maxTurns: options.maxTurns ?? 0,
-			maxCostUsd: options.maxCostUsd ?? 0,
-		};
-		const totalCost = sumUsage(usages).costUsd;
-		const reason = budgetReason(observedTurns, totalCost, caps);
-		const hasBudgetWatchdog = observations.some((o) => o.watchdogAbort?.reason === "budget_exceeded");
-		const budgetTripped = reason !== null || hasBudgetWatchdog;
-		if (budgetTripped) {
-			// Budget exhaustion is not a durable checkpoint. Do not emit
-			// checkpoint.saved here: that event is reserved for the explicit
-			// artifact-store operation after it has verified immutable storage.
-			options.onContextEvent?.({
-				type: "epoch.transitioned",
-				provider: { id: "budget", version: "1" },
-				detail: {
-					reason: "context-pressure",
-					stage: "session",
-					code: "budget_exceeded",
-					budgetReason: reason ?? "turns",
-					turns: observedTurns,
-					costUsd: totalCost,
-					maxTurns: caps.maxTurns,
-					maxCostUsd: caps.maxCostUsd,
-				},
-			});
-			const cause = `budget_exceeded:${reason ?? "turns"}`;
-			for (const ctx of contexts) store.setWorkspaceStatus(`${ctx.taskId}-workspace`, "orphaned");
-			writeFailureArtifact({
-				artifactsDir: options.artifactsDir,
-				runId: aggregateId,
-				cause,
-				recovery: await reconcileFailedRun(cause),
-			});
-			store.setTaskStatus(aggregateId, "failed");
-			gateway.emit({
-				type: "task.failed",
-				taskId: aggregateId,
-				sessionId: sessionIdFor(aggregateId),
-				detail: {
-					cause,
-					stage: "session",
-					code: "budget_exceeded",
-					maxTurns: caps.maxTurns,
-					maxCostUsd: caps.maxCostUsd,
-					...(options.sessionTimeoutMs === undefined ? {} : { wallTimeoutMs: options.sessionTimeoutMs }),
-				} as any,
-			});
-			return {
-				aggregate: makeReceipt(aggregateId, "failed", 0, [], observedTurns, sumUsage(usages)),
-				perWorker,
-				interruption: { reason: "budget_exceeded" },
-				conflicts: [],
-			};
-		}
-	}
 	for (const cmd of verification.commands) {
 		if (cmd.exitCode !== 0) {
 			failures.push(

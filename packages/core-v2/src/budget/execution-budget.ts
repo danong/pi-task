@@ -1,32 +1,42 @@
 /**
- * Independent execution budgets: maxTurns / maxCostUsd separate from wall time.
+ * Execution-budget ingress and turn-cap helpers.
  *
- * Pure decision functions over observed events — no I/O, no timers. Wall time
- * is NOT consulted here; callers check wall separately so the two budgets never
- * conflate. Zero means no cap.
+ * Provider-neutral live cost signals do not exist yet. A cost value may still
+ * occur in historical receipts/configuration, but new execution must reject a
+ * configured maxCostUsd rather than treating settled usage as an interruption.
  */
+
+/** Stable operator-facing explanation for the unsupported cost cap. */
+export const MAX_COST_USD_UNSUPPORTED_MESSAGE =
+	"maxCostUsd is unsupported: live cost interruption is unsupported; remove --max-cost-usd and use --max-turns or --wall-timeout-ms instead.";
+
+/** Reject a cost cap at every execution ingress, including an explicit zero. */
+export function assertNoMaxCostUsd(maxCostUsd: number | undefined): void {
+	if (maxCostUsd !== undefined)
+		throw new Error(MAX_COST_USD_UNSUPPORTED_MESSAGE);
+}
 
 export interface BudgetCaps {
 	/** 0 = no cap */
 	maxTurns: number;
-	/** 0 = no cap; USD */
-	maxCostUsd: number;
+	/** Historical compatibility only; never used to interrupt execution. */
+	maxCostUsd?: number;
 }
 
-/** Reason a budget soft-cap fired, or null when under budget. */
-export type BudgetReason = "turns" | "cost" | null;
+/** Reason a supported execution budget fired, or null when under budget. */
+export type BudgetReason = "turns" | null;
 
 /**
- * Pure: does the current usage exceed an independent cap?
- * Wall time is NOT consulted here — caller checks wall separately.
+ * Pure turn-cap decision. The cost argument remains for source compatibility
+ * with historical callers, but is deliberately not an interruption signal.
+ * Wall time is NOT consulted here — callers check wall separately.
  */
 export function budgetReason(
 	turns: number,
-	costUsd: number,
+	_costUsd: number,
 	caps: BudgetCaps,
 ): BudgetReason {
 	if (caps.maxTurns > 0 && turns >= caps.maxTurns) return "turns";
-	if (caps.maxCostUsd > 0 && costUsd >= caps.maxCostUsd) return "cost";
 	return null;
 }
 

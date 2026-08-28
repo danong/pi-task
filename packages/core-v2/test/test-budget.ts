@@ -1,7 +1,8 @@
 /**
- * Hermetic tests for independent maxTurns budget (R1–R4) and wall-timeout CLI (R1–R4).
- * Zero LLM, zero network. Tests pure budget decision, watchdog independence,
- * CLI parsing, daemon plumbing, trace observability and report rendering.
+ * Hermetic tests for independent maxTurns budget and wall-timeout CLI.
+ * Zero LLM, zero network. Tests cost-cap ingress rejection, usage accounting,
+ * watchdog independence, CLI parsing, daemon plumbing, trace observability
+ * and report rendering.
  */
 import { pathToFileURL } from "node:url";
 import { execFileSync } from "node:child_process";
@@ -13,7 +14,11 @@ import { TraceCollector, TraceArtifactSchema } from "../src/contracts/trace.ts";
 import { renderTraceReport } from "../src/bench/trace-report.ts";
 import { decideMaxTurnsAction, decideWallAction, DEFAULT_WATCHDOG_WALL_TIMEOUT_MS } from "../src/guards/watchdogs.ts";
 import { WatchdogDriver } from "../src/guards/watchdog-driver.ts";
-import { budgetReason } from "../src/budget/execution-budget.ts";
+import {
+	budgetReason,
+	MAX_COST_USD_UNSUPPORTED_MESSAGE,
+} from "../src/budget/execution-budget.ts";
+import { runParallelTask } from "../src/daemon/parallel.ts";
 import type { SessionHandle, SessionHost, SessionHostConfig, SessionHostEvent } from "../src/sessions/host.ts";
 import { JujutsuWorkspaceDriver } from "../src/workspaces/jj-driver.ts";
 
@@ -76,7 +81,7 @@ class FakeHandle implements SessionHandle {
 			toolResults: 1,
 			totalMessages: 4,
 			tokens: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, total: 2 },
-			cost: 0,
+			cost: 1.25,
 		});
 	}
 	setModel(): Promise<void> { return Promise.resolve(); }
@@ -110,6 +115,10 @@ export async function runTests(): Promise<void> {
 		check(unset.maxTurns === undefined, "CLI maxTurns default unset (no cap)");
 		const zero = parseCliArgs(["--spec", "task.md", "--model", "fake/model", "--max-turns", "0"]);
 		check(zero.maxTurns === 0, "CLI max-turns 0 = no cap");
+		let costError: unknown;
+		try { parseCliArgs(["--spec", "task.md", "--model", "fake/model", "--max-cost-usd", "0"]); }
+		catch (error) { costError = error; }
+		check(costError instanceof CliUsageError && costError.message === MAX_COST_USD_UNSUPPORTED_MESSAGE, "CLI maxCostUsd rejects with stable unsupported-live-cost message");
 		let threw = false;
 		try { parseCliArgs(["--spec", "task.md", "--model", "fake/model", "--max-turns", "-1"]); } catch { threw = true; }
 		check(threw, "negative maxTurns rejected");
@@ -156,10 +165,29 @@ export async function runTests(): Promise<void> {
 		const bothBudget = decideMaxTurnsAction({ turns: 10, maxTurns: 5 });
 		check(bothWall.kind === "abort" && bothWall.reason === "wall_timeout" && bothBudget.kind === "abort" && bothBudget.reason === "budget_exceeded", "wall and budget reasons distinct");
 
-		// execution-budget pure helper
+		// execution-budget pure helper: only maxTurns can interrupt. Cost is
+		// measured after settlement and is never an interruption decision.
 		check(budgetReason(5, 0, { maxTurns: 5, maxCostUsd: 0 }) === "turns", "budgetReason turns");
-		check(budgetReason(0, 5, { maxTurns: 0, maxCostUsd: 5 }) === "cost", "budgetReason cost");
+		check(budgetReason(0, 5, { maxTurns: 0, maxCostUsd: 5 }) === null, "budgetReason ignores historical cost cap");
 		check(budgetReason(1, 1, { maxTurns: 0, maxCostUsd: 0 }) === null, "no cap -> null");
+	}
+
+	// R1 daemon ingress: a configured cost cap is rejected before the daemon
+	// can validate/provision a workspace or spawn a session.
+	{
+		let costError: unknown;
+		try {
+			await runParallelTask({
+				subTasks: [],
+				projectDir: "/does-not-exist",
+				artifactsDir: "/does-not-exist/artifacts",
+				dbPath: "/does-not-exist/ledger.sqlite",
+				model: "fake/model",
+				workspaceDriver: new JujutsuWorkspaceDriver({ projectDir: "/does-not-exist" }),
+				maxCostUsd: 0,
+			});
+		} catch (error) { costError = error; }
+		check(costError instanceof Error && costError.message === MAX_COST_USD_UNSUPPORTED_MESSAGE, "daemon maxCostUsd rejects before workspace/session work");
 	}
 
 	// Watchdog driver: maxTurns aborts with budget_exceeded, wall with wall_timeout, independent
@@ -251,6 +279,7 @@ export async function runTests(): Promise<void> {
 		const report = renderTraceReport(trace);
 		check(report.includes("Configured maxTurns: 3"), `report shows configured maxTurns, got ${report.slice(0, 800)}`);
 		check(report.includes("Budget maxTurns: 3"), "report shows budget maxTurns");
+		check(report.includes("Configured maxCostUsd: 1"), "historical maxCostUsd remains readable in reports");
 		check(report.includes("Stage: session"), "report stage session");
 		check(report.includes("Code: budget_exceeded"), "report code budget_exceeded");
 		// ensure not conflated with wall
@@ -311,6 +340,7 @@ export async function runTests(): Promise<void> {
 					{ host, workspaceDriver: new JujutsuWorkspaceDriver({ projectDir: repoWall }), write: () => undefined, writeError: () => undefined },
 				);
 				check(result.exitCode === 0, `wall run exits zero, got ${result.exitCode} ${result.error ?? ""}`);
+				check(result.receipt?.costUsd === 1.25 && result.receipt.usageStatus === "measured", "measured final cost remains in the receipt");
 				check(capture.timeoutMs === 98765, `host timeoutMs threaded from CLI, got ${capture.timeoutMs}`);
 				if (result.tracePath !== undefined) {
 					const trace = TraceArtifactSchema.parse(JSON.parse(readFileSync(result.tracePath, "utf8")));
@@ -372,7 +402,7 @@ export async function runTests(): Promise<void> {
 	}
 
 	if (errors.length > 0) throw new Error("test-budget failed:\n  " + errors.join("\n  "));
-	console.log("✓ budget: CLI maxTurns, watchdog independence, stage=session code=budget_exceeded, trace/report, no-cap default");
+	console.log("✓ budget: maxCostUsd ingress rejection, measured cost accounting, maxTurns/wall independence, trace/report");
 	console.log("✓ budget wall: --wall-timeout-ms parsing/validation, single wall timer, trace/report, daemon/session plumbing");
 }
 

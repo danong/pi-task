@@ -51,6 +51,7 @@ import {
 	LedgerStore,
 	type SequentialEdgeConfig,
 } from "../ledger/store.ts";
+import { assertNoMaxCostUsd } from "../budget/execution-budget.ts";
 import { parseTaskSpec } from "./task-runner.ts";
 import { runIsolatedTask } from "./isolated.ts";
 import type { SessionHost } from "../sessions/host.ts";
@@ -164,6 +165,7 @@ export interface RunSequentialTaskOptions extends SequentialTaskSpec {
 	gateway?: TaskGateway;
 	artifactStore: ContextArtifactStore;
 	maxTurns?: number;
+	/** Historical config compatibility only; new execution rejects this field. */
 	maxCostUsd?: number;
 	sessionTimeoutMs?: number;
 	/** Leave the durable edge in `preparing`; a later resume reconciles the provider. */
@@ -190,6 +192,7 @@ export interface SequentialRuntimeDependencies {
 	gateway?: TaskGateway;
 	artifactStore: ContextArtifactStore;
 	maxTurns?: number;
+	/** Historical config compatibility only; new execution rejects this field. */
 	maxCostUsd?: number;
 	sessionTimeoutMs?: number;
 	contextCapabilitiesFactory?: ContextAcquisitionFactory;
@@ -354,6 +357,7 @@ function parseJson<T>(store: ContextArtifactStore, reference: ImmutableArtifactR
 
 /** Prepare parent acceptance and leave exactly one durable, unclaimed child. */
 export async function prepareSequentialChild(options: RunSequentialTaskOptions): Promise<SequentialPrepareResult> {
+	assertNoMaxCostUsd(options.maxCostUsd);
 	const parentSpec = parseTaskSpec(options.parentSpecMarkdown);
 	const childSpec = parseTaskSpec(options.childSpecMarkdown);
 	const parentTaskId = options.parentTaskId ?? id("seq");
@@ -389,7 +393,6 @@ export async function prepareSequentialChild(options: RunSequentialTaskOptions):
 				...(options.environmentDriver === undefined ? {} : { environmentDriver: options.environmentDriver }),
 				...(options.host === undefined ? {} : { host: options.host }), gateway,
 				...(options.maxTurns === undefined ? {} : { maxTurns: options.maxTurns }),
-				...(options.maxCostUsd === undefined ? {} : { maxCostUsd: options.maxCostUsd }),
 				...(options.sessionTimeoutMs === undefined ? {} : { sessionTimeoutMs: options.sessionTimeoutMs }),
 				...(options.contextCapabilitiesFactory === undefined ? {} : { contextCapabilitiesFactory: options.contextCapabilitiesFactory }),
 				...(options.contextArtifactStore === undefined ? {} : { contextArtifactStore: options.contextArtifactStore }),
@@ -486,6 +489,7 @@ export const prepareSequentialTask = prepareSequentialChild;
 
 /** Resume a ready (or boot-reclassified resumable) edge without replaying its parent. */
 export async function resumeSequentialChild(edgeId: string, runtime: SequentialRuntimeDependencies): Promise<SequentialRunResult> {
+	assertNoMaxCostUsd(runtime.maxCostUsd);
 	const ledger = new LedgerStore(runtime.dbPath);
 	const gateway = runtime.gateway ?? new InMemoryTaskGateway({ store: ledger });
 	try {
@@ -674,7 +678,6 @@ export async function resumeSequentialChild(edgeId: string, runtime: SequentialR
 				specMarkdown: childSpecMarkdown, projectDir: runtime.projectDir, artifactsDir: runtime.artifactsDir, dbPath: runtime.dbPath, model: runtime.model, workspaceDriver,
 				...(runtime.environmentDriver === undefined ? {} : { environmentDriver: runtime.environmentDriver }), ...(runtime.host === undefined ? {} : { host: runtime.host }), gateway,
 				...(runtime.maxTurns === undefined ? {} : { maxTurns: runtime.maxTurns }),
-				...(runtime.maxCostUsd === undefined ? {} : { maxCostUsd: runtime.maxCostUsd }),
 				...(runtime.sessionTimeoutMs === undefined ? {} : { sessionTimeoutMs: runtime.sessionTimeoutMs }),
 				...(runtime.contextCapabilitiesFactory === undefined ? {} : { contextCapabilitiesFactory: runtime.contextCapabilitiesFactory }),
 				...(runtime.contextArtifactStore === undefined ? {} : { contextArtifactStore: runtime.contextArtifactStore }),

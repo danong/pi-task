@@ -45,6 +45,9 @@ import { acquisitionFactoryFromLegacy } from "./context/provider-adapter.ts";
 import { rawContextProviderFactory } from "./context/raw-provider.ts";
 import { ContextArtifactStore } from "./context/artifact-store.ts";
 import type { ContextEvidenceEvent } from "./daemon/parallel.ts";
+import {
+	MAX_COST_USD_UNSUPPORTED_MESSAGE,
+} from "./budget/execution-budget.ts";
 import { CORE_V2_MILESTONE, CORE_V2_VERSION } from "./version.ts";
 
 const DEFAULT_STATE_ROOT = ".local/state";
@@ -77,7 +80,6 @@ export interface ParsedCliArgs {
 	stateDir?: string;
 	context: "raw" | "symbol-tree";
 	maxTurns?: number;
-	maxCostUsd?: number;
 	wallTimeoutMs?: number;
 }
 
@@ -132,7 +134,6 @@ Options:
   --artifacts-dir <directory>   Receipt and failure-artifact directory
   --context <raw|symbol-tree>   Explicit context provider (default: raw)
   --max-turns <n>               Independent maxTurns cap (0 = no cap, default unset)
-  --max-cost-usd <n>            Independent maxCostUsd cap in USD (0 = no cap, default unset)
   --wall-timeout-ms <n>         Session wall timeout in ms (positive integer, default host timeout)
   --help, -h                    Show this help
 
@@ -164,7 +165,6 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
 	let stateDir: string | undefined;
 	let context: "raw" | "symbol-tree" = "raw";
 	let maxTurns: number | undefined;
-	let maxCostUsd: number | undefined;
 	let wallTimeoutMs: number | undefined;
 	const seen = new Set<string>();
 
@@ -253,13 +253,8 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
 				maxTurns = n;
 				break;
 			}
-			case "--max-cost-usd": {
-				const n = Number(value);
-				if (!Number.isFinite(n) || n < 0)
-					throw new CliUsageError("--max-cost-usd must be a finite number >= 0");
-				maxCostUsd = n;
-				break;
-			}
+			case "--max-cost-usd":
+				throw new CliUsageError(MAX_COST_USD_UNSUPPORTED_MESSAGE);
 			case "--wall-timeout-ms": {
 				const n = Number(value);
 				if (!Number.isInteger(n) || n <= 0)
@@ -295,7 +290,6 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
 		...(stateDir === undefined ? {} : { stateDir }),
 		context,
 		...(maxTurns === undefined ? {} : { maxTurns }),
-		...(maxCostUsd === undefined ? {} : { maxCostUsd }),
 		...(wallTimeoutMs === undefined ? {} : { wallTimeoutMs }),
 	};
 }
@@ -500,7 +494,7 @@ function createCliTrace(
 	familyId: string,
 	model: string,
 	specMarkdown: string,
-	caps: { maxTurns?: number; maxCostUsd?: number; wallTimeoutMs?: number } = {},
+	caps: { maxTurns?: number; wallTimeoutMs?: number } = {},
 ): TraceCollector {
 	const trace = new TraceCollector(taskId, taskId);
 	const provider = model.split("/")[0]?.trim() || "unknown";
@@ -522,7 +516,6 @@ function createCliTrace(
 					? 1
 					: Number.parseInt(taskId.slice(familyId.length + 2), 10),
 			...(caps.maxTurns === undefined ? {} : { maxTurns: caps.maxTurns }),
-			...(caps.maxCostUsd === undefined ? {} : { maxCostUsd: caps.maxCostUsd }),
 			...(caps.wallTimeoutMs === undefined ? {} : { wallTimeoutMs: caps.wallTimeoutMs }),
 		},
 	});
@@ -630,7 +623,6 @@ export async function runCli(
 	): CliResult => {
 		trace ??= createCliTrace(traceTaskId, familyId, args.model, specMarkdown, {
 			...(args.maxTurns === undefined ? {} : { maxTurns: args.maxTurns }),
-			...(args.maxCostUsd === undefined ? {} : { maxCostUsd: args.maxCostUsd }),
 			...(args.wallTimeoutMs === undefined ? {} : { wallTimeoutMs: args.wallTimeoutMs }),
 		});
 		announceRun();
@@ -724,7 +716,6 @@ export async function runCli(
 		}
 		trace = createCliTrace(traceTaskId, familyId, args.model, specMarkdown, {
 			...(args.maxTurns === undefined ? {} : { maxTurns: args.maxTurns }),
-			...(args.maxCostUsd === undefined ? {} : { maxCostUsd: args.maxCostUsd }),
 			...(args.wallTimeoutMs === undefined ? {} : { wallTimeoutMs: args.wallTimeoutMs }),
 		});
 		announceRun();
@@ -775,7 +766,6 @@ export async function runCli(
 				dbPath: paths.dbPath,
 				model: args.model,
 				...(args.maxTurns === undefined ? {} : { maxTurns: args.maxTurns }),
-				...(args.maxCostUsd === undefined ? {} : { maxCostUsd: args.maxCostUsd }),
 				...(args.wallTimeoutMs === undefined ? {} : { sessionTimeoutMs: args.wallTimeoutMs }),
 				workspaceDriver,
 				...(dependencies.environmentDriver === undefined ? {} : { environmentDriver: dependencies.environmentDriver }),

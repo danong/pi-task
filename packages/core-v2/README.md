@@ -15,7 +15,7 @@ Implementation is authoritative for shipped behavior.
 | **M3** worker + yield                     | ✓ shipped              | Requirement-sensitive checklist; one-shot `yield`; engine-owned VCS/verification                                                                                                    |
 | **M4** context control plane              | ✓ shipped              | Kernel-owned plans, artifact store, economic/window/attention budgets, cache-affine assembly, checkpoints, epochs                                                                   |
 | **M4.1** verification + observability     | ✓ shipped (`b10b3636`) | Measured `durationMs`, bounded `VerificationEvidence` (24 digests, `executed/expected/omitted/capped`), `stage/code` taxonomy, `run:` announcement + artifact paths, `trace-report` |
-| **M4.2** independent execution budgets    | ✓ shipped              | `maxTurns`/`maxCostUsd` independent of wall clock (`--max-turns`/`--max-cost-usd`), `budget_exceeded` stage/code, watchdog `budget_exceeded` vs `wall_timeout` independence, `model.assigned`/`task.failed` cap observability   |
+| **M4.2** independent execution budgets    | ✓ shipped              | `maxTurns` and wall timeout remain independent (`--max-turns`/`--wall-timeout-ms`); `budget_exceeded` vs `wall_timeout` stay distinct; final usage remains measured in receipts/metrics. `maxCostUsd` is rejected until provider-neutral live cost signals exist. |
 | **M5** durable continuation + self-hosting | ✓ shipped             | Bounded parent→child handoff, provider-owned workspace continuation, checkpoint resume, admitted evidence, and the normal v2 task surface |
 | **M6** measured adoption/cutover            | open                  | Shadow use, matched evidence, task-class flip, and v1 deletion remain deferred until adoption gates                                    |
 
@@ -49,12 +49,16 @@ Paths are repository-relative; strict ingress rejects missing/empty/unsafe/dupli
 
 Context: `--context raw` (default, empty plan) or `--context symbol-tree` (opt-in bounded handles + `context` query/resolve tool). Raw has no index dependency; symbol-tree failures degrade explicitly. `--resume <edge-id>` is mutually exclusive with submission options; unknown edges are usage errors, durably blocked edges fail, and selecting a terminal edge is an idempotent success. See [context-control-plane ADR](../../docs/adr/context-control-plane.md).
 
+### Execution bounds and cost accounting
+
+`--max-turns` and `--wall-timeout-ms` are supported independently, including durable sequential checkpoint/preserve and resume behavior. `maxCostUsd` / `--max-cost-usd` is not an execution cap: new CLI and daemon submissions reject it with an actionable unsupported-live-cost error because provider-neutral live cost interruption signals do not exist yet. The engine still records measured final usage, including cost, in receipts and metrics; it does not add live cost telemetry or relabel settled work as a cost interruption. Historical serialized receipts and configuration remain readable where applicable.
+
 ## Observability
 
 Every run emits a canonical, versioned, provider-neutral trace ([`src/contracts/trace.ts`](./src/contracts/trace.ts), [`src/contracts/gateway-events.ts`](./src/contracts/gateway-events.ts)). No transcript or private reasoning is stored.
 
 - **Verification:** per-command `durationMs` (injectable clock), bounded `VerificationEvidence` (`index/digest/exitCode/timedOut/durationMs`, `executed/expected/omitted/capped` with `executed ≤ expected` and `capped == omitted>0`, capped at 24), never `command`/`stdout`/`stderr` text — tails stay in `.failure.json`.
-- **Failures:** every terminal `task.failed` carries `stage` (`setup/context/session/workspace/verification/acceptance/delivery/workflow/internal`) and `code` (`session_timed_out/budget_exceeded/worker_failed/verification_failed/...`) across CLI, single-run, parallel, and scheduler paths; `budget_exceeded` (independent `maxTurns`/`maxCostUsd` caps) never conflates with `wall_timeout`. `FORBIDDEN_DETAIL_KEY` blocks `transcript`/`reasoning`/`stdoutTail`/`output` etc. while allowing legitimate `tool.started:command`.
+- **Failures:** every terminal `task.failed` carries `stage` (`setup/context/session/workspace/verification/acceptance/delivery/workflow/internal`) and `code` (`session_timed_out/budget_exceeded/worker_failed/verification_failed/...`) across CLI, single-run, parallel, and scheduler paths; supported `budget_exceeded` (`maxTurns`) never conflates with `wall_timeout`, and settled cost is never converted into an interruption. `FORBIDDEN_DETAIL_KEY` blocks `transcript`/`reasoning`/`stdoutTail`/`output` etc. while allowing legitimate `tool.started:command`.
 - **Debug one run:**
   ```sh
   mise run trace-report -- <trace.json> [report.md]
