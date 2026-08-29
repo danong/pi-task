@@ -8,6 +8,7 @@
 
 export * from "./gateway-events.ts";
 export * from "./payloads.ts";
+export * from "./settlement.ts";
 export * from "./serialize.ts";
 export * from "./workspace-driver.ts";
 export * from "./environment-driver.ts";

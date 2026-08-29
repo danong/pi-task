@@ -414,7 +414,12 @@ export function traceEventFromGateway(
 			break;
 		case "task.completed":
 			type = "task.completed";
-			detail = { verdict: event.detail.verdict };
+			detail = {
+				verdict: event.detail.verdict,
+				...(event.detail.settlementSource === undefined
+					? {}
+					: { settlementSource: event.detail.settlementSource }),
+			};
 			break;
 		case "task.failed":
 			type = "task.failed";

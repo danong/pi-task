@@ -116,6 +116,20 @@ class FakeHandle implements SessionHandle {
 	close(): void {}
 }
 
+class NoYieldHandle extends FakeHandle {
+	override async prompt(): Promise<void> {
+		await super.prompt();
+		this.result = undefined;
+	}
+}
+
+function noYieldHost(fileName: string): SessionHost {
+	return {
+		spawn: (config) =>
+			Promise.resolve(new NoYieldHandle(config, join(config.cwd, fileName))),
+	};
+}
+
 function scriptedHost(
 	filesByCall: string[],
 	calls: { value: number },
@@ -552,6 +566,133 @@ export async function runTests(): Promise<void> {
 				`failed run demotes children (got ${statuses.join(",")})`,
 			);
 			ledger.close();
+		}
+
+		// ─── M5.5: authoritative standalone work settles without yield ──
+		{
+			const repo = join(dir, "engine-settlement");
+			mkdirSync(repo, { recursive: true });
+			execSync("jj git init --colocate", { cwd: repo, stdio: "pipe" });
+			writeFileSync(join(repo, "README.md"), "# fixture\n", "utf-8");
+			execSync('JJ_EDITOR=true jj commit -m "init"', {
+				cwd: repo,
+				stdio: "pipe",
+			});
+
+			const host = noYieldHost("a.txt");
+			const { JujutsuWorkspaceDriver } =
+				await import("../src/workspaces/jj-driver.ts");
+			const result = await runParallelTask({
+				subTasks: [SPEC_A],
+				singleTask: true,
+				projectDir: repo,
+				artifactsDir: join(dir, "artifacts-engine-settlement"),
+				dbPath: join(dir, "engine-settlement.db"),
+				model: "openrouter/stealth/ox-alpha",
+				workspaceDriver: new JujutsuWorkspaceDriver({ projectDir: repo }),
+				host,
+			});
+			check(
+				result.aggregate.verdict === "ship" &&
+					result.aggregate.settlementSource === "engine_derived",
+				`authoritative no-yield standalone work ships as engine-derived (got ${result.aggregate.verdict}/${result.aggregate.settlementSource ?? "missing"})`,
+			);
+			check(
+				result.perWorker[0]?.settlementSource === "engine_derived",
+				"engine-derived authority is present on the worker receipt",
+			);
+			check(
+				result.aggregate.turns === 1 && result.aggregate.inputTokens === 500,
+				"engine settlement preserves observed turns and measured usage",
+			);
+			check(existsSync(join(repo, "a.txt")), "engine-settled work is integrated");
+			const { LedgerStore } = await import("../src/ledger/store.ts");
+			const ledger = new LedgerStore(join(dir, "engine-settlement.db"));
+			const session = ledger.getMicroSession(`${result.perWorker[0]!.taskId}-worker`);
+			check(session?.status === "exhausted", "engine-settled session remains non-yielded");
+			check(
+				ledger.getTask(result.aggregate.taskId)?.status === "completed",
+				"aggregate completes only after objective settlement",
+			);
+			ledger.close();
+		}
+
+		// ─── M5.5: objective gates still reject no-yield work ────────────
+		{
+			const repo = join(dir, "engine-settlement-verify-fail");
+			mkdirSync(repo, { recursive: true });
+			execSync("jj git init --colocate", { cwd: repo, stdio: "pipe" });
+			writeFileSync(join(repo, "README.md"), "# fixture\n", "utf-8");
+			execSync('JJ_EDITOR=true jj commit -m "init"', {
+				cwd: repo,
+				stdio: "pipe",
+			});
+			const failingSpec = `## Goal\nFail verification after work.\n\n## Requirements\n- R1: a.txt says A\n\n## Verification\n- false\n\n## Artifact Policy\n- Change required\n`;
+			const { JujutsuWorkspaceDriver } =
+				await import("../src/workspaces/jj-driver.ts");
+			const result = await runParallelTask({
+				subTasks: [failingSpec],
+				singleTask: true,
+				projectDir: repo,
+				artifactsDir: join(dir, "artifacts-engine-settlement-verify-fail"),
+				dbPath: join(dir, "engine-settlement-verify-fail.db"),
+				model: "openrouter/stealth/ox-alpha",
+				workspaceDriver: new JujutsuWorkspaceDriver({ projectDir: repo }),
+				host: noYieldHost("a.txt"),
+			});
+			check(
+				result.aggregate.verdict === "failed" &&
+					result.aggregate.settlementSource === undefined,
+				"failed verification cannot become engine-derived shipment",
+			);
+			const artifact = JSON.parse(
+				readFileSync(
+					join(
+						dir,
+						"artifacts-engine-settlement-verify-fail",
+						`${result.aggregate.taskId}.failure.json`,
+					),
+					"utf-8",
+				),
+			) as { cause?: string };
+			check(
+				artifact.cause?.includes("verification failed") === true,
+				"no-yield verification failure retains the specific gate cause",
+			);
+		}
+
+		// ─── M5.5: missing authoritative finalization fails closed ───────
+		{
+			const repo = join(dir, "engine-settlement-no-authority");
+			mkdirSync(repo, { recursive: true });
+			execSync("jj git init --colocate", { cwd: repo, stdio: "pipe" });
+			writeFileSync(join(repo, "README.md"), "# fixture\n", "utf-8");
+			execSync('JJ_EDITOR=true jj commit -m "init"', {
+				cwd: repo,
+				stdio: "pipe",
+			});
+			const { JujutsuWorkspaceDriver } =
+				await import("../src/workspaces/jj-driver.ts");
+			const driver = new JujutsuWorkspaceDriver({ projectDir: repo });
+			Object.defineProperty(driver, "finalizeWorkspace", { value: undefined });
+			const result = await runParallelTask({
+				subTasks: [SPEC_A],
+				singleTask: true,
+				projectDir: repo,
+				artifactsDir: join(dir, "artifacts-engine-settlement-no-authority"),
+				dbPath: join(dir, "engine-settlement-no-authority.db"),
+				model: "openrouter/stealth/ox-alpha",
+				workspaceDriver: driver,
+				host: noYieldHost("a.txt"),
+			});
+			check(
+				result.aggregate.verdict === "failed",
+				"no-yield provider without authoritative finalization fails closed",
+			);
+			check(
+				result.perWorker[0]?.settlementSource === undefined,
+				"claim-only provider never gains engine-derived authority",
+			);
 		}
 
 		// ─── Feature-branch mode: bookmarks, no integration ──────────────

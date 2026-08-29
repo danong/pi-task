@@ -12,6 +12,11 @@ import {
 	normalizeArtifactPath,
 	type ArtifactPolicy,
 } from "./artifact-policy.ts";
+import {
+	ENGINE_DERIVED_SETTLEMENT_SOURCE,
+	MODEL_YIELD_SETTLEMENT_SOURCE,
+	type SettlementSource,
+} from "./settlement.ts";
 
 /** Typed rejection vocabulary for the content gate. */
 export type AcceptanceReasonCode =
@@ -20,6 +25,8 @@ export type AcceptanceReasonCode =
 	| "changed_tree_no_change"
 	| "yield_path_mismatch"
 	| "unexpected_change"
+	| "authoritative_evidence_missing"
+	| "authoritative_evidence_insufficient"
 	| "invalid_commit"
 	| "invalid_path"
 	| "duplicate_path"
@@ -51,25 +58,27 @@ export interface ArtifactAcceptance {
 }
 
 export interface ArtifactAcceptanceInput {
+	/** Defaults to model_yield for existing callers. */
+	settlementSource?: SettlementSource;
 	policy: {
 		readonly requiredFiles: readonly string[];
 		readonly changeRequired: boolean;
 		readonly intentionalNoChange: boolean;
 	};
-	/** Files claimed by the model's yield. */
-	claimedFiles: readonly string[];
+	/** Files claimed by the model's yield; absent for engine-derived settlement. */
+	claimedFiles?: readonly string[] | undefined;
 	/** Authoritative changed paths on the integrated tree, including deletions. */
-	actualFiles: readonly string[];
+	actualFiles?: readonly string[] | undefined;
 	/** Current paths present after integration; needed to distinguish a deletion. */
-	presentFiles?: readonly string[];
+	presentFiles?: readonly string[] | undefined;
 	/** Changed paths known to be deletions. */
-	deletedFiles?: readonly string[];
+	deletedFiles?: readonly string[] | undefined;
 	/** Whether the engine observed an integrated change. */
-	hasIntegratedChange: boolean;
+	hasIntegratedChange?: boolean | undefined;
 	/** Identity obtained from the engine after integration, not from yield. */
-	commitId?: string;
+	commitId?: string | undefined;
 	/** Result returned by the verification driver. */
-	verificationPassed: boolean;
+	verificationPassed?: boolean | undefined;
 }
 
 function normalizedPaths(
@@ -104,11 +113,39 @@ export function acceptArtifacts(
 	input: ArtifactAcceptanceInput,
 ): ArtifactAcceptance {
 	const reasons: AcceptanceReason[] = [];
-	const actual = normalizedPaths(input.actualFiles, "actual", reasons);
-	const claimed = normalizedPaths(input.claimedFiles, "yield", reasons);
+	const source = input.settlementSource ?? MODEL_YIELD_SETTLEMENT_SOURCE;
+	if (source === MODEL_YIELD_SETTLEMENT_SOURCE) {
+		if (input.claimedFiles === undefined)
+			reasons.push({
+				code: "authoritative_evidence_missing",
+				detail: "model-yield file claims were not supplied",
+			});
+		if (input.actualFiles === undefined)
+			reasons.push({
+				code: "authoritative_evidence_missing",
+				detail: "authoritative changed paths were not supplied",
+			});
+	}
+	if (source === ENGINE_DERIVED_SETTLEMENT_SOURCE) {
+		for (const [name, value] of [
+			["actualFiles", input.actualFiles],
+			["presentFiles", input.presentFiles],
+			["deletedFiles", input.deletedFiles],
+			["hasIntegratedChange", input.hasIntegratedChange],
+			["verificationPassed", input.verificationPassed],
+		] as const) {
+			if (value === undefined || value === null)
+				reasons.push({
+					code: "authoritative_evidence_missing",
+					detail: `${name} was not supplied by the provider`,
+				});
+		}
+	}
+	const actual = normalizedPaths(input.actualFiles ?? [], "actual", reasons);
+	const claimed = normalizedPaths(input.claimedFiles ?? [], "yield", reasons);
 	const required = normalizedPaths(input.policy.requiredFiles, "required", reasons);
 	const present = normalizedPaths(
-		input.presentFiles ?? input.actualFiles,
+		input.presentFiles ?? (source === MODEL_YIELD_SETTLEMENT_SOURCE ? input.actualFiles ?? [] : []),
 		"present",
 		reasons,
 	);
@@ -116,17 +153,50 @@ export function acceptArtifacts(
 		normalizedPaths(input.deletedFiles ?? [], "deleted", reasons),
 	);
 
+	if (source === ENGINE_DERIVED_SETTLEMENT_SOURCE && claimed.length > 0)
+		reasons.push({
+			code: "authoritative_evidence_insufficient",
+			detail: "engine-derived settlement cannot carry model file claims",
+		});
+	if (source === ENGINE_DERIVED_SETTLEMENT_SOURCE) {
+		const actualSet = new Set(actual);
+		const presentSet = new Set(present);
+		for (const path of deleted) {
+			if (!actualSet.has(path) || presentSet.has(path))
+				reasons.push({
+					code: "authoritative_evidence_insufficient",
+					detail: `deleted path is not represented consistently: ${path}`,
+				});
+		}
+		for (const path of actual) {
+			if (!deleted.has(path) && !presentSet.has(path))
+				reasons.push({
+					code: "authoritative_evidence_insufficient",
+					detail: `changed path is absent from the final tree: ${path}`,
+				});
+		}
+		if (input.hasIntegratedChange !== actual.length > 0)
+			reasons.push({
+				code: "authoritative_evidence_insufficient",
+				detail: "integrated-change flag disagrees with changed paths",
+			});
+	}
+
 	for (const path of required) {
 		if (!present.includes(path) || deleted.has(path))
 			reasons.push({ code: "missing_file", detail: path });
 	}
-	for (const path of claimed) {
-		if (!actual.includes(path))
-			reasons.push({ code: "yield_path_mismatch", detail: path });
+	if (source === MODEL_YIELD_SETTLEMENT_SOURCE) {
+		for (const path of claimed) {
+			if (!actual.includes(path))
+				reasons.push({ code: "yield_path_mismatch", detail: path });
+		}
 	}
-	for (const path of actual) {
-		if (!claimed.includes(path) && !required.includes(path))
-			reasons.push({ code: "unexpected_change", detail: path });
+	if (source === MODEL_YIELD_SETTLEMENT_SOURCE) {
+		for (const path of actual) {
+			if (!claimed.includes(path) && !required.includes(path))
+				reasons.push({ code: "unexpected_change", detail: path });
+		}
 	}
 	if (input.policy.changeRequired && !input.hasIntegratedChange) {
 		reasons.push({

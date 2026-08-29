@@ -16,6 +16,7 @@
 
 import { z } from "zod";
 import { ImmutableArtifactReferenceSchema } from "./context-lifecycle.ts";
+import { SettlementSourceSchema } from "./settlement.ts";
 
 /** Model routing for a task (FR-10): per-role defaults overridden by the
  *  bundle author. Ledger-only per-role model config lives in task.toml. */
@@ -212,6 +213,8 @@ export const TaskReceiptSchema = z.object({
 	usageStatus: z.enum(["measured", "unavailable"]).optional(),
 	/** mode-(b) telemetry: null = bundle not used. */
 	bundleHit: z.boolean().nullable(),
+	/** Additive settlement authority; old receipts are model-yield receipts. */
+	settlementSource: SettlementSourceSchema.optional(),
 	/** Present only on an aggregate receipt for a sequential child. */
 	childDependency: ChildDependencySummarySchema.optional(),
 });

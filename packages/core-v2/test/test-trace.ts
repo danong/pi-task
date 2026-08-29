@@ -442,6 +442,19 @@ export async function runTests(): Promise<void> {
 			"gateway detail is bounded before collection",
 		);
 
+		const projectedEngineSettlement = traceEventFromGateway(
+			{
+				type: "task.completed",
+				taskId: "projection-task",
+				detail: { verdict: "ship", settlementSource: "engine_derived" },
+			},
+			"projection-run",
+		);
+		check(
+			projectedEngineSettlement.detail?.settlementSource === "engine_derived",
+			"trace projection preserves the canonical engine settlement source",
+		);
+
 		const projectedOversized = traceEventFromGateway(
 			{
 				type: "verify.completed",

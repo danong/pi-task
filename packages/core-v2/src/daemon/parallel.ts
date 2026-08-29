@@ -26,8 +26,12 @@ import type {
 	WorkspaceFinalization,
 	Yield,
 } from "../contracts/index.ts";
-import { acceptArtifacts } from "../contracts/index.ts";
-import type { TaskReceipt } from "../contracts/index.ts";
+import {
+	acceptArtifacts,
+	ENGINE_DERIVED_SETTLEMENT_SOURCE,
+	MODEL_YIELD_SETTLEMENT_SOURCE,
+} from "../contracts/index.ts";
+import type { SettlementSource, TaskReceipt } from "../contracts/index.ts";
 import { writeFailureArtifact } from "../guards/artifacts.ts";
 import {
 	attachWatchdogs,
@@ -207,6 +211,8 @@ function makeReceipt(
 	commitIds: string[],
 	turns: number,
 	usage: UsageSnapshot = emptyUsage(),
+	settlementSource: SettlementSource | undefined =
+		verdict === "ship" ? MODEL_YIELD_SETTLEMENT_SOURCE : undefined,
 ): TaskReceipt {
 	return {
 		taskId,
@@ -216,6 +222,7 @@ function makeReceipt(
 		turns,
 		...receiptUsageFields(usage),
 		bundleHit: null,
+		...(settlementSource === undefined ? {} : { settlementSource }),
 	};
 }
 
@@ -819,15 +826,30 @@ async function runWithStore(
 	const yieldPayloads: Array<Yield | undefined> = handles.map((handle, i) =>
 		promptResults[i]?.status === "fulfilled" ? handle.result : undefined,
 	);
+	// Only the isolated task-base lane may treat a settled no-yield session as
+	// an objective settlement candidate. Provider finalization is mandatory:
+	// legacy/fake claim-only providers fail closed rather than manufacturing
+	// model authority.
+	const engineSettlementCandidates = contexts.map(
+		(_context, i) =>
+			singleTask &&
+			baseChangeId !== undefined &&
+			promptResults[i]?.status === "fulfilled" &&
+			observations[i]!.watchdogAbort === undefined &&
+			yieldPayloads[i] === undefined &&
+			finalizations[i] !== undefined &&
+			finalizationErrors[i] === undefined,
+	);
 	// Per-worker receipts: failed attempts named first.
 	const perWorker: TaskReceipt[] = contexts.map((ctx, i) => {
 		const settled = promptResults[i]!;
 		const yieldPayload = yieldPayloads[i];
 		const obs = observations[i]!;
+		const engineSettlement = engineSettlementCandidates[i] === true;
 		if (
 			settled.status === "rejected" ||
 			obs.watchdogAbort ||
-			!yieldPayload ||
+			(!yieldPayload && !engineSettlement) ||
 			finalizationErrors[i] !== undefined
 		) {
 			const cause =
@@ -853,12 +875,30 @@ async function runWithStore(
 			return makeReceipt(ctx.taskId, "failed", 0, [], obs.turns, usages[i]);
 		}
 		const finalization = finalizations[i];
+		if (engineSettlement) {
+			const receipt = makeReceipt(
+				ctx.taskId,
+				"ship",
+				finalization!.changedPaths.length,
+				[finalization!.commitId],
+				obs.turns,
+				usages[i],
+				ENGINE_DERIVED_SETTLEMENT_SOURCE,
+			);
+			store.setSessionStatus(sessionIdFor(ctx.taskId), "exhausted");
+			gateway.emit({
+				type: "session.exhausted",
+				taskId: ctx.taskId,
+				sessionId: sessionIdFor(ctx.taskId),
+			});
+			return receipt;
+		}
 		const receipt = makeReceipt(
 			ctx.taskId,
 			"ship",
-			finalization?.changedPaths.length ?? yieldPayload.files_changed.length,
+			finalization?.changedPaths.length ?? yieldPayload!.files_changed.length,
 			finalization === undefined
-				? yieldPayload.commit_ids
+				? yieldPayload!.commit_ids
 				: [finalization.commitId],
 			obs.turns,
 			usages[i],
@@ -1173,7 +1213,11 @@ async function runWithStore(
 	const claimedFiles = [
 		...new Set(yieldPayloads.flatMap((y) => y?.files_changed ?? [])),
 	].sort();
+	const aggregateSettlementSource = engineSettlementCandidates.some(Boolean)
+		? ENGINE_DERIVED_SETTLEMENT_SOURCE
+		: MODEL_YIELD_SETTLEMENT_SOURCE;
 	const contentAcceptance = acceptArtifacts({
+		settlementSource: aggregateSettlementSource,
 		policy: parsed[0]!.artifactPolicy,
 		claimedFiles,
 		actualFiles: authoritativeChangedPaths,
@@ -1278,6 +1322,7 @@ async function runWithStore(
 		[combineOutcome.commitId],
 		observedTurns,
 		sumUsage(usages),
+		aggregateSettlementSource,
 	);
 	// A sequential parent is acknowledged immediately after objective
 	// acceptance, before cleanup or this executor returns. The execution-start
@@ -1298,7 +1343,10 @@ async function runWithStore(
 			type: "task.completed",
 			taskId: aggregateId,
 			sessionId: sessionIdFor(aggregateId),
-			detail: { verdict: "ship" },
+			detail: {
+				verdict: "ship",
+				settlementSource: aggregateSettlementSource,
+			},
 		});
 	}
 	return {

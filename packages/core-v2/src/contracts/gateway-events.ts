@@ -17,6 +17,7 @@
 
 import { z } from "zod";
 import type { VerificationEvidence } from "./verification-driver.ts";
+import type { SettlementSource } from "./settlement.ts";
 
 /** The event vocabulary (subsystems §3 initial set). Additive-only. */
 export const TASK_LIFECYCLE_EVENTS = [
@@ -204,7 +205,11 @@ export type TaskLifecycleEvent =
 			type: "task.completed";
 			taskId: string;
 			sessionId?: string;
-			detail: { verdict: Extract<TaskVerdict, "ship"> };
+			detail: {
+				verdict: Extract<TaskVerdict, "ship">;
+				/** Additive; omitted by older model-yield lifecycle producers. */
+				settlementSource?: SettlementSource;
+			};
 	  }
 	| {
 			type: "task.failed";

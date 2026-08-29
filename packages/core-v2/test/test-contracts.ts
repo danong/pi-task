@@ -35,6 +35,8 @@ import {
 	ModelAssignmentSchema,
 	TargetFileSchema,
 	TaskReceiptSchema,
+	SettlementNarrativeSchema,
+	SettlementSourceSchema,
 	YieldSchema,
 	serializeForPrompt,
 	stableStringify,
@@ -48,6 +50,7 @@ import type {
 	SubscriptionLevel,
 	TargetFile,
 	TaskReceipt,
+	SettlementResult,
 	VerificationResult,
 	WorkspaceContext,
 	WorkspaceContinuation,
@@ -214,9 +217,56 @@ export async function runTests(): Promise<void> {
 		});
 		check(
 			receipt.verdict === "ship" && receipt.bundleHit === null &&
+			receipt.settlementSource === undefined &&
 			!("childDependency" in receipt),
 			"TaskReceipt round-trip preserves legacy standalone shape",
 		);
+		const engineReceipt = TaskReceiptSchema.parse({
+			...receipt,
+			settlementSource: "engine_derived",
+		});
+		const engineReceiptRoundTrip = TaskReceiptSchema.parse(
+			JSON.parse(JSON.stringify(engineReceipt)),
+		);
+		check(
+			engineReceiptRoundTrip.settlementSource === "engine_derived",
+			"TaskReceipt round-trips engine-derived source",
+		);
+		check(
+			SettlementSourceSchema.parse(engineReceiptRoundTrip.settlementSource) === "engine_derived",
+			"receipt source uses the canonical settlement vocabulary",
+		);
+		const unavailable = SettlementNarrativeSchema.parse({
+			source: "engine_derived",
+			summary: null,
+			deviations: null,
+		});
+		const modelContent = SettlementNarrativeSchema.parse({
+			source: "model_yield",
+			summary: "done",
+			deviations: [],
+		});
+		check(
+			unavailable.summary === null && unavailable.deviations === null &&
+			modelContent.summary === "done",
+			"engine settlement keeps summary and deviations unavailable",
+		);
+		const engineResult: SettlementResult = {
+			source: "engine_derived",
+			narrative: { source: "engine_derived", summary: null, deviations: null },
+		};
+		check(!("yield" in engineResult), "engine settlement does not synthesize a Yield");
+		let inventedNarrativeAccepted = true;
+		try {
+			SettlementNarrativeSchema.parse({
+				source: "engine_derived",
+				summary: "invented",
+				deviations: [],
+			});
+		} catch {
+			inventedNarrativeAccepted = false;
+		}
+		check(!inventedNarrativeAccepted, "engine narrative cannot carry model summary or deviations");
 		const childReceiptReference = {
 			version: 1 as const,
 			id: "sha256:" + "c".repeat(64),

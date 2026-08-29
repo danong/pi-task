@@ -211,6 +211,61 @@ export async function runTests(): Promise<void> {
 	});
 	check(hasCode(verificationFailure, "verification_failed"), "verification failure is rejected");
 
+	// Engine-derived settlement has no model claims. Every tree fact needed by
+	// the policy gate must be supplied by the provider and must agree.
+	const engineCommon = {
+		...common,
+		settlementSource: "engine_derived" as const,
+		claimedFiles: [] as const,
+		deletedFiles: [] as const,
+	};
+	const engineValid = acceptArtifacts(engineCommon);
+	check(engineValid.accepted, "valid authoritative engine tree is accepted without claims");
+	check(
+		!hasCode(engineValid, "yield_path_mismatch"),
+		"engine settlement does not invent a missing-claim mismatch",
+	);
+	const engineChangeRequired = acceptArtifacts({
+		...engineCommon,
+		policy: { requiredFiles: [], changeRequired: true, intentionalNoChange: false },
+		actualFiles: ["provider-observed.txt"],
+		presentFiles: ["provider-observed.txt"],
+	});
+	check(
+		engineChangeRequired.accepted,
+		"provider-observed engine changes need no model claim",
+	);
+	for (const [label, override, code] of [
+		["missing required", { actualFiles: [], presentFiles: [] }, "missing_file"],
+		["deleted required", { actualFiles: ["report.md"], presentFiles: [], deletedFiles: ["report.md"] }, "missing_file"],
+		["empty required change", { actualFiles: [], presentFiles: ["report.md"], hasIntegratedChange: false }, "empty_change"],
+		["missing commit", { commitId: undefined }, "invalid_commit"],
+		["failed verification", { verificationPassed: false }, "verification_failed"],
+	] as const) {
+		const rejected = acceptArtifacts({ ...engineCommon, ...override });
+		check(!rejected.accepted && hasCode(rejected, code), `engine ${label} rejects`);
+	}
+	const absentEvidence = acceptArtifacts({
+		...engineCommon,
+		actualFiles: undefined,
+		presentFiles: undefined,
+		deletedFiles: undefined,
+	});
+	check(!absentEvidence.accepted, "absent authoritative tree evidence rejects");
+	check(
+		hasCode(absentEvidence, "authoritative_evidence_missing"),
+		"absent authoritative evidence has a typed rejection",
+	);
+	const inconsistentEvidence = acceptArtifacts({
+		...engineCommon,
+		actualFiles: ["report.md"],
+		presentFiles: [],
+	});
+	check(
+		!inconsistentEvidence.accepted && hasCode(inconsistentEvidence, "authoritative_evidence_insufficient"),
+		"internally insufficient authoritative evidence rejects",
+	);
+
 	// Delivery is a separate stage and either missing transport artifact makes
 	// the final result non-ship.
 	const deliveryFailure = finalizeArtifactAcceptance(valid, {
