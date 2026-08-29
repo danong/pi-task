@@ -1,6 +1,6 @@
 # core-v2 — Project Tau bootstrap package
 
-Strict-typed kernel for [Project Tau](../../docs/pi-task-v2.md), the engine currently identified in code as `pi-task-v2`. Tau is the working M6 standalone product name; package, CLI, and state identifiers remain unchanged until extraction. This subtree holds the typed contract seams, ledger, context lifecycle, providers, daemon, and hermetic tests. It is a type-checked island **excluded** from the v1 `pi-task` engine under [`extensions/`](../../extensions/).
+Strict-typed kernel for [Project Tau](../../docs/pi-task-v2.md), the agent-facing execution substrate currently identified in code as `pi-task-v2`. Tau's north star is verified delegated software work per inference spend and developer attention. Tau is the working M6 standalone product name; package, CLI, and state identifiers remain unchanged until extraction. This subtree holds the typed contract seams, ledger, context lifecycle, providers, daemon, and hermetic tests. It is a type-checked island **excluded** from the v1 `pi-task` engine under [`extensions/`](../../extensions/).
 
 Source of truth is [`docs/pi-task-v2.md`](../../docs/pi-task-v2.md) and [`docs/pi-task-v2-subsystems.md`](../../docs/pi-task-v2-subsystems.md); [`docs/pi-task-v2-future.md`](../../docs/pi-task-v2-future.md) is deferred work. Historical material is archived under [`../../docs/old/`](../../docs/old/README.md) and is non-normative. The accepted context ownership decision is [`adr/context-control-plane.md`](../../docs/adr/context-control-plane.md).
 
@@ -17,8 +17,8 @@ Implementation is authoritative for shipped behavior.
 | **M4.1** verification + observability     | ✓ shipped (`b10b3636`) | Measured `durationMs`, bounded `VerificationEvidence` (24 digests, `executed/expected/omitted/capped`), `stage/code` taxonomy, `run:` announcement + artifact paths, `trace-report` |
 | **M4.2** independent execution budgets    | ✓ shipped              | `maxTurns` and wall timeout remain independent (`--max-turns`/`--wall-timeout-ms`); `budget_exceeded` vs `wall_timeout` stay distinct; final usage remains measured in receipts/metrics. `maxCostUsd` is rejected until provider-neutral live cost signals exist. |
 | **M5** durable sequential continuation       | shipped; hardening active | Bounded parent→child handoff and provider-owned workspace continuation; post-land blockers must pass repository gates before hardening is shipped |
-| **M5.5** practical attempt recovery           | planned                 | Passive JSON journal, provider-neutral checkpoints, run-ID resume/fork for every attempt, and engine-owned settlement                      |
-| **M6** Project Tau extraction/cutover         | planned                 | Standalone Tau repository/default, external v1 archive, real-task dogfood, and cohort plugin experiments                                  |
+| **M5.5** cheaper linear retry                 | planned                 | Engine settlement, bounded continuation-relevant failed state, and run-ID resume of the latest failure; no strategy recovery              |
+| **M6** Project Tau default/cutover            | planned                 | Tau default, external v1 archive, and systematic capture of real-task outcomes/failures                                                    |
 
 `src/version.ts` is `CORE_V2_MILESTONE="M5"` / `CORE_V2_VERSION="0.0.0-m5"`.
 
@@ -31,7 +31,7 @@ mise run v2 -- --spec ./task.md --project-dir . --model provider/model
 # One bounded durable continuation child (raw context in the M5 surface):
 mise run v2 -- --spec ./parent.md --child-spec ./child.md --project-dir . --model provider/model
 # Active M5 hardening exposes edge resume; M5.5 will replace this internal
-# selector with public status/resume/fork operations by run ID:
+# selector with public factual status and linear resume operations by run ID:
 mise run v2 -- --resume <edge-id> --project-dir . --model provider/model
 # or PI_TASK_V2_MODEL=provider/model mise run v2 -- --spec ./task.md --project-dir .
 ```
@@ -57,7 +57,7 @@ Context: `--context raw` (default, empty plan) or `--context symbol-tree` (opt-i
 
 ## Observability
 
-Every run emits a canonical, versioned, provider-neutral trace ([`src/contracts/trace.ts`](./src/contracts/trace.ts), [`src/contracts/gateway-events.ts`](./src/contracts/gateway-events.ts)). Canonical traces, receipts, and handoffs never store transcripts or private reasoning. Planned M5.5 local attempt journals are a separate operational recovery store: they passively retain bounded visible Pi JSON messages/tool pairs for failed or in-flight attempts, are deleted/expired by policy, and never become canonical artifacts.
+Every run emits a canonical, versioned, provider-neutral trace ([`src/contracts/trace.ts`](./src/contracts/trace.ts), [`src/contracts/gateway-events.ts`](./src/contracts/gateway-events.ts)). Canonical traces, receipts, and handoffs never store transcripts or private reasoning. Planned M5.5 continuation records are separate local recovery state: deterministic caps retain only task authority, complete selected tool-call/result pairs, latest work/context state, and failure evidence. Old chat and observability-only events are pruned first. Records expire by policy and never become canonical artifacts.
 
 - **Verification:** per-command `durationMs` (injectable clock), bounded `VerificationEvidence` (`index/digest/exitCode/timedOut/durationMs`, `executed/expected/omitted/capped` with `executed ≤ expected` and `capped == omitted>0`, capped at 24), never `command`/`stdout`/`stderr` text — tails stay in `.failure.json`.
 - **Failures:** every terminal `task.failed` carries `stage` (`setup/context/session/workspace/verification/acceptance/delivery/workflow/internal`) and `code` (`session_timed_out/budget_exceeded/worker_failed/verification_failed/...`) across CLI, single-run, parallel, and scheduler paths; supported `budget_exceeded` (`maxTurns`) never conflates with `wall_timeout`, and settled cost is never converted into an interruption. `FORBIDDEN_DETAIL_KEY` blocks `transcript`/`reasoning`/`stdoutTail`/`output` etc. while allowing legitimate `tool.started:command`.
@@ -80,7 +80,7 @@ Every run emits a canonical, versioned, provider-neutral trace ([`src/contracts/
 | ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | [`src/contracts/`](./src/contracts/)           | Six seams, one file each, no shared mutable state: `payloads.ts` (Spec/ExecutionBundle/Yield/HandoffBundle/TaskReceipt as zod, `serialize.ts` byte-stable), `context-lifecycle.ts` (M4.1 plans, budgets, cache, checkpoints, epochs) + `context-provider.ts` (compat) + `verification-driver.ts` (bounded evidence, 24 digests), `workspace-driver.ts`, `environment-driver.ts`, `context-compressor.ts`, `task-plugin.ts`, `control-surface.ts`, `gateway-events.ts` (`stage/code`), `trace.ts`, `index.ts` barrel |
 | [`src/context/`](./src/context/)               | M4.1 lifecycle: `acquisition.ts` / `provider-adapter.ts` (explicit acquisition/materialization caps), `raw-provider.ts` / `symbol-tree.ts` + `providers.ts`, `artifact-store.ts` (content-addressed, project-keyed user state), `planner.ts`/`assembler.ts`, `checkpoint.ts`, `epoch.ts`, `retrieval.ts`                                                                                                                                                                                                            |
-| [`src/ledger/store.ts`](./src/ledger/store.ts) | SQLite (`node:sqlite`, zero deps): tasks, attempts/sessions, edges, provider-owned workspaces/continuations, and additive boot reconciliation. M5.5 attempt journals remain behind a separate typed store capability rather than embedding provider/session bodies in ledger rows.                                                                                                                                                                                                                                                     |
+| [`src/ledger/store.ts`](./src/ledger/store.ts) | SQLite (`node:sqlite`, zero deps): tasks, attempts/sessions, edges, provider-owned workspaces/continuations, and additive boot reconciliation. M5.5 continuation records remain behind a separate typed store capability rather than embedding provider/session bodies in ledger rows.                                                                                                                                                                                                                                                     |
 | [`src/router/route.ts`](./src/router/route.ts) | Pure `routeTask(spec,tier,feedback) → {planMode,tier,lane}` + thresholds                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | [`src/sessions/`](./src/sessions/)             | `host.ts` (one pi SDK `AgentSession` per role, typed model resolution), `tools.ts` (`yield`/`checklist`), `context-tool.ts` (bounded acquisition tool)                                                                                                                                                                                                                                                                                                                                                              |
 | [`src/guards/`](./src/guards/)                 | `watchdogs.ts` (pure settle/no-progress/wall/per-tool/maxTurns decisions) + `watchdog-driver.ts` + `artifacts.ts` (capped `.failure.json`)                                                                                                                                                                                                                                                                                                                                                  |
@@ -112,14 +112,15 @@ Bench regression runner (`extensions/task/bench-regression.ts --tier bench-good 
 
 ## M5.5 target architecture
 
-- **Attempt lineage:** every admitted task, reviewer, repair worker, and sequential child has resumable/forkable attempt state; continuation is not owned by child edges.
-- **Passive journal:** the session-host adapter writes normalized visible Pi JSON events with zero additional successful-run model turns/tokens.
-- **Cheap checkpoints:** each completed turn records a journal cursor, context identity, usage, and optional opaque workspace snapshot token.
-- **Full resume:** compatible visible history and current workspace continue after transient provider/process/budget failure.
-- **Partial fork:** deterministic context selection starts from a chosen turn/checkpoint with current/checkpoint/clean workspace policy, optional model/budget changes, and corrective instructions.
-- **Engine settlement:** integrated work satisfying artifact policy and verification can ship without a final model-authored `yield`; summaries may be unavailable.
-- **Public UX:** status, checkpoints, resume, and fork use run IDs and explain preserved state or blockers without exposing provider internals.
-- **Boundaries:** journal store, session continuation, context compilation, and workspace snapshot/restore are typed replaceable capabilities with deletion and conformance tests.
+**Core boundary:** preserve value from failed inference; do not build generalized recovery.
+
+- **Engine settlement:** preserved work satisfying artifact policy, clean integration, and engine verification can ship without final model `yield`; explicit rejection/cancellation remains non-ship and summaries may be unavailable.
+- **Minimal passive record:** capture continuation-relevant visible Pi JSON state with zero additional successful-run model turns/tokens. Prefer Pi persistence or the simplest bounded append-only store—no general event sourcing.
+- **Deterministic compiler:** preserve task authority, complete selected tool-call/result pairs, latest work state, recent useful context, and failure evidence; prune old chat and observability-only events first under declared byte/token caps.
+- **Linear resume:** factual `status <run-id>` exposes fields such as `resume_allowed` and `blocked_reason`; `resume <run-id>` creates one successor from the latest failed state and opens a new model/provider session over preserved Tau state.
+- **Latest workspace only:** use the configured provider's existing opaque continuation token. M5.5 adds no historical snapshots, arbitrary checkpoints, recovery branches, or VCS-specific kernel mechanics.
+- **Dogfood proof:** the resumed worker must demonstrably avoid repeating investigation retained from the failed attempt.
+- **Non-goal:** reasoning/strategy failure, forking, corrective branches, semantic memory, and generalized recovery sophistication are deferred to failure-driven M7 consideration.
 
 These bullets are an approved design target, not shipped CLI documentation. The product contract defines the exit gates.
 

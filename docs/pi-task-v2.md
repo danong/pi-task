@@ -12,20 +12,38 @@ intent and runtime behavior. The companion documents are [subsystems](pi-task-v2
 reviews, handoffs, investigations, plans, and superseded workflow/testing
 material is archived under [`old/`](old/README.md) and is non-normative.
 
-## Product philosophy
+## Product definition and north star
 
-Project Tau is a **context-efficient coding engine with a reliable
-microkernel**. Its primary outcome is accepted-result quality per dollar and
-minute, particularly when using cheaper or open-weight models. The execution
-runtime supports that differentiation: it makes work durable, bounded,
-observable, and recoverable, but it is not itself the product advantage.
+Project Tau is an **agent-facing execution substrate for delegated software
+work**, not a coding-agent UI or a replacement for the orchestrating Pi session.
+An agent submits a bounded task; Tau isolates execution, preserves useful work,
+verifies the result, and returns machine-actionable evidence.
 
-This makes context engineering a product capability, not prompt decoration.
-The engine should spend tokens on information that changes the result, retain
-useful context across work, and prove that the requested artifact was delivered.
-The loop is **baseline → experiment → measure → retain or delete**. Historical
-v1 behavior is a useful compatibility reference, not a permanent parity gate or
-a reason to duplicate real work.
+Tau's north star is **verified delegated software work per inference spend and
+developer attention**. Its product concern is inference efficiency: avoid
+repeated investigation, spend context and model capability where they affect the
+result, settle objective success, and make failure cheap to understand and
+continue. Context engineering is a primary mechanism, not the whole product.
+
+The loop is **baseline → experiment on useful work → measure → retain or
+delete**. Historical v1 behavior is a compatibility reference, not a permanent
+parity gate or a reason to duplicate real work.
+
+## Design principles
+
+- **Agent-first interface:** status, failure cause, verification, preserved
+  state, and recovery eligibility are typed machine-readable facts. Tau returns
+  deterministic fields such as `resume_allowed`, `blocked_reason`, and artifact
+  references. It returns facts and allowed operations, not recommendations.
+- **Composable effects:** workspace/VCS, session hosting, continuation storage,
+  context acquisition/selection, editing, verification, and artifact delivery
+  are explicit replaceable capability providers. Generic hooks do not own
+  correctness or lifecycle.
+- **Inference efficiency:** optimize total useful inference and developer
+  attention, not one context metric in isolation.
+- **Failure-driven architecture:** repeated observed failures justify new
+  mechanisms. Build the smallest intervention that can change the measured
+  outcome; defer generalized infrastructure.
 
 ## Source of truth and scope
 
@@ -53,13 +71,13 @@ linked below are evidence anchors, not an inventory snapshot.
   preparation, public edge resume, persisted-plan lineage, cost-cap honesty,
   and terminal evidence. Repairs may exist on an unlanded development stack;
   do not describe them as shipped until repository gates pass and `main` moves.
-- **Planned M5.5:** general recovery for every admitted attempt, using passive
-  Pi JSON event capture, full resume, partial fork, and engine-owned settlement.
-  These public run-ID interfaces are not shipped merely because child-edge
-  continuation exists.
-- **Planned M6:** extract the engine under the Project Tau name, make it the
-  standalone default, archive v1 outside its active context, and improve Tau
-  through real-project dogfood and cohort experiments rather than shadow runs.
+- **Planned M5.5:** preserve value from failed inference through engine-owned
+  settlement, a minimal deterministically bounded continuation record, and
+  linear resume of the latest failed state. It does not solve reasoning or
+  strategy failures.
+- **Planned M6:** make Tau the default, archive v1 outside its active context,
+  and systematically capture real-task outcomes and failures. Later architecture
+  is chosen from that evidence rather than a preplanned infrastructure list.
 
 Tau accepts a validated task specification, runs bounded coding sessions in an
 isolated workspace, verifies the resulting tree, and returns a structured
@@ -142,8 +160,8 @@ validate → route → create workspace → run session → yield → verify
 A shipped M5 child receives a bounded handoff, not the parent's transcript. The
 ledger records the parent/child relationship, each child has structured
 artifacts and its own receipt, and handoffs contain only the bounded facts
-needed to continue. M5.5 adds a separate **local operational attempt journal**
-for recovery; it is not a canonical handoff, receipt, or trace and does not
+needed to continue. M5.5 adds a separate **local operational continuation
+record** for recovery; it is not a canonical handoff, receipt, or trace and does not
 change child task semantics. Parallel workers may fan out and combine
 deterministically through the same provider-neutral capabilities; their
 availability must never make a sequential task impossible.
@@ -215,14 +233,16 @@ selected inputs, hashes, and provenance, but it must not require storage or
 exposure of private chain-of-thought. A trace is evidence about execution, not a
 request to retain hidden reasoning.
 
-M5.5 recovery uses a distinct, local, bounded **attempt journal** populated
-passively from Pi's visible JSON event stream. It may retain normalized visible
-messages and paired tool calls/results for failed or in-flight attempts, but it
-must never enter canonical traces, receipts, portable handoffs, or public
-artifacts. It is versioned, size-capped, subject to retention/deletion policy,
-and accessed through a replaceable journal-store capability. Successful runs
-incur no extra model turns or inference tokens; replay input is paid only when a
-resume or fork is requested.
+M5.5 recovery uses a distinct, local, bounded **continuation record** populated
+passively from Pi's visible JSON event stream. It retains only continuation-
+relevant visible history under deterministic caps: task authority, complete
+tool-call/result pairs selected for continuation, latest work state, and typed
+failure evidence. Observability-only chatter and older chat are discarded first.
+The record never enters canonical traces, receipts, portable handoffs, or public
+artifacts. Prefer Pi's existing persistence; otherwise use the simplest bounded
+append-only store. Do not build a general event-sourcing platform. Successful
+runs incur no extra model turns or inference tokens; replay input is paid only
+when resume is requested.
 
 The existing event and gateway foundations are at
 [`packages/core-v2/src/contracts/gateway-events.ts`](../packages/core-v2/src/contracts/gateway-events.ts),
@@ -418,55 +438,69 @@ session stream, or automatically settle verified work when a model misses its
 final `yield`. Those gaps define M5.5 rather than being hidden under the M5
 claim.
 
-### M5.5 — useful recovery for every attempt
+### M5.5 — preserve value from failed inference
 
-M5.5 generalizes recovery from child edges to every admitted attempt. A task
-family contains immutable attempt lineage; each stopped attempt has a typed
-disposition such as resumable, forkable, blocked, settled, or nonrecoverable.
-Sequential children consume the same mechanism rather than owning a parallel
-recovery design.
+M5.5 has one boundary: make the latest failed attempt cheaper to continue than
+starting from scratch. It is linear recovery, not generalized branching,
+memory, or strategy correction.
 
-Normal successful runs must pay no additional model-token or model-turn cost.
-The session adapter passively writes Pi's visible JSON events to a local attempt
-journal. Every completed turn records a cheap checkpoint containing a journal
-offset, context-plan identity, usage, and an optional opaque workspace snapshot
-token supplied by the configured workspace provider. No kernel code may invoke
-jj, Git, SVN, or filesystem snapshot mechanics directly.
+M5.5 delivers three capabilities:
 
-M5.5 exposes two different operations:
+1. **Engine-owned settlement.** When preserved changes satisfy artifact policy,
+   integrate cleanly, and pass engine-owned verification, missing a final model
+   `yield` does not convert objective success into manual recovery. Explicit
+   worker rejection and user cancellation remain non-ship. The receipt marks
+   the summary/deviations unavailable and settlement as engine-derived.
+2. **Minimal passive continuation record.** The session adapter captures
+   continuation-relevant visible Pi JSON events without extra inference. The
+   deterministic compiler preserves the task/spec authority, valid tool-call /
+   tool-result pairs, latest workspace/work state, selected recent context, and
+   typed failure evidence. It prunes old chat and observability-only events
+   first, subject to a strict byte/token budget. Hidden reasoning is never
+   required or stored.
+3. **Linear latest-state resume.** `status <run-id>` reports facts such as
+   `resume_allowed`, `blocked_reason`, failure phase, verification state, and
+   preserved-state identities. `resume <run-id>` atomically creates one
+   successor from the latest resumable failure, restores the latest opaque
+   workspace-provider continuation, injects the bounded continuation record and
+   failure evidence, and opens a **new model/provider session over preserved Tau
+   state**. It does not replay the parent or create a recovery branch.
 
-- **resume** reconstructs all compatible visible history that fits, restores
-  the latest valid workspace/context state, appends the typed failure reason,
-  and starts a fresh session for transient provider/process/budget failures;
-- **fork** selects a turn/checkpoint and a deterministic bounded subset of the
-  journal, chooses current/checkpoint/clean workspace policy, and adds a bounded
-  corrective instruction and optional model/budget override for spinning or
-  strategically failed work.
+Use Pi's existing durable session persistence if it satisfies boundedness,
+compatibility, and retention requirements. Otherwise implement the smallest
+append-only local record behind a typed store capability. The ledger stores
+identities and lifecycle facts, not message/tool bodies. Provider-native session
+resume is optional and cannot be the source of truth. Workspace preservation
+uses the existing provider-neutral continuation capability; M5.5 adds no
+historical snapshots and no jj/Git/SVN-specific kernel behavior.
 
-The existing context continuation selector preserves ordering and tool-call /
-tool-result invariants when a full journal does not fit. Optional model-authored
-semantic compression may improve very long recovery payloads, but it is not a
-baseline dependency. Hidden chain-of-thought is never required or stored.
-Provider-native session continuation is an optimization; the normalized local
-journal is the provider-neutral source of truth.
-
-Engine-owned settlement is part of M5.5: when integrated changes satisfy the
-artifact policy and verification passes, failure to emit a final model `yield`
-must not turn objective success into manual jj recovery. The engine derives
-changed paths, commit identities, verification, and usage; a missing model
-summary is recorded as unavailable.
-
-The public interface operates by run ID, not internal edge/workspace IDs, and
-includes status, checkpoint listing, resume, and fork. A user should see why an
-attempt stopped, what was retained, the recommended action, and any compatibility
-blocker without knowing the configured workspace implementation.
+M5.5 explicitly does **not** solve reasoning or strategy failures. A worker that
+spins may resume into the same bad strategy. Arbitrary checkpoint selection,
+forking, corrective instruction overlays, historical workspace restoration,
+multiple successors, and semantic memory are deferred unless real failures show
+they repay their complexity.
 
 M5.5 exits only when hermetic close/reopen tests and bounded real dogfood prove:
-standalone provider-failure resume, mid-edit resume, spinning-worker fork from
-an earlier turn with corrective instructions, compatible model replacement,
-engine settlement after verification, and clear blocked outcomes for corrupt or
-incompatible state. Journals remain bounded, local, temporary, and absent from
-canonical evidence.
+
+- verified integrated work settles safely without model `yield`;
+- a standalone transient provider/process failure resumes by run ID from the
+  latest preserved workspace and bounded continuation state;
+- the resumed dogfood worker demonstrably avoids repeating investigation already
+  present in the failed attempt;
+- deterministic pruning preserves task authority and complete selected tool
+  pairs while remaining within its declared budget;
+- corrupt or incompatible state returns `resume_allowed=false` with a stable
+  `blocked_reason`; and
+- successful runs pay no additional model turns or inference tokens.
+
+### M7+ — failure-driven architecture only
+
+M7 has no precommitted infrastructure scope. Tau first ships M5.5 and M6, then
+ranks repeated real-task failures by inference waste and developer attention.
+Branching recovery, historical snapshots, strategy correction, semantic memory,
+or other sophistication becomes a candidate only when an observed failure class
+shows that linear resume is insufficient and the smallest proposed mechanism
+has a measurable expected return.
 
 ### M6 — Project Tau extraction and clean cutover
 
@@ -477,18 +511,18 @@ source/context and retained only as a pinned manual emergency release. Tau does
 not carry a runtime v1 fallback or duplicate v1 implementation that can confuse
 workers.
 
-M6 does not instrument v1 or double cost through mandatory shadow runs. Tau is
-dogfooded once per real task across multiple projects and records task class,
-project, model/budget, accepted outcome, verification, cost, latency,
-intervention, failure phase, recovery action, and selected experiment variant.
-Plugin A/B tests assign one variant to each useful real task and compare cohorts;
-they do not execute duplicate artificial work.
+M6 makes Tau the default, archives v1, and systematically captures real-task
+outcomes and failures. It does not instrument v1 or double cost through
+mandatory shadow runs. Each useful task records task class, project,
+model/budget, accepted outcome, verification, cost, latency, intervention,
+failure phase, deterministic recovery facts, and selected experiment variant.
+Plugin A/B tests assign one variant to each real task and compare cohorts; they
+do not execute duplicate artificial work.
 
-Product investment is vertical: context acquisition/retrieval/assembly,
-editing, verification, and practical recovery. Stable plugin seams cover these
-capabilities plus non-authoritative evidence observers. Horizontal workflow,
-remote scale, and generalized orchestration are added only when repeated real
-work demonstrates a blocking need.
+Post-M5.5 architecture is failure-driven. Context, editing, verification,
+recovery, workflow, and scale changes compete on repeated observed failures and
+expected reduction in inference spend or developer attention. No roadmap item
+is justified merely because a generalized substrate could support it.
 
 Each milestone gate publishes canonical traces, benchmark evidence, and
 conformance results. No model/provider default or performance claim is implied
@@ -506,6 +540,8 @@ than used to decide promotion.
 
 Future planning follows these rules:
 
+- observed real-task failures drive architecture; planned infrastructure does
+  not outrank measured inference waste or developer attention;
 - define one externally observable outcome and exit gate before implementation;
 - record architecture decisions before dispatching cross-cutting code;
 - label prototypes, conforming implementations, validated experiments, and
@@ -533,15 +569,17 @@ kernel, providers, tests, docs, and package surfaces into the standalone
 repository. Default makes Tau the normal tool. Archive keeps v1 source and a
 pinned emergency release outside Tau's active repository and worker context.
 
-Product development uses **baseline → assign one real-task variant → measure →
-retain or delete**. Receipts identify the selected plugin/config variant so
-context or edit approaches can be compared across useful work without doubling
-inference. Historical v1 evidence may diagnose a regression but does not impose
-a permanent shadow-compute tax.
+Product development uses **capture failure/outcome → rank cost → choose the
+smallest intervention → assign one real-task variant → measure → retain or
+delete**. Receipts identify the selected plugin/config variant so context or
+edit approaches can be compared across useful work without doubling inference.
+Historical v1 evidence may diagnose a regression but does not impose a permanent
+shadow-compute tax.
 
 ## Non-goals for the MVP
 
-Remote multi-user scale, multi-tenant isolation, episodic memory, dynamic
-cost-aware routing, always-on adversarial review, and program-level autonomy
-are deferred. See [pi-task-v2-future.md](pi-task-v2-future.md). They may be
+M5.5 does not solve reasoning/strategy failures, branching recovery, arbitrary
+checkpoint selection, or generalized event sourcing. Remote multi-user scale,
+multi-tenant isolation, episodic memory, dynamic cost-aware routing, always-on
+adversarial review, and program-level autonomy are deferred. See [pi-task-v2-future.md](pi-task-v2-future.md). They may be
 implemented later only when the MVP evidence makes their demand and cost clear.

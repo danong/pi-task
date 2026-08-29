@@ -1,10 +1,14 @@
 # pi-task and Project Tau
 
-A task-execution engine for the [pi coding agent](https://pi.dev): isolated
-worker sessions, typed schema-validated results, durable evidence, and
-context-efficient execution. The user-facing experience is like other coding
-harnesses: you chat, and the conversational agent decides whether to edit
-directly or dispatch work to workers.
+An execution substrate for software work delegated by agents using the
+[pi coding agent](https://pi.dev): isolated worker sessions, typed results,
+verification, durable evidence, and inference-efficient continuation. Tau is
+agent-facing infrastructure, not a coding-agent UI; the orchestrating Pi session
+owns conversation and decides what to delegate.
+
+**North star:** verified delegated software work per inference spend and
+developer attention. Context efficiency is one mechanism alongside reliable
+execution, settlement, verification, and avoiding repeated failed inference.
 
 This repository currently contains two generations:
 
@@ -16,11 +20,12 @@ This repository currently contains two generations:
   runtime contract is `docs/pi-task-v2.md`.
 
 M5 shipped Tau's narrow durable sequential-child continuation. M5.5 is the
-approved next design: passive Pi JSON event journaling, run-ID resume/fork for
-every admitted attempt, provider-neutral workspace checkpoints, and
-engine-owned settlement of verified work. M6 will extract Tau into a standalone
-repository, make it the default, and archive v1 outside Tau's active source and
-worker context. Existing package/CLI names remain unchanged until extraction.
+smaller approved next step: settle objectively completed work, preserve only
+deterministically bounded continuation-relevant state from failed inference,
+and linearly resume the latest failed state by run ID. It does not solve
+reasoning or strategy failures. M6 will make Tau the default, archive v1 outside
+Tau's active source/context, and systematically capture real-task outcomes and
+failures. Existing package/CLI names remain unchanged until extraction.
 
 ## Install
 
@@ -164,25 +169,32 @@ standalone review has no child edge to resume, and verified workers that exhaust
 their turn budget before `yield` still require manual recovery. Active M5
 hardening must pass repository gates before it is called shipped.
 
-M5.5 fixes the product boundary. Pi's visible JSON worker events are persisted
-passively in a bounded local operational journal, so successful tasks pay no
-additional inference tokens. Cheap turn checkpoints refer to journal offsets,
-context-plan identities, usage, and optional opaque workspace-provider snapshot
-tokens. `resume` reconstructs compatible visible history after transient
-failure; `fork` selects a bounded turn/checkpoint plus corrective instructions
-for spinning work. The kernel never assumes jj revisions, Git refs, SVN working
-copies, branch names, or host paths. Canonical traces and receipts remain
-transcript-free, and successful verified work can be settled by the engine even
-when the model misses its final `yield`.
+M5.5 preserves value from failed inference without building generalized
+recovery. First, Tau settles preserved work that satisfies artifact policy,
+integrates cleanly, and passes engine verification even when the model misses
+`yield`. Second, the session adapter passively retains only continuation-
+relevant visible Pi JSON history under deterministic caps: task authority,
+complete selected tool-call/result pairs, latest work state, recent useful
+context, and failure evidence. Old chat and observability-only events are pruned
+first. Prefer Pi persistence or the simplest append-only local store; do not
+build general event sourcing. Third, `resume <run-id>` opens a new model/provider
+session over the latest preserved Tau state. Status returns facts such as
+`resume_allowed` and `blocked_reason`, not speculative recommendations.
 
-M6 extracts the engine under the working **Project Tau** name and makes it the
-normal standalone tool. V1 remains a pinned manual emergency release outside
-Tau's repository rather than an embedded fallback. We will not fund mandatory
-v1 instrumentation or duplicate shadow runs. Real tasks across projects record
-outcome, cost, latency, intervention, failure/recovery phase, and one selected
-plugin experiment variant. Development concentrates vertically on context,
-editing, verification, and recovery; horizontal orchestration expands only when
-real dogfood demonstrates a need.
+M5.5 does not solve a worker's bad reasoning or strategy. Forking, arbitrary
+checkpoints, corrective branches, historical workspace snapshots, and semantic
+memory are deferred. Its real-dogfood gate requires the resumed worker to avoid
+repeating investigation already retained from the failed run. Workspace and
+session effects remain replaceable capabilities; the kernel never assumes jj
+revisions, Git refs, SVN working copies, branch names, or host paths.
+
+M6 makes the standalone **Project Tau** implementation the default, archives v1
+outside Tau's repository, and systematically captures real-task outcomes and
+failures. It does not fund mandatory v1 instrumentation or duplicate shadow
+runs. Every later architecture investment must answer a repeated observed
+failure with the smallest measurable reduction in inference spend or developer
+attention. Generalized branching/recovery is an M7 candidate only if linear
+resume evidence demonstrates the need.
 
 The repo ships `.pi/settings.json` registering itself as a project package
 (`"packages": [".."]`), so any trusted checkout auto-installs — the `task`
