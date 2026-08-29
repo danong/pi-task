@@ -152,6 +152,9 @@ export interface RunParallelOptions {
 	contextArtifactStore?: ContextArtifactStore;
 	/** Canonical trace projection for context lifecycle evidence. */
 	onContextEvent?: (event: ContextEvidenceEvent) => void;
+	/** Durable acknowledgement for a sequential parent. Called only after
+	 * integration, verification, and content acceptance succeed. */
+	onAccepted?: (accepted: { receipt: TaskReceipt; revision: string }) => void;
 }
 
 export interface ContextEvidenceEvent {
@@ -758,6 +761,33 @@ async function runWithStore(
 	for (const h of handles) h.close();
 	for (const w of watchdogHandles) w.dispose();
 
+	const watchdogInterruption = observations.find((observation) => observation.watchdogAbort !== undefined)?.watchdogAbort;
+	const interruption = watchdogInterruption === undefined ? undefined : { reason: watchdogInterruption.reason };
+	const deferredInterruption = singleTask && options.deferSuccessfulTerminal === true &&
+		options.retainWorkspace === true && interruption !== undefined;
+
+	// A retained sequential child owns its dirty workspace until the sequential
+	// coordinator can checkpoint it. Return the typed interruption before the
+	// ordinary failed-worker path can write failure artifacts, finalize work,
+	// integrate, verify, clean up, or invoke recovery.
+	if (deferredInterruption) {
+		const perWorker = contexts.map((ctx, i) => {
+			store.setSessionStatus(sessionIdFor(ctx.taskId), "exhausted");
+			gateway.emit({
+				type: "session.exhausted",
+				taskId: ctx.taskId,
+				sessionId: sessionIdFor(ctx.taskId),
+			});
+			return makeReceipt(ctx.taskId, "failed", 0, [], observations[i]!.turns, usages[i]);
+		});
+		return {
+			aggregate: makeReceipt(aggregateId, "failed", 0, [], observedTurns, sumUsage(usages)),
+			perWorker,
+			interruption,
+			conflicts: [],
+		};
+	}
+
 	// Finalization is provider-owned evidence. It runs before any integration
 	// operation, so model commit/path claims never become the source of truth.
 	// Providers without this optional seam retain the legacy claim-based
@@ -789,7 +819,6 @@ async function runWithStore(
 	const yieldPayloads: Array<Yield | undefined> = handles.map((handle, i) =>
 		promptResults[i]?.status === "fulfilled" ? handle.result : undefined,
 	);
-
 	// Per-worker receipts: failed attempts named first.
 	const perWorker: TaskReceipt[] = contexts.map((ctx, i) => {
 		const settled = promptResults[i]!;
@@ -815,6 +844,7 @@ async function runWithStore(
 				cause,
 				lastTool: "session",
 			});
+			store.setSessionStatus(sessionIdFor(ctx.taskId), "exhausted");
 			gateway.emit({
 				type: "session.exhausted",
 				taskId: ctx.taskId,
@@ -884,8 +914,6 @@ async function runWithStore(
 
 	// ── Integrate. ────────────────────────────────────────────────────────
 	const anyFailed = perWorker.some((r) => r.verdict !== "ship");
-	const watchdogInterruption = observations.find((observation) => observation.watchdogAbort !== undefined)?.watchdogAbort;
-	const interruption = watchdogInterruption === undefined ? undefined : { reason: watchdogInterruption.reason };
 
 	if (!baseChangeId) {
 		// Feature-branch mode: bookmarks only; no automatic integration.
@@ -1243,6 +1271,18 @@ async function runWithStore(
 		};
 	}
 
+	const acceptedAggregate = makeReceipt(
+		aggregateId,
+		"ship",
+		authoritativeChangedPaths.length,
+		[combineOutcome.commitId],
+		observedTurns,
+		sumUsage(usages),
+	);
+	// A sequential parent is acknowledged immediately after objective
+	// acceptance, before cleanup or this executor returns. The execution-start
+	// marker makes a loss before this call a no-replay fence.
+	options.onAccepted?.({ receipt: acceptedAggregate, revision: combineOutcome.commitId });
 	await cleanupHealthy();
 	for (const ctx of healthyContexts)
 		if (!(singleTask && options.deferSuccessfulTerminal))
@@ -1262,14 +1302,7 @@ async function runWithStore(
 		});
 	}
 	return {
-		aggregate: makeReceipt(
-			aggregateId,
-			"ship",
-			authoritativeChangedPaths.length,
-			[combineOutcome.commitId],
-			observedTurns,
-			sumUsage(usages),
-		),
+		aggregate: acceptedAggregate,
 		perWorker,
 		mergedCommitId: combineOutcome.commitId,
 		conflicts: [],

@@ -27,7 +27,9 @@ import {
 	classifyChildRestart,
 	LedgerStore,
 	reconcileCrashedTask,
+	type SequentialEdgeConfig,
 } from "../src/ledger/store.ts";
+import type { ImmutableArtifactReference } from "../src/contracts/context-lifecycle.ts";
 
 function tempDb(): { path: string; dir: string } {
 	const dir = mkdtempSync(join(tmpdir(), "pi-task-v2-ledger-"));
@@ -395,6 +397,32 @@ export function runTests(): Promise<void> {
 			"old and child rows survive reopen/migration",
 		);
 		reopened.close();
+
+		// ─── M5-C4 durable external delivery phase ───────────────────────
+		{
+			const store = new LedgerStore(tmp.path + ".delivery");
+			store.insertTask({ id: "delivery-parent", goal: "parent" });
+			store.insertTask({ id: "delivery-child", goal: "child" });
+			const ref = (kind: ImmutableArtifactReference["kind"], digit: string): ImmutableArtifactReference => ({ version: 1, id: `sha256:${digit.repeat(64)}`, namespace: kind, kind, mediaType: "application/json", sizeBytes: 1, sensitivity: "internal", sourceRevision: "rev" });
+			const refs = { verificationReference: ref("verification", "1"), resultReference: ref("result", "2"), receiptReference: ref("receipt", "3"), traceReference: ref("trace", "4"), parentReceiptReference: ref("receipt", "5"), parentTraceReference: ref("trace", "6") };
+			store.persistReadyChildIntent({ edgeId: "delivery-edge", parentTaskId: "delivery-parent", childTaskId: "delivery-child", ordinal: 1, handoffArtifactId: ref("handoff", "7").id, checkpointArtifactId: ref("checkpoint", "8").id, workspaceContinuation: { id: "delivery-cont", taskId: "delivery-child", driver: "fake", providerVersion: "1", opaqueToken: "opaque", revision: "rev" } });
+			store.claimReadyChild("delivery-edge");
+			store.beginChildTerminalSettlement({ edgeId: "delivery-edge", childStatus: "completed", ...refs, verification: {}, result: {}, receipt: {}, trace: {}, parentReceipt: {}, parentTrace: {} });
+			store.settleChild("delivery-edge", "completed", { verificationArtifactId: refs.verificationReference.id, resultArtifactId: refs.resultReference.id, receiptArtifactId: refs.receiptReference.id, traceArtifactId: refs.traceReference.id, parentReceiptArtifactId: refs.parentReceiptReference.id, parentTraceArtifactId: refs.parentTraceReference.id, ...refs }, { deliveryAcknowledged: false });
+			check(store.getTaskEdge("delivery-edge")?.status === "delivery_pending" && store.getTask("delivery-parent")?.status === "delivery_pending" && store.getTask("delivery-child")?.status === "delivery_pending", "external delivery keeps ledger and edge non-terminal");
+			store.recordChildDeliveryFailure("delivery-edge", "trace_write_failed", "bounded trace failure");
+			store.close();
+			const reopenedDelivery = new LedgerStore(tmp.path + ".delivery");
+			check(reopenedDelivery.getChildTerminalSettlement("delivery-edge")?.delivery.failureCode === "trace_write_failed", "typed delivery failure survives close/reopen");
+			reopenedDelivery.acknowledgeChildDeliveryStep("delivery-edge", "receipt");
+			reopenedDelivery.acknowledgeChildDeliveryStep("delivery-edge", "trace");
+			check(reopenedDelivery.getTaskEdge("delivery-edge")?.status === "delivery_pending", "partial acknowledgement remains delivery pending");
+			const terminalDelivery = reopenedDelivery.acknowledgeChildDeliveryStep("delivery-edge", "final_receipt");
+			const repeatedDelivery = reopenedDelivery.acknowledgeChildDeliveryStep("delivery-edge", "final_receipt");
+			check(terminalDelivery.status === "completed" && repeatedDelivery.status === "completed" && reopenedDelivery.getTask("delivery-parent")?.status === "completed", "idempotent final acknowledgement completes ledger delivery");
+			reopenedDelivery.close();
+		}
+
 		// True pre-v3 fixture: build only the v1/v2 tables, rather than opening
 		// LedgerStore and merely changing user_version after v3 already exists.
 		const legacyPath = tmp.path + ".legacy";
@@ -420,6 +448,61 @@ export function runTests(): Promise<void> {
 			"true pre-v3 migration preserves legacy rows and installs child schema",
 		);
 		migrated.close();
+
+		// Pre-hardening M5 fixture: task_artifacts had only the role-scoped
+		// uniqueness constraint. The hardened upsert's conflict target therefore
+		// failed at statement preparation on an otherwise usable warm ledger.
+		const warmPath = tmp.path + ".warm";
+		const warmDb = new DatabaseSync(warmPath);
+		warmDb.exec(`
+			PRAGMA foreign_keys = ON;
+			CREATE TABLE tasks (id TEXT PRIMARY KEY, status TEXT NOT NULL CHECK (status IN ('queued','planning','executing','verifying','reviewing','completed','failed','escalated')), goal TEXT NOT NULL, parent_branch TEXT, plan_mode TEXT, retry_count INTEGER NOT NULL DEFAULT 0, max_retries INTEGER NOT NULL DEFAULT 2, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP);
+			CREATE TABLE task_artifacts (task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE, role TEXT NOT NULL, artifact_id TEXT NOT NULL, media_type TEXT NOT NULL, source_revision TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, reference_json TEXT, UNIQUE(task_id, role, artifact_id));
+			CREATE TABLE workspace_continuations (id TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE, driver TEXT NOT NULL, provider_version TEXT NOT NULL, opaque_token TEXT NOT NULL, revision TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'ready' CHECK (status IN ('ready','claimed','resumable','blocked','completed','failed','escalated')), created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP, capability_identity TEXT, capability_version TEXT, UNIQUE(task_id, id));
+			CREATE TABLE task_edges (edge_id TEXT PRIMARY KEY, parent_task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE, child_task_id TEXT REFERENCES tasks(id) ON DELETE CASCADE, ordinal INTEGER NOT NULL CHECK (ordinal > 0), relationship TEXT NOT NULL CHECK (relationship IN ('continuation')), status TEXT NOT NULL DEFAULT 'ready' CHECK (status IN ('ready','claimed','resumable','blocked','completed','failed','escalated')), handoff_artifact_id TEXT NOT NULL, checkpoint_artifact_id TEXT, workspace_continuation_id TEXT REFERENCES workspace_continuations(id) ON DELETE SET NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, claimed_at DATETIME, completed_at DATETIME, UNIQUE(parent_task_id, ordinal), UNIQUE(child_task_id), FOREIGN KEY (child_task_id, workspace_continuation_id) REFERENCES workspace_continuations(task_id, id));
+			CREATE TABLE sequential_edge_configs (edge_id TEXT PRIMARY KEY REFERENCES task_edges(edge_id) ON DELETE CASCADE, handoff_reference_json TEXT NOT NULL, checkpoint_reference_json TEXT NOT NULL, child_spec_reference_json TEXT NOT NULL, plan_reference_json TEXT NOT NULL, ingress_config_reference_json TEXT NOT NULL, parent_receipt_reference_json TEXT NOT NULL, model_identity TEXT NOT NULL, source_revision TEXT NOT NULL, capability_identity TEXT NOT NULL, capability_version TEXT NOT NULL);
+			PRAGMA user_version = 4;
+		`);
+		warmDb.prepare("INSERT INTO tasks (id, status, goal) VALUES (?, 'queued', ?)").run("warm-parent", "warm parent");
+		warmDb.prepare("INSERT INTO tasks (id, status, goal) VALUES (?, 'queued', ?)").run("warm-child", "warm child");
+		const warmArtifactId = "sha256:" + "a".repeat(64);
+		const oldUpsertFailure = expectThrow(() => warmDb.prepare(`INSERT INTO task_artifacts (task_id, role, artifact_id, media_type, source_revision, reference_json) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(task_id, artifact_id) DO UPDATE SET role = excluded.role`).run("warm-child", "legacy", warmArtifactId, "application/json", null, null));
+		check(oldUpsertFailure.includes("ON CONFLICT clause does not match"), "pre-hardening fixture reproduces the warm-ledger parent-to-child failure");
+		warmDb.prepare("INSERT INTO task_artifacts (task_id, role, artifact_id, media_type) VALUES (?, 'legacy', ?, 'application/json')").run("warm-child", warmArtifactId);
+		warmDb.close();
+
+		const migratedWarm = new LedgerStore(warmPath);
+		const warmVersion = Number((migratedWarm.db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version);
+		const warmIndexes = migratedWarm.db.prepare("PRAGMA index_list(task_artifacts)").all() as Array<{ name: string; unique: number }>;
+		check(warmVersion === LEDGER_SCHEMA_VERSION && warmIndexes.some((index) => index.unique === 1 && index.name === "task_artifacts_task_artifact_v11_uidx"), "warm ledger migration installs the additive artifact conflict index");
+		const warmRef = (digit: string, kind: ImmutableArtifactReference["kind"], namespace = kind): ImmutableArtifactReference => ({ version: 1, id: `sha256:${digit.repeat(64)}`, namespace, kind, mediaType: "application/json", sizeBytes: 1, sensitivity: "internal", sourceRevision: "sha256:" + "f".repeat(64) });
+		const warmConfig: SequentialEdgeConfig = { edgeId: "warm-edge", handoffReference: warmRef("a", "handoff"), checkpointReference: warmRef("2", "checkpoint"), childSpecReference: warmRef("3", "context", "context"), planReference: warmRef("4", "plan"), ingressConfigReference: warmRef("5", "context", "context"), parentReceiptReference: warmRef("6", "receipt"), modelIdentity: "fake/model", sourceRevision: "sha256:" + "f".repeat(64), capabilityIdentity: "fake.continuation", capabilityVersion: "1" };
+		const preparedWarm = migratedWarm.persistReadyChildIntent({ edgeId: warmConfig.edgeId, parentTaskId: "warm-parent", childTaskId: "warm-child", ordinal: 1, handoffArtifactId: warmConfig.handoffReference.id, checkpointArtifactId: warmConfig.checkpointReference.id, workspaceContinuation: { id: "warm-continuation", taskId: "warm-child", driver: "fake", providerVersion: "1", capabilityIdentity: "fake.continuation", capabilityVersion: "1", opaqueToken: "opaque", revision: "warm-revision" }, sequentialConfig: warmConfig });
+		const warmClaimed = migratedWarm.claimReadyChild(preparedWarm.edgeId);
+		migratedWarm.markChildResumable(preparedWarm.edgeId);
+		const warmResumeClaim = migratedWarm.claimResumableChild(preparedWarm.edgeId);
+		const resumedWarm = migratedWarm.updateResumableChild(preparedWarm.edgeId, { id: "warm-continuation", taskId: "warm-child", driver: "fake", providerVersion: "1", capabilityIdentity: "fake.continuation", capabilityVersion: "1", opaqueToken: "opaque-resumed", revision: "warm-revision-2" }, warmConfig);
+		check(warmClaimed?.status === "claimed" && warmResumeClaim?.status === "claimed" && resumedWarm.status === "resumable" && migratedWarm.listTaskArtifacts("warm-child").some((artifact) => artifact.artifactId === warmConfig.handoffReference.id), "migrated warm ledger prepares and resumes a child through the hardened ON CONFLICT path");
+		migratedWarm.close();
+		const reopenedWarm = new LedgerStore(warmPath);
+		check(Number((reopenedWarm.db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version) === LEDGER_SCHEMA_VERSION && reopenedWarm.getTask("warm-parent")?.goal === "warm parent" && reopenedWarm.getTask("warm-child")?.goal === "warm child", "warm migration remains idempotent and preserves existing task rows on reopen");
+		reopenedWarm.close();
+
+		// A conflicting historical identity rejects atomically: no version bump,
+		// no half-installed index, and no artifact row is lost for repair.
+		const failedMigrationPath = tmp.path + ".migration-failure";
+		const failedMigrationDb = new DatabaseSync(failedMigrationPath);
+		failedMigrationDb.exec(`CREATE TABLE task_artifacts (task_id TEXT NOT NULL, role TEXT NOT NULL, artifact_id TEXT NOT NULL, media_type TEXT NOT NULL, source_revision TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, reference_json TEXT, UNIQUE(task_id, role, artifact_id)); PRAGMA user_version = 10;`);
+		failedMigrationDb.prepare("INSERT INTO task_artifacts (task_id, role, artifact_id, media_type) VALUES ('t', ?, 'sha256:" + "b".repeat(64) + "', 'application/json')").run("one");
+		failedMigrationDb.prepare("INSERT INTO task_artifacts (task_id, role, artifact_id, media_type) VALUES ('t', ?, 'sha256:" + "b".repeat(64) + "', 'application/json')").run("two");
+		failedMigrationDb.close();
+		const migrationFailure = expectThrow(() => new LedgerStore(failedMigrationPath));
+		const failedInspection = new DatabaseSync(failedMigrationPath);
+		const failedVersion = Number((failedInspection.prepare("PRAGMA user_version").get() as { user_version: number }).user_version);
+		const failedIndexes = failedInspection.prepare("PRAGMA index_list(task_artifacts)").all() as Array<{ name: string; unique: number }>;
+		const failedRows = Number((failedInspection.prepare("SELECT COUNT(*) AS n FROM task_artifacts").get() as { n: number }).n);
+		check(migrationFailure.includes("UNIQUE") && failedVersion === 10 && failedRows === 2 && !failedIndexes.some((index) => index.name === "task_artifacts_task_artifact_v11_uidx"), "failed warm-ledger migration rolls back version, index, and durable rows");
+		failedInspection.close();
 	}
 
 		// ─── R2 regression: isolated/parallel worker+aggregate finalization must not be blocked by global terminal immutability ───
@@ -528,6 +611,10 @@ export function runTests(): Promise<void> {
 				workspaceContinuation: { id: "r6-cont", taskId: "r6-child", driver: "fake", providerVersion: "1", opaqueToken: "token", revision: "rev" },
 			});
 			store.claimReadyChild("r6-edge");
+			const recoveryRef = (hex: string, kind: ImmutableArtifactReference["kind"], namespace = kind): ImmutableArtifactReference => ({ version: 1, id: `sha256:${hex.repeat(64)}`, namespace, kind, mediaType: "application/json", sizeBytes: 1, sensitivity: "internal", sourceRevision: "rev" });
+			const recoveryConfig: SequentialEdgeConfig = { edgeId: "r6-edge", handoffReference: recoveryRef("1", "handoff"), checkpointReference: recoveryRef("2", "checkpoint"), childSpecReference: recoveryRef("3", "context", "context"), planReference: recoveryRef("4", "plan"), ingressConfigReference: recoveryRef("5", "context", "context"), parentReceiptReference: recoveryRef("6", "receipt"), modelIdentity: "fake/model", sourceRevision: "rev", capabilityIdentity: "fake.continuation", capabilityVersion: "1" };
+			const ownershipFailure = expectThrow(() => store.updateResumableChild("r6-edge", { id: "wrong-continuation", taskId: "r6-child", driver: "fake", providerVersion: "1", capabilityIdentity: "fake.continuation", capabilityVersion: "1", opaqueToken: "token", revision: "rev" }, recoveryConfig));
+			check(ownershipFailure.includes("owned by the child edge"), "resumable refresh rejects a continuation not owned by the edge");
 			const childRestart = store.reconcileChildEdgesOnBoot();
 			check(childRestart.blocked.includes("r5-edge") && childRestart.blocked.includes("r6-edge") && childRestart.resumable.length === 0, "restart blocks claims without a complete immutable ingress manifest");
 

@@ -19,13 +19,15 @@ This repository currently contains two generations:
   overloading `pi-task`, which already belongs to v1. Its active product and
   runtime contract is `docs/pi-task-v2.md`.
 
-M5 shipped Tau's narrow durable sequential-child continuation. M5.5 is the
-smaller approved next step: settle objectively completed work, preserve only
-deterministically bounded continuation-relevant state from failed inference,
-and linearly resume the latest failed state by run ID. It does not solve
-reasoning or strategy failures. M6 will make Tau the default, archive v1 outside
-Tau's active source/context, and systematically capture real-task outcomes and
-failures. Existing package/CLI names remain unchanged until extraction.
+M5 shipped Tau's narrow durable sequential-child continuation, and its
+hardening is closed in the repaired tree subject to repository gates. The tree
+is ready to begin planned M5.5 subject to repository gates. M5.5 is the smaller approved next
+step: settle objectively completed work, preserve only deterministically bounded
+continuation-relevant state from failed inference, and linearly resume the
+latest failed state by run ID. It does not solve reasoning or strategy
+failures. M6 will make Tau the default, archive v1 outside Tau's active
+source/context, and systematically capture real-task outcomes and failures.
+Existing package/CLI names remain unchanged until extraction.
 
 ## Install
 
@@ -63,7 +65,10 @@ argument/input validation, progress rendering, and receipt delivery;
 and gateway remain the execution owners. Cancellation, multiple workers,
 parallel scheduling, and remote interfaces are not part of this slice.
 
-### Project Tau status: shipped M1–M5, planned M5.5 and M6
+### Project Tau status: M5 hardening closed; ready to begin M5.5 (subject to repository gates)
+
+**Active M5 hardening: closed.** Implementation remains authoritative for shipped
+behavior. The current closure authority is [`reports/m5-hardening-closure.md`](reports/m5-hardening-closure.md), which records the repaired tree as ready to begin M5.5 subject to the repository gate. Earlier M5 review reports remain historical evidence with their original findings; this status does not rewrite them.
 
 M1–M3 are the completed evidence-backed MVP foundation. M1 provides a
 versioned, bounded, provider-neutral trace artifact with lifecycle, observed
@@ -158,18 +163,15 @@ capabilities; legacy provider translation is confined to the CLI/provider edge.
 A minimal matched Luna smoke is retained under the core-v2 M4 proof fixtures
 and validated with `mise run m4-proof -- <evidence.json> [report.md]`. It records
 measured accepted runs without claiming a general quality or cost advantage or
-adopting symbol-tree as the default. The first useful implementation dogfood
-failure is retained under `packages/core-v2/test/fixtures/dogfood/`; it exposed
-that the CLI prompt wall was not paired with an independent turn bound.
-Continued dogfood therefore requires the supported turn and wall-time bounds;
-measured final cost remains reporting-only until provider-neutral live cost
-signals exist. M5 uses those checkpoint/epoch contracts for one durable sequential child, but
-a post-land review showed that this is not yet general task recovery. A failed
-standalone review has no child edge to resume, and verified workers that exhaust
-their turn budget before `yield` still require manual recovery. Active M5
-hardening must pass repository gates before it is called shipped.
+adopting symbol-tree as the default. Measured final cost remains reporting-only
+until provider-neutral live cost signals exist. M5 uses those checkpoint/epoch
+contracts for one durable sequential child. The M5 hardening closure is closed
+in the repaired tree and ready to begin M5.5 subject to repository gates; see
+the [current closure authority](reports/m5-hardening-closure.md). The existing
+M5 `--resume <edge-id>` operation is edge-oriented and remains distinct from
+M5.5's planned public run-ID recovery contract.
 
-M5.5 preserves value from failed inference without building generalized
+Planned M5.5 preserves value from failed inference without building generalized
 recovery. First, Tau settles preserved work that satisfies artifact policy,
 integrates cleanly, and passes engine verification even when the model misses
 `yield`. Second, the session adapter passively retains only continuation-

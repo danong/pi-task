@@ -21,7 +21,7 @@ import {
 	type ImmutableArtifactReference,
 } from "../contracts/context-lifecycle.ts";
 
-export const LEDGER_SCHEMA_VERSION = 6;
+export const LEDGER_SCHEMA_VERSION = 11;
 
 export type TaskStatus =
 	| "queued"
@@ -31,6 +31,7 @@ export type TaskStatus =
 	| "preparing"
 	| "awaiting_execution"
 	| "resumable"
+	| "delivery_pending"
 	| "verifying"
 	| "reviewing"
 	| "completed"
@@ -113,6 +114,7 @@ export type ChildEdgeStatus =
 	| "claimed"
 	| "resumable"
 	| "blocked"
+	| "delivery_pending"
 	| "completed"
 	| "failed"
 	| "escalated";
@@ -152,8 +154,17 @@ export interface ChildPreparationOwnershipRow {
 	status: ChildPreparationOwnershipStatus;
 	parentRevision: string | null;
 	parentReceiptJson: string | null;
+	/** Set before the parent executor is entered. A marked reservation is
+	 * never replayed: a crash without acceptance evidence becomes blocked. */
+	parentExecutionStartedAt: string | null;
 	createdAt: string;
 	updatedAt: string;
+}
+
+export interface ChildParentExecutionClaim {
+	owner: ChildPreparationOwnershipRow;
+	/** True only for the caller that installed the execution fence. */
+	acquired: boolean;
 }
 
 export interface NewChildPreparationOwnership {
@@ -265,10 +276,56 @@ export interface NewChildIntent {
 }
 
 export interface ChildSettlementArtifacts {
+	verificationArtifactId?: string;
 	resultArtifactId: string;
 	receiptArtifactId: string;
 	traceArtifactId: string;
+	parentReceiptArtifactId?: string;
+	parentTraceArtifactId?: string;
 	failureArtifactId?: string | null;
+	/** Complete references are supplied by the sequential terminal protocol.
+	 * IDs remain accepted for the legacy ledger API. */
+	verificationReference?: ImmutableArtifactReference;
+	resultReference?: ImmutableArtifactReference;
+	receiptReference?: ImmutableArtifactReference;
+	traceReference?: ImmutableArtifactReference;
+	parentReceiptReference?: ImmutableArtifactReference;
+	parentTraceReference?: ImmutableArtifactReference;
+}
+
+/** Durable terminal outbox. Payloads are retained so a process can replay an
+ * immutable write after closing and reopening, without rerunning the child. */
+export type ChildDeliveryFailureCode =
+	| "receipt_write_failed"
+	| "trace_write_failed"
+	| "final_receipt_rewrite_failed"
+	| "process_lost_between_delivery_steps";
+
+export interface ChildDeliveryState {
+	receiptDelivered: boolean;
+	traceDelivered: boolean;
+	finalReceiptDelivered: boolean;
+	failureCode: ChildDeliveryFailureCode | null;
+	failureDetail: string | null;
+}
+
+export interface ChildTerminalSettlement {
+	edgeId: string;
+	childStatus: ChildTerminalStatus;
+	verificationReference: ImmutableArtifactReference;
+	resultReference: ImmutableArtifactReference;
+	receiptReference: ImmutableArtifactReference;
+	traceReference: ImmutableArtifactReference;
+	parentReceiptReference: ImmutableArtifactReference;
+	parentTraceReference: ImmutableArtifactReference;
+	verification: unknown;
+	result: unknown;
+	receipt: unknown;
+	trace: unknown;
+	parentReceipt: unknown;
+	parentTrace: unknown;
+	state: "pending" | "linked";
+	delivery: ChildDeliveryState;
 }
 
 export interface ChildRestartInput {
@@ -277,11 +334,32 @@ export interface ChildRestartInput {
 	continuationPresent: boolean;
 }
 
-export type ChildRestartDecision = "ready" | "resumable" | "blocked" | ChildTerminalStatus;
+export type ChildRestartDecision = "ready" | "resumable" | "blocked" | "delivery_pending" | ChildTerminalStatus;
+
+export type ChildReconciliationEvidenceCode =
+	| "missing" | "corrupt" | "stale" | "revision_mismatch" | "incompatible";
+export type ChildReconciliationDependency =
+	| "handoff" | "checkpoint" | "plan" | "ingress-manifest" | "child-spec"
+	| "parent-receipt" | "continuation-ownership" | "provider-capability"
+	| "provider-target" | "validator";
+export interface ChildReconciliationEvidenceRow {
+	edgeId: string;
+	code: ChildReconciliationEvidenceCode;
+	dependency: ChildReconciliationDependency;
+	createdAt: string;
+}
+export interface ChildBootFailureEvidence {
+	edgeId: string;
+	code: ChildReconciliationEvidenceCode;
+	dependency: ChildReconciliationDependency;
+}
+export type ChildBootValidationResult =
+	| { valid: true }
+	| { valid: false; evidence: ChildBootFailureEvidence };
 
 /** Pure restart policy: no session is started while making this decision. */
 export function classifyChildRestart(input: ChildRestartInput): ChildRestartDecision {
-	if (input.status === "ready" || input.status === "blocked" ||
+	if (input.status === "ready" || input.status === "blocked" || input.status === "delivery_pending" ||
 		input.status === "completed" || input.status === "failed" || input.status === "escalated")
 		return input.status;
 	return input.checkpointPresent && input.continuationPresent ? "resumable" : "blocked";
@@ -340,7 +418,8 @@ CREATE TABLE IF NOT EXISTS workspaces (
 
 interface Migration {
 	version: number;
-	sql: string;
+	sql?: string;
+	apply?: (db: DatabaseSync) => void;
 }
 
 /** Additive migrations, oldest first. Every later migration must not
@@ -492,6 +571,84 @@ CREATE INDEX IF NOT EXISTS child_preparation_ownership_status_idx
     ON child_preparation_ownership(status, created_at);
 `;
 
+/** V7 records entry into the parent executor. It is deliberately separate
+ * from acceptance: if the process dies anywhere after execution starts and
+ * before acceptance evidence is durable, recovery blocks rather than replaying
+ * work whose provider-side outcome is unknown. */
+const V7_DDL = `
+ALTER TABLE child_preparation_ownership ADD COLUMN parent_execution_started_at DATETIME;
+`;
+
+/** Boot validity failures are durable evidence, not transient diagnostics. */
+const V8_DDL = `
+CREATE TABLE IF NOT EXISTS child_reconciliation_evidence (
+    edge_id TEXT PRIMARY KEY REFERENCES task_edges(edge_id) ON DELETE CASCADE,
+    code TEXT NOT NULL,
+    dependency TEXT NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+`;
+
+/** Terminal evidence is an outbox, not a second source of task truth. It
+ * holds the canonical bytes until the single SQLite linkage transaction can
+ * attach every reference and terminal state together. */
+const V9_DDL = `
+CREATE TABLE IF NOT EXISTS child_terminal_settlements (
+    edge_id TEXT PRIMARY KEY REFERENCES task_edges(edge_id) ON DELETE CASCADE,
+    status TEXT NOT NULL CHECK (status IN ('pending', 'linked')),
+    child_status TEXT NOT NULL CHECK (child_status IN ('completed', 'failed', 'escalated')),
+    verification_reference_json TEXT NOT NULL,
+    result_reference_json TEXT NOT NULL,
+    receipt_reference_json TEXT NOT NULL,
+    trace_reference_json TEXT NOT NULL,
+    parent_receipt_reference_json TEXT NOT NULL,
+    parent_trace_reference_json TEXT NOT NULL,
+    verification_json TEXT NOT NULL,
+    result_json TEXT NOT NULL,
+    receipt_json TEXT NOT NULL,
+    trace_json TEXT NOT NULL,
+    parent_receipt_json TEXT NOT NULL,
+    parent_trace_json TEXT NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+`;
+
+/** External receipt/trace delivery is a durable phase after canonical linkage.
+ * The three bits make close/reopen retry idempotent at every CLI boundary. */
+const V10_DDL = `
+ALTER TABLE child_terminal_settlements ADD COLUMN receipt_delivered INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE child_terminal_settlements ADD COLUMN trace_delivered INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE child_terminal_settlements ADD COLUMN final_receipt_delivered INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE child_terminal_settlements ADD COLUMN delivery_failure_code TEXT;
+ALTER TABLE child_terminal_settlements ADD COLUMN delivery_failure_detail TEXT;
+`;
+
+/** M5's hardened artifact upsert targets (task_id, artifact_id). Older M5
+ * ledgers only had UNIQUE(task_id, role, artifact_id), so CREATE TABLE IF NOT
+ * EXISTS could leave a warm ledger without the conflict target required by
+ * insertTaskArtifact. This index is deliberately a separate additive
+ * migration: it also repairs ledgers that already report every prior version
+ * as applied but were created by that older shape. */
+const TASK_ARTIFACT_IDENTITY_INDEX = "task_artifacts_task_artifact_v11_uidx";
+
+/** Install the conflict target only when the historical table does not
+ * already have an equivalent unique key. Checking columns, rather than only
+ * the index name, makes this safe for a partially migrated ledger and avoids
+ * an unnecessary duplicate index on a fresh database. */
+function ensureTaskArtifactIdentityIndex(db: DatabaseSync): void {
+	const indexes = db.prepare("PRAGMA index_list(task_artifacts)").all() as Array<{ name: string; unique: number }>;
+	for (const index of indexes) {
+		if (index.unique !== 1) continue;
+		const quotedName = index.name.replaceAll('"', '""');
+		const columns = db.prepare(`PRAGMA index_info("${quotedName}")`).all() as Array<{ seqno: number; name: string | null }>;
+		if (columns.length === 2 && columns[0]?.name === "task_id" && columns[1]?.name === "artifact_id") return;
+	}
+	if (indexes.some((index) => index.name === TASK_ARTIFACT_IDENTITY_INDEX))
+		throw new Error(`existing ${TASK_ARTIFACT_IDENTITY_INDEX} is not the required unique artifact identity index`);
+	db.exec(`CREATE UNIQUE INDEX ${TASK_ARTIFACT_IDENTITY_INDEX} ON task_artifacts(task_id, artifact_id)`);
+}
+
 const MIGRATIONS: Migration[] = [
 	{ version: 1, sql: V1_DDL },
 	{ version: 2, sql: V2_DDL },
@@ -499,6 +656,11 @@ const MIGRATIONS: Migration[] = [
 	{ version: 4, sql: V4_DDL },
 	{ version: 5, sql: V5_DDL },
 	{ version: 6, sql: V6_DDL },
+	{ version: 7, sql: V7_DDL },
+	{ version: 8, sql: V8_DDL },
+	{ version: 9, sql: V9_DDL },
+	{ version: 10, sql: V10_DDL },
+	{ version: 11, apply: ensureTaskArtifactIdentityIndex },
 ];
 
 function migrate(db: DatabaseSync): void {
@@ -510,7 +672,9 @@ function migrate(db: DatabaseSync): void {
 		// a half-created child schema that the next boot mistakes for v3.
 		db.exec("BEGIN");
 		try {
-			db.exec(migration.sql);
+			if (migration.apply !== undefined) migration.apply(db);
+			else if (migration.sql !== undefined) db.exec(migration.sql);
+			else throw new Error(`migration v${migration.version} has no implementation`);
 			db.exec(`PRAGMA user_version = ${migration.version}`);
 			db.exec("COMMIT");
 			current = migration.version;
@@ -533,7 +697,16 @@ export class LedgerStore {
 		// WAL: the daemon (and future parallel writers) get reader-friendly
 		// snapshots instead of whole-db write locks.
 		this.db.exec("PRAGMA journal_mode = WAL");
-		migrate(this.db);
+		try {
+			migrate(this.db);
+		} catch (error) {
+			// Do not strand a connection when an additive migration rejects old
+			// data (for example, duplicate artifact identities). The transaction
+			// has already rolled back; closing here lets an operator repair or
+			// inspect the durable ledger without a leaked writer handle.
+			this.db.close();
+			throw error;
+		}
 	}
 
 	close(): void {
@@ -565,7 +738,7 @@ export class LedgerStore {
 	}
 
 	setTaskStatus(id: string, status: TaskStatus): void {
-		const extended = new Set<TaskStatus>(["awaiting_child", "preparing", "awaiting_execution", "resumable"]);
+		const extended = new Set<TaskStatus>(["awaiting_child", "preparing", "awaiting_execution", "resumable", "delivery_pending"]);
 		if (extended.has(status)) {
 			this.db.prepare(`INSERT INTO task_status_overrides (task_id, status) VALUES (?, ?)
 				ON CONFLICT(task_id) DO UPDATE SET status = excluded.status, updated_at = CURRENT_TIMESTAMP`).run(id, status);
@@ -911,6 +1084,36 @@ export class LedgerStore {
 		return row ? rowToChildPreparationOwnership(row) : null;
 	}
 
+	/** Find the one active sequential reservation for a CLI task family. A
+	 * terminal edge is intentionally excluded so a fresh standalone submission
+	 * still gets ordinary retry semantics. */
+	getActiveChildPreparationOwnershipByParent(parentTaskId: string): ChildPreparationOwnershipRow | null {
+		const row = this.db.prepare(`SELECT o.*
+			FROM child_preparation_ownership o
+			LEFT JOIN task_edges e ON e.edge_id = o.edge_id
+			WHERE o.parent_task_id = ?
+			AND (o.status IN ('parent_pending', 'parent_accepted', 'artifacts_pending', 'provider_preparing', 'ready')
+				OR (o.status = 'blocked' AND o.parent_execution_started_at IS NOT NULL))
+			AND (e.edge_id IS NULL OR COALESCE((SELECT status FROM task_edge_status_overrides WHERE edge_id = e.edge_id), e.status)
+				IN ('preparing', 'ready', 'claimed', 'resumable', 'delivery_pending'))
+			ORDER BY o.created_at, o.rowid LIMIT 1`).get(parentTaskId) as Record<string, unknown> | undefined;
+		return row ? rowToChildPreparationOwnership(row) : null;
+	}
+
+	/** Mark the parent execution boundary before entering the provider. This
+	 * marker is the conservative crash fence: an unacknowledged execution is
+	 * never replayed, because its provider-side acceptance cannot be inferred. */
+	beginChildParentExecution(preparationId: string): ChildParentExecutionClaim {
+		return this.transaction(() => {
+			const owner = this.getChildPreparationOwnership(preparationId);
+			if (!owner) throw new Error("child preparation owner does not exist");
+			if (owner.status !== "parent_pending" || owner.parentExecutionStartedAt !== null)
+				return { owner, acquired: false };
+			const result = this.db.prepare("UPDATE child_preparation_ownership SET parent_execution_started_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE preparation_id = ? AND parent_execution_started_at IS NULL AND status = 'parent_pending'").run(preparationId);
+			return { owner: this.getChildPreparationOwnership(preparationId)!, acquired: Number((result as { changes?: number | bigint }).changes ?? 0) === 1 };
+		});
+	}
+
 	/** Record acceptance separately from child preparation. A parent receipt is
 	 * kept in the ledger until its immutable artifact reference is attached, so
 	 * recovery never has to rerun the accepted parent. */
@@ -1132,18 +1335,30 @@ export class LedgerStore {
 			if (edge.status !== "preparing") throw new Error("child edge is not preparing");
 			if (config.edgeId !== edgeId || continuation.taskId !== edge.childTaskId || workspace.taskId !== edge.childTaskId)
 				throw new Error("provider preparation identity does not match edge");
-			this.db.prepare("INSERT OR IGNORE INTO workspaces (id, task_id, driver, host_path, container_path, branch_name, status) VALUES (?, ?, ?, ?, ?, ?, 'active')").run(workspace.id, workspace.taskId, workspace.driver, workspace.hostPath, workspace.containerPath ?? null, workspace.branchName);
+			const existingWorkspace = this.getWorkspace(workspace.id);
+			if (existingWorkspace !== null && (existingWorkspace.taskId !== workspace.taskId || existingWorkspace.driver !== workspace.driver || existingWorkspace.hostPath !== workspace.hostPath || existingWorkspace.containerPath !== (workspace.containerPath ?? null) || existingWorkspace.branchName !== workspace.branchName))
+				throw new Error("provider workspace identity conflicts with durable preparation");
+			if (existingWorkspace === null)
+				this.db.prepare("INSERT INTO workspaces (id, task_id, driver, host_path, container_path, branch_name, status) VALUES (?, ?, ?, ?, ?, ?, 'active')").run(workspace.id, workspace.taskId, workspace.driver, workspace.hostPath, workspace.containerPath ?? null, workspace.branchName);
+			else
+				this.db.prepare("UPDATE workspaces SET status = 'active', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(workspace.id);
 			const continuationVersion = continuation.capabilityVersion ?? continuation.providerVersion;
 			if (continuationVersion === undefined) throw new Error("provider preparation has no capability version");
-			this.db.prepare(`INSERT OR IGNORE INTO workspace_continuations
-				(id, task_id, driver, provider_version, capability_identity,
-				 capability_version, opaque_token, revision, status)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'ready')`).run(
-				continuation.id, continuation.taskId, continuation.driver,
-				continuationVersion,
-				continuation.capabilityIdentity ?? null, continuationVersion,
-				continuation.opaqueToken, continuation.revision,
-			);
+			const existingContinuation = this.getWorkspaceContinuation(continuation.id);
+			if (existingContinuation !== null && (existingContinuation.taskId !== continuation.taskId || existingContinuation.driver !== continuation.driver || existingContinuation.capabilityIdentity !== (continuation.capabilityIdentity ?? null) || existingContinuation.capabilityVersion !== continuationVersion || existingContinuation.opaqueToken !== continuation.opaqueToken || existingContinuation.revision !== continuation.revision))
+				throw new Error("provider continuation identity conflicts with durable preparation");
+			if (existingContinuation === null)
+				this.db.prepare(`INSERT INTO workspace_continuations
+					(id, task_id, driver, provider_version, capability_identity,
+					 capability_version, opaque_token, revision, status)
+					VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'ready')`).run(
+					continuation.id, continuation.taskId, continuation.driver,
+					continuationVersion,
+					continuation.capabilityIdentity ?? null, continuationVersion,
+					continuation.opaqueToken, continuation.revision,
+					);
+			else
+				this.db.prepare("UPDATE workspace_continuations SET status = 'ready', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(continuation.id);
 			this.db.prepare("UPDATE task_edges SET workspace_continuation_id = ?, handoff_artifact_id = ?, checkpoint_artifact_id = ? WHERE edge_id = ?").run(continuation.id, config.handoffReference.id, config.checkpointReference.id, edgeId);
 			this.db.prepare("DELETE FROM task_edge_status_overrides WHERE edge_id = ?").run(edgeId);
 			this.db.prepare("UPDATE child_preparations SET status = 'ready', workspace_id = ?, updated_at = CURRENT_TIMESTAMP WHERE edge_id = ?").run(workspace.id, edgeId);
@@ -1166,9 +1381,21 @@ export class LedgerStore {
 		return this.transaction(() => {
 			const edge = this.getTaskEdge(edgeId);
 			if (!edge || !["claimed", "resumable"].includes(edge.status)) throw new Error("child edge is not recoverable");
+			if (config.edgeId !== edgeId || continuation.taskId !== edge.childTaskId ||
+				edge.workspaceContinuationId !== continuation.id)
+				throw new Error("resumable continuation is not owned by the child edge");
 			const version = continuation.capabilityVersion ?? continuation.providerVersion;
 			if (version === undefined) throw new Error("resumable continuation requires a provider version");
-			this.db.prepare("UPDATE workspace_continuations SET driver = ?, provider_version = ?, capability_identity = ?, capability_version = ?, opaque_token = ?, revision = ?, status = 'resumable', updated_at = CURRENT_TIMESTAMP WHERE id = ? AND task_id = ?").run(continuation.driver, version, continuation.capabilityIdentity ?? null, version, continuation.opaqueToken, continuation.revision, continuation.id, edge.childTaskId);
+			if (continuation.capabilityIdentity === undefined || continuation.capabilityIdentity.length === 0)
+				throw new Error("resumable continuation requires a capability identity");
+			if (config.capabilityIdentity !== continuation.capabilityIdentity || config.capabilityVersion !== version)
+				throw new Error("resumable continuation capability does not match ingress");
+			for (const reference of [config.handoffReference, config.checkpointReference, config.childSpecReference, config.planReference, config.ingressConfigReference, config.parentReceiptReference])
+				if (reference.sourceRevision !== config.sourceRevision)
+					throw new Error("resumable ingress references do not share a source revision");
+			const continuationResult = this.db.prepare("UPDATE workspace_continuations SET driver = ?, provider_version = ?, capability_identity = ?, capability_version = ?, opaque_token = ?, revision = ?, status = 'resumable', updated_at = CURRENT_TIMESTAMP WHERE id = ? AND task_id = ?").run(continuation.driver, version, continuation.capabilityIdentity, version, continuation.opaqueToken, continuation.revision, continuation.id, edge.childTaskId);
+			if (Number((continuationResult as { changes?: number | bigint }).changes ?? 0) !== 1)
+				throw new Error("resumable continuation does not belong to the child edge");
 			this.db.prepare("INSERT INTO continuation_status_overrides (continuation_id, status) VALUES (?, 'resumable') ON CONFLICT(continuation_id) DO UPDATE SET status = 'resumable', updated_at = CURRENT_TIMESTAMP").run(continuation.id);
 			this.db.prepare("UPDATE task_edges SET handoff_artifact_id = ?, checkpoint_artifact_id = ? WHERE edge_id = ?").run(config.handoffReference.id, config.checkpointReference.id, edgeId);
 			this.db.prepare("INSERT INTO task_edge_status_overrides (edge_id, status) VALUES (?, 'resumable') ON CONFLICT(edge_id) DO UPDATE SET status = 'resumable', updated_at = CURRENT_TIMESTAMP").run(edgeId);
@@ -1190,6 +1417,33 @@ export class LedgerStore {
 	private replaceSequentialEdgeConfig(config: SequentialEdgeConfig): void {
 		this.db.prepare("DELETE FROM sequential_edge_configs WHERE edge_id = ?").run(config.edgeId);
 		this.insertSequentialEdgeConfig(config);
+	}
+
+	/** Active edges are exposed for boot validation; no provider facts are
+	 * inferred from rows in this query. */
+	listRecoverableChildEdges(includeReady = false): TaskEdgeRow[] {
+		const rows = this.db.prepare(
+			`SELECT e.*, o.status AS override_status
+			 FROM task_edges e
+			 LEFT JOIN task_edge_status_overrides o ON o.edge_id = e.edge_id
+			 WHERE COALESCE(o.status, e.status) IN ('claimed', 'resumable')
+			    OR (? = 1 AND COALESCE(o.status, e.status) = 'ready' AND EXISTS (
+					SELECT 1 FROM sequential_edge_configs c WHERE c.edge_id = e.edge_id
+				))
+			 ORDER BY e.created_at, e.rowid`,
+		).all(includeReady ? 1 : 0) as Record<string, unknown>[];
+		return rows.map(rowToTaskEdge);
+	}
+
+	getChildReconciliationEvidence(edgeId: string): ChildReconciliationEvidenceRow | null {
+		const row = this.db.prepare("SELECT * FROM child_reconciliation_evidence WHERE edge_id = ?").get(edgeId) as Record<string, unknown> | undefined;
+		if (!row) return null;
+		return { edgeId: String(row.edge_id), code: row.code as ChildReconciliationEvidenceCode, dependency: row.dependency as ChildReconciliationDependency, createdAt: String(row.created_at) };
+	}
+
+	private persistChildReconciliationEvidence(edgeId: string, evidence: ChildBootFailureEvidence): void {
+		this.db.prepare(`INSERT INTO child_reconciliation_evidence (edge_id, code, dependency)
+			VALUES (?, ?, ?) ON CONFLICT(edge_id) DO UPDATE SET code = excluded.code, dependency = excluded.dependency`).run(edgeId, evidence.code, evidence.dependency);
 	}
 
 	getTaskEdge(edgeId: string): TaskEdgeRow | null {
@@ -1328,12 +1582,77 @@ export class LedgerStore {
 		});
 	}
 
+	/** Install the terminal outbox before the first immutable evidence write.
+	 * Repeating the call must describe the exact same terminal outcome. */
+	beginChildTerminalSettlement(settlement: Omit<ChildTerminalSettlement, "state" | "delivery">): ChildTerminalSettlement {
+		return this.transaction(() => {
+			for (const reference of [settlement.verificationReference, settlement.resultReference, settlement.receiptReference, settlement.traceReference, settlement.parentReceiptReference, settlement.parentTraceReference])
+				ImmutableArtifactReferenceSchema.parse(reference);
+			const edge = this.getTaskEdge(settlement.edgeId);
+			if (!edge) throw new Error("unknown child edge");
+			const existing = this.getChildTerminalSettlement(settlement.edgeId);
+			if (existing !== null) {
+				const same = existing.state === "pending" || existing.state === "linked";
+				if (!same || existing.childStatus !== settlement.childStatus ||
+					JSON.stringify(existing.verificationReference) !== JSON.stringify(settlement.verificationReference) ||
+					JSON.stringify(existing.resultReference) !== JSON.stringify(settlement.resultReference) ||
+					JSON.stringify(existing.receiptReference) !== JSON.stringify(settlement.receiptReference) ||
+					JSON.stringify(existing.traceReference) !== JSON.stringify(settlement.traceReference) ||
+					JSON.stringify(existing.parentReceiptReference) !== JSON.stringify(settlement.parentReceiptReference) ||
+					JSON.stringify(existing.parentTraceReference) !== JSON.stringify(settlement.parentTraceReference))
+					throw new Error("terminal settlement conflicts with durable evidence");
+				return existing;
+			}
+			if (edge.status !== "claimed" && edge.status !== "resumable")
+				throw new Error("child edge must be claimed before terminal settlement");
+			this.db.prepare(`INSERT INTO child_terminal_settlements
+				(edge_id, status, child_status, verification_reference_json, result_reference_json,
+				receipt_reference_json, trace_reference_json, parent_receipt_reference_json,
+				parent_trace_reference_json, verification_json, result_json, receipt_json, trace_json,
+				parent_receipt_json, parent_trace_json)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+				settlement.edgeId, "pending", settlement.childStatus,
+				JSON.stringify(settlement.verificationReference), JSON.stringify(settlement.resultReference),
+				JSON.stringify(settlement.receiptReference), JSON.stringify(settlement.traceReference),
+				JSON.stringify(settlement.parentReceiptReference), JSON.stringify(settlement.parentTraceReference),
+				JSON.stringify(settlement.verification), JSON.stringify(settlement.result),
+				JSON.stringify(settlement.receipt), JSON.stringify(settlement.trace),
+				JSON.stringify(settlement.parentReceipt), JSON.stringify(settlement.parentTrace),
+			);
+			return this.getChildTerminalSettlement(settlement.edgeId)!;
+		});
+	}
+
+	getChildTerminalSettlement(edgeId: string): ChildTerminalSettlement | null {
+		const row = this.db.prepare("SELECT * FROM child_terminal_settlements WHERE edge_id = ?").get(edgeId) as Record<string, unknown> | undefined;
+		if (!row) return null;
+		const reference = (name: string): ImmutableArtifactReference => ImmutableArtifactReferenceSchema.parse(JSON.parse(String(row[name])));
+		const json = (name: string): unknown => JSON.parse(String(row[name]));
+		return {
+			edgeId: String(row.edge_id), childStatus: row.child_status as ChildTerminalStatus,
+			verificationReference: reference("verification_reference_json"), resultReference: reference("result_reference_json"),
+			receiptReference: reference("receipt_reference_json"), traceReference: reference("trace_reference_json"),
+			parentReceiptReference: reference("parent_receipt_reference_json"), parentTraceReference: reference("parent_trace_reference_json"),
+			verification: json("verification_json"), result: json("result_json"), receipt: json("receipt_json"), trace: json("trace_json"),
+			parentReceipt: json("parent_receipt_json"), parentTrace: json("parent_trace_json"),
+			state: row.status as "pending" | "linked",
+			delivery: {
+				receiptDelivered: Number(row.receipt_delivered) === 1,
+				traceDelivered: Number(row.trace_delivered) === 1,
+				finalReceiptDelivered: Number(row.final_receipt_delivered) === 1,
+				failureCode: row.delivery_failure_code === null ? null : row.delivery_failure_code as ChildDeliveryFailureCode,
+				failureDetail: row.delivery_failure_detail === null ? null : String(row.delivery_failure_detail),
+			},
+		};
+	}
+
 	/**
 	 * Atomically settle the edge, child continuation/task, required evidence,
 	 * and parent terminal outcome. Terminal rows are immutable and repeated
 	 * identical settlement is an idempotent no-op.
 	 */
-	settleChild(edgeId: string, status: ChildTerminalStatus, artifacts: ChildSettlementArtifacts): TaskEdgeRow {
+	settleChild(edgeId: string, status: ChildTerminalStatus, artifacts: ChildSettlementArtifacts, options: { deliveryAcknowledged?: boolean } = {}): TaskEdgeRow {
+		const deliveryPending = options.deliveryAcknowledged === false;
 		return this.transaction(() => {
 			const before = this.getTaskEdge(edgeId);
 			if (!before) throw new Error("unknown child edge");
@@ -1343,17 +1662,34 @@ export class LedgerStore {
 			if (before.status !== "claimed" && before.status !== "resumable")
 				throw new Error("child edge must be claimed before terminal settlement");
 			if (before.childTaskId === null) throw new Error("terminal child edge requires a child task");
-			for (const artifactId of [artifacts.resultArtifactId, artifacts.receiptArtifactId, artifacts.traceArtifactId, artifacts.failureArtifactId]) {
+			const pending = this.getChildTerminalSettlement(edgeId);
+			if (pending !== null && pending.state === "pending") {
+				if (pending.childStatus !== status || pending.resultReference.id !== artifacts.resultArtifactId ||
+					pending.receiptReference.id !== artifacts.receiptArtifactId || pending.traceReference.id !== artifacts.traceArtifactId ||
+					pending.parentReceiptReference.id !== artifacts.parentReceiptArtifactId || pending.parentTraceReference.id !== artifacts.parentTraceArtifactId)
+					throw new Error("terminal linkage does not match the durable terminal outbox");
+			}
+			for (const artifactId of [artifacts.resultArtifactId, artifacts.receiptArtifactId, artifacts.traceArtifactId, artifacts.parentReceiptArtifactId, artifacts.parentTraceArtifactId, artifacts.failureArtifactId]) {
 				if (artifactId !== undefined && artifactId !== null && !/^sha256:[a-f0-9]{64}$/.test(artifactId))
 					throw new Error("settlement artifacts must be content addressed");
 			}
-			const refs = [
-				["result", artifacts.resultArtifactId], ["receipt", artifacts.receiptArtifactId], ["trace", artifacts.traceArtifactId],
-				...(artifacts.failureArtifactId ? [["failure", artifacts.failureArtifactId] as [string, string]] : []),
-			] as Array<[string, string]>;
-			for (const [role, artifactId] of refs)
-				this.insertTaskArtifact({ taskId: before.childTaskId, role, artifactId, mediaType: "application/json" });
-			const parentStatus: TaskStatus = status === "completed" ? "completed" : status === "failed" ? "failed" : "escalated";
+			const refs: Array<[string, string, ImmutableArtifactReference | undefined, string]> = [
+				...(artifacts.verificationArtifactId ? [["verification", artifacts.verificationArtifactId, artifacts.verificationReference, before.childTaskId] as [string, string, ImmutableArtifactReference | undefined, string]] : []),
+				["result", artifacts.resultArtifactId, artifacts.resultReference, before.childTaskId],
+				["receipt", artifacts.receiptArtifactId, artifacts.receiptReference, before.childTaskId],
+				["trace", artifacts.traceArtifactId, artifacts.traceReference, before.childTaskId],
+				...(artifacts.failureArtifactId ? [["failure", artifacts.failureArtifactId, undefined, before.childTaskId] as [string, string, ImmutableArtifactReference | undefined, string]] : []),
+				...(artifacts.parentReceiptArtifactId ? [["receipt", artifacts.parentReceiptArtifactId, artifacts.parentReceiptReference, before.parentTaskId] as [string, string, ImmutableArtifactReference | undefined, string]] : []),
+				...(artifacts.parentTraceArtifactId ? [["trace", artifacts.parentTraceArtifactId, artifacts.parentTraceReference, before.parentTaskId] as [string, string, ImmutableArtifactReference | undefined, string]] : []),
+			];
+			for (const [role, artifactId, reference, taskId] of refs) {
+				if (reference !== undefined && reference.id !== artifactId)
+					throw new Error("settlement artifact reference does not match its identity");
+				this.insertTaskArtifact({ taskId, role, artifactId, mediaType: reference?.mediaType ?? "application/json", ...(reference === undefined ? {} : { reference }) });
+			}
+			const parentStatus: TaskStatus = deliveryPending
+				? "delivery_pending"
+				: status === "completed" ? "completed" : status === "failed" ? "failed" : "escalated";
 			const child = this.getTask(before.childTaskId);
 			if (!child) throw new Error("child task does not exist");
 			if (["completed", "failed", "escalated"].includes(child.status) && child.status !== status)
@@ -1362,6 +1698,16 @@ export class LedgerStore {
 			if (!parent) throw new Error("parent task does not exist");
 			if (["completed", "failed", "escalated"].includes(parent.status) && parent.status !== parentStatus)
 				throw new Error("parent task already has a different terminal status");
+			if (deliveryPending) {
+				// Canonical evidence is linked, but the external CLI artifacts are not
+				// acknowledged yet. Overrides keep the base terminal schema additive.
+				this.setTaskStatus(before.parentTaskId, "delivery_pending");
+				this.setTaskStatus(before.childTaskId, "delivery_pending");
+				this.db.prepare("INSERT INTO task_edge_status_overrides (edge_id, status) VALUES (?, 'delivery_pending') ON CONFLICT(edge_id) DO UPDATE SET status = 'delivery_pending', updated_at = CURRENT_TIMESTAMP").run(edgeId);
+				this.db.prepare("INSERT INTO continuation_status_overrides (continuation_id, status) VALUES ((SELECT workspace_continuation_id FROM task_edges WHERE edge_id = ?), 'delivery_pending') ON CONFLICT(continuation_id) DO UPDATE SET status = 'delivery_pending', updated_at = CURRENT_TIMESTAMP").run(edgeId);
+				this.db.prepare("UPDATE child_terminal_settlements SET status = 'linked', updated_at = CURRENT_TIMESTAMP WHERE edge_id = ?").run(edgeId);
+				return this.getTaskEdge(edgeId)!;
+			}
 			if (!("completed" === parent.status || "failed" === parent.status || "escalated" === parent.status)) {
 				const parentResult = this.db.prepare("UPDATE tasks SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status NOT IN ('completed', 'failed', 'escalated')").run(parentStatus, before.parentTaskId);
 				if (Number((parentResult as { changes?: number | bigint }).changes ?? 0) !== 1) throw new Error("parent terminal transition lost");
@@ -1373,10 +1719,67 @@ export class LedgerStore {
 			this.db.prepare("DELETE FROM task_status_overrides WHERE task_id IN (?, ?)").run(before.parentTaskId, before.childTaskId);
 			this.db.prepare("DELETE FROM task_edge_status_overrides WHERE edge_id = ?").run(edgeId);
 			this.db.prepare("DELETE FROM continuation_status_overrides WHERE continuation_id = (SELECT workspace_continuation_id FROM task_edges WHERE edge_id = ?)").run(edgeId);
+			this.db.prepare("UPDATE child_terminal_settlements SET status = 'linked', updated_at = CURRENT_TIMESTAMP WHERE edge_id = ?").run(edgeId);
 			return this.getTaskEdge(edgeId)!;
 		});
 	}
 
+	/** Record one idempotent external-delivery acknowledgement. Completion is
+	 * impossible until receipt, trace, and the final shipped-receipt rewrite
+	 * have each been acknowledged. */
+	acknowledgeChildDeliveryStep(
+		edgeId: string,
+		step: "receipt" | "trace" | "final_receipt",
+	): TaskEdgeRow {
+		return this.transaction(() => {
+			const settlement = this.getChildTerminalSettlement(edgeId);
+			if (settlement === null) throw new Error("terminal settlement does not exist");
+			if (settlement.state !== "linked") throw new Error("canonical terminal evidence is not linked");
+			const column = step === "receipt"
+				? "receipt_delivered"
+				: step === "trace" ? "trace_delivered" : "final_receipt_delivered";
+			this.db.prepare(`UPDATE child_terminal_settlements SET ${column} = 1, updated_at = CURRENT_TIMESTAMP WHERE edge_id = ?`).run(edgeId);
+			const updated = this.getChildTerminalSettlement(edgeId)!;
+			if (updated.delivery.receiptDelivered && updated.delivery.traceDelivered && updated.delivery.finalReceiptDelivered) {
+				const edge = this.getTaskEdge(edgeId);
+				if (!edge || edge.childTaskId === null) throw new Error("unknown terminal child edge");
+				const parentStatus: TaskStatus = updated.childStatus === "completed" ? "completed" : updated.childStatus === "failed" ? "failed" : "escalated";
+				this.db.prepare("UPDATE tasks SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id IN (?, ?)").run(parentStatus, edge.parentTaskId, edge.childTaskId);
+				this.db.prepare("UPDATE task_edges SET status = ?, completed_at = COALESCE(completed_at, CURRENT_TIMESTAMP) WHERE edge_id = ?").run(updated.childStatus, edgeId);
+				this.db.prepare("UPDATE workspace_continuations SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = (SELECT workspace_continuation_id FROM task_edges WHERE edge_id = ?)").run(updated.childStatus, edgeId);
+				this.db.prepare("DELETE FROM task_status_overrides WHERE task_id IN (?, ?)").run(edge.parentTaskId, edge.childTaskId);
+				this.db.prepare("DELETE FROM task_edge_status_overrides WHERE edge_id = ?").run(edgeId);
+				this.db.prepare("DELETE FROM continuation_status_overrides WHERE continuation_id = (SELECT workspace_continuation_id FROM task_edges WHERE edge_id = ?)").run(edgeId);
+			}
+			return this.getTaskEdge(edgeId)!;
+		});
+	}
+
+	/** Idempotent all-at-once acknowledgement for adapters that have already
+	 * durably written the provisional receipt, trace, and final receipt. */
+	acknowledgeChildDelivery(edgeId: string): TaskEdgeRow {
+		this.acknowledgeChildDeliveryStep(edgeId, "receipt");
+		this.acknowledgeChildDeliveryStep(edgeId, "trace");
+		return this.acknowledgeChildDeliveryStep(edgeId, "final_receipt");
+	}
+
+	/** Persist a bounded typed delivery failure. It never changes the canonical
+	 * outcome to ship and is safe to call repeatedly during recovery. */
+	recordChildDeliveryFailure(edgeId: string, code: ChildDeliveryFailureCode, detail: string): ChildTerminalSettlement {
+		return this.transaction(() => {
+			const settlement = this.getChildTerminalSettlement(edgeId);
+			if (settlement === null) throw new Error("terminal settlement does not exist");
+			const bounded = detail.slice(0, 256);
+			this.db.prepare("UPDATE child_terminal_settlements SET delivery_failure_code = ?, delivery_failure_detail = ?, updated_at = CURRENT_TIMESTAMP WHERE edge_id = ?").run(code, bounded, edgeId);
+			return this.getChildTerminalSettlement(edgeId)!;
+		});
+	}
+
+	/** Reopen evidence leaves the edge delivery-pending; the marker is durable
+	 * evidence that the prior process disappeared between delivery steps. */
+	noteChildDeliveryProcessLoss(edgeId: string): ChildTerminalSettlement {
+		return this.recordChildDeliveryFailure(edgeId, "process_lost_between_delivery_steps", "process ended before all external delivery acknowledgements");
+	}
 
 	// ─── workflow approvals (human gate, FR-2/FR-7 planning-only workflow) ──
 
@@ -1434,28 +1837,50 @@ export class LedgerStore {
 
 	// ─── boot reconciliation (NFR-1) ──────────────────────────────────
 
-	/** Reclassify child preparation ownership before generic task retry. No
-	 * session or provider is started while making this decision. */
-	reconcileChildEdgesOnBoot(): { preparing: string[]; resumable: string[]; blocked: string[] } {
+	/** Reclassify child preparation ownership before generic task retry. The
+	 * optional validation map is produced outside the SQLite write transaction
+	 * because provider target checks are asynchronous. Without it, recovery is
+	 * fail-closed: ledger rows alone can never make an edge resumable. */
+	reconcileChildEdgesOnBoot(validations?: ReadonlyMap<string, ChildBootValidationResult>): {
+		preparing: string[];
+		resumable: string[];
+		blocked: string[];
+		blockedEvidence: ChildReconciliationEvidenceRow[];
+	} {
 		return this.transaction(() => {
 			const preparing: string[] = [];
 			const resumable: string[] = [];
 			const blocked: string[] = [];
+			const blockedEvidence: ChildReconciliationEvidenceRow[] = [];
 			const owners = this.db.prepare("SELECT * FROM child_preparation_ownership WHERE status IN ('parent_pending', 'parent_accepted', 'artifacts_pending', 'provider_preparing') ORDER BY created_at, rowid").all() as Record<string, unknown>[];
 			for (const row of owners) {
 				const owner = rowToChildPreparationOwnership(row);
+				if (owner.status === "parent_pending" && owner.parentExecutionStartedAt !== null)
+					this.setTaskStatus(owner.parentTaskId, "preparing");
 				const edge = this.getTaskEdge(owner.edgeId);
-				if (!edge) preparing.push(owner.preparationId);
-				else if (edge.status === "preparing" || edge.status === "ready") preparing.push(owner.preparationId);
+				if (!edge || edge.status === "preparing" || edge.status === "ready") preparing.push(owner.preparationId);
 			}
-			const rows = this.db.prepare("SELECT e.*, o.status AS override_status FROM task_edges e LEFT JOIN task_edge_status_overrides o ON o.edge_id = e.edge_id WHERE COALESCE(o.status, e.status) IN ('preparing', 'ready', 'claimed', 'resumable') ORDER BY e.created_at, e.rowid").all() as Record<string, unknown>[];
+			const rows = this.db.prepare("SELECT e.*, o.status AS override_status FROM task_edges e LEFT JOIN task_edge_status_overrides o ON o.edge_id = e.edge_id WHERE COALESCE(o.status, e.status) IN ('preparing', 'ready', 'claimed', 'resumable', 'delivery_pending') ORDER BY e.created_at, e.rowid").all() as Record<string, unknown>[];
 			for (const row of rows) {
 				const edge = rowToTaskEdge(row);
-				// Preparing and ready are owned by the sequential recovery path. In
-				// particular, boot must not infer provider work from partial rows.
-				if (edge.status === "preparing" || edge.status === "ready") continue;
-
-				if (this.hasCompleteChildRecovery(edge)) {
+				const validation = validations?.get(edge.edgeId);
+				// A terminal outbox is self-contained: replaying its immutable bytes
+				// does not touch the provider, so boot must not block it merely because
+				// optional provider dependencies were not supplied.
+				const terminalSettlement = this.getChildTerminalSettlement(edge.edgeId);
+				if (terminalSettlement !== null) {
+					// Canonical evidence owns this edge. Do not reclassify it as
+					// executable work merely because external delivery was interrupted.
+					if (terminalSettlement.delivery.failureCode === null && edge.status !== "completed" && edge.status !== "failed" && edge.status !== "escalated")
+						this.db.prepare("UPDATE child_terminal_settlements SET delivery_failure_code = 'process_lost_between_delivery_steps', delivery_failure_detail = ?, updated_at = CURRENT_TIMESTAMP WHERE edge_id = ?").run("process ended before all external delivery acknowledgements".slice(0, 256), edge.edgeId);
+					continue;
+				}
+				// Ready edges are not made resumable by boot, but a configured ready
+				// edge must still fail closed when its immutable ingress is damaged.
+				// Legacy/unconfigured ready rows are intentionally left untouched.
+				if (edge.status === "preparing") continue;
+				if (edge.status === "ready" && validation?.valid !== false) continue;
+				if (validation?.valid === true) {
 					if (edge.status === "claimed") {
 						this.db.prepare("UPDATE task_edges SET status = 'resumable' WHERE edge_id = ? AND status = 'claimed'").run(edge.edgeId);
 						this.db.prepare("INSERT INTO task_edge_status_overrides (edge_id, status) VALUES (?, 'resumable') ON CONFLICT(edge_id) DO UPDATE SET status = 'resumable', updated_at = CURRENT_TIMESTAMP").run(edge.edgeId);
@@ -1467,83 +1892,23 @@ export class LedgerStore {
 					}
 					continue;
 				}
-
-				// A claimed/resumable edge with incomplete ingress is not retryable
-				// task work. Keep the edge authoritative and fail both linked tasks
-				// so the generic task reconciler cannot replay either side.
+				const evidence = validation?.valid === false
+					? validation.evidence
+					: { edgeId: edge.edgeId, code: "incompatible" as const, dependency: "validator" as const };
 				this.db.prepare("UPDATE task_edges SET status = 'blocked' WHERE edge_id = ?").run(edge.edgeId);
 				this.db.prepare("DELETE FROM task_edge_status_overrides WHERE edge_id = ?").run(edge.edgeId);
-				if (edge.childTaskId !== null)
-					this.setTaskStatus(edge.childTaskId, "failed");
+				if (edge.childTaskId !== null) this.setTaskStatus(edge.childTaskId, "failed");
 				this.setTaskStatus(edge.parentTaskId, "failed");
 				if (edge.workspaceContinuationId !== null) {
 					this.db.prepare("UPDATE workspace_continuations SET status = 'blocked', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(edge.workspaceContinuationId);
 					this.db.prepare("DELETE FROM continuation_status_overrides WHERE continuation_id = ?").run(edge.workspaceContinuationId);
 				}
+				this.persistChildReconciliationEvidence(edge.edgeId, evidence);
 				blocked.push(edge.edgeId);
+				blockedEvidence.push(this.getChildReconciliationEvidence(edge.edgeId)!);
 			}
-			return { preparing, resumable, blocked };
+			return { preparing, resumable, blocked, blockedEvidence };
 		});
-	}
-
-	/** Every fact needed to resume an edge is checked against the immutable
-	 * ingress manifest. A pair of presence bits is insufficient: stale or
-	 * mismatched references must never become optimistic resumable state. */
-	private hasCompleteChildRecovery(edge: TaskEdgeRow): boolean {
-		if (edge.childTaskId === null || edge.checkpointArtifactId === null) return false;
-		if (this.getTask(edge.parentTaskId) === null || this.getTask(edge.childTaskId) === null) return false;
-		if (edge.workspaceContinuationId === null) return false;
-
-		const config = this.db.prepare("SELECT * FROM sequential_edge_configs WHERE edge_id = ?").get(edge.edgeId) as Record<string, unknown> | undefined;
-		if (config === undefined) return false;
-		const parseReference = (column: string): ImmutableArtifactReference | null => {
-			try {
-				return ImmutableArtifactReferenceSchema.parse(JSON.parse(String(config[column])));
-			} catch {
-				return null;
-			}
-		};
-		const references: Array<[string, ImmutableArtifactReference | null]> = [
-			["handoff", parseReference("handoff_reference_json")],
-			["checkpoint", parseReference("checkpoint_reference_json")],
-			["child-spec", parseReference("child_spec_reference_json")],
-			["plan", parseReference("plan_reference_json")],
-			["ingress-config", parseReference("ingress_config_reference_json")],
-			["parent-receipt", parseReference("parent_receipt_reference_json")],
-		];
-		if (references.some(([, reference]) => reference === null)) return false;
-		const handoff = references[0]![1]!;
-		const checkpoint = references[1]![1]!;
-		if (handoff.id !== edge.handoffArtifactId || checkpoint.id !== edge.checkpointArtifactId) return false;
-		if (new Set(references.map(([, reference]) => reference!.id)).size !== references.length) return false;
-		if (String(config.model_identity).length === 0 || String(config.source_revision).length === 0 ||
-			String(config.capability_identity).length === 0 || String(config.capability_version).length === 0) return false;
-
-		const continuation = this.db.prepare(
-			`SELECT c.*, o.status AS override_status
-			 FROM workspace_continuations c
-			 LEFT JOIN continuation_status_overrides o ON o.continuation_id = c.id
-			 WHERE c.id = ? AND c.task_id = ?`,
-		).get(edge.workspaceContinuationId, edge.childTaskId) as Record<string, unknown> | undefined;
-		if (continuation === undefined || ["blocked", "completed", "failed", "escalated"].includes(String(continuation.override_status ?? continuation.status))) return false;
-		if (String(continuation.capability_identity) !== String(config.capability_identity) ||
-			String(continuation.capability_version) !== String(config.capability_version)) return false;
-
-		for (const [role, reference] of references) {
-			const artifact = this.db.prepare(
-				"SELECT artifact_id, media_type, source_revision, reference_json FROM task_artifacts WHERE task_id = ? AND role = ? AND artifact_id = ?",
-			).get(edge.childTaskId, role, reference!.id) as Record<string, unknown> | undefined;
-			if (artifact === undefined || artifact.reference_json === null ||
-				String(artifact.media_type) !== reference!.mediaType ||
-				(artifact.source_revision !== null && String(artifact.source_revision) !== reference!.sourceRevision)) return false;
-			try {
-				const stored = ImmutableArtifactReferenceSchema.parse(JSON.parse(String(artifact.reference_json)));
-				if (!sameArtifactReference(stored, reference!)) return false;
-			} catch {
-				return false;
-			}
-		}
-		return true;
 	}
 
 	/**
@@ -1570,7 +1935,7 @@ export class LedgerStore {
 				`SELECT 1 FROM task_edges e
 				 LEFT JOIN task_edge_status_overrides o ON o.edge_id = e.edge_id
 				 WHERE (e.parent_task_id = ? OR e.child_task_id = ?)
-				   AND COALESCE(o.status, e.status) IN ('preparing', 'ready', 'claimed', 'resumable')
+				   AND COALESCE(o.status, e.status) IN ('preparing', 'ready', 'claimed', 'resumable', 'delivery_pending')
 				 LIMIT 1`,
 			).get(task.id, task.id);
 			const preparationOwned = this.db.prepare(
@@ -1609,12 +1974,6 @@ function textColumn(value: unknown): string {
 function requireArtifactIdentity(value: string, field: string): void {
 	if (!/^sha256:[a-f0-9]{64}$/.test(value))
 		throw new Error(`${field} must be a sha256 content address`);
-}
-
-function sameArtifactReference(a: ImmutableArtifactReference, b: ImmutableArtifactReference): boolean {
-	return a.version === b.version && a.id === b.id && a.namespace === b.namespace &&
-		a.kind === b.kind && a.mediaType === b.mediaType && a.sizeBytes === b.sizeBytes &&
-		a.sensitivity === b.sensitivity && a.sourceRevision === b.sourceRevision;
 }
 
 function rowToTask(row: Record<string, unknown>): TaskRow {
@@ -1669,6 +2028,7 @@ function rowToChildPreparationOwnership(row: Record<string, unknown>): ChildPrep
 		capabilityVersion: String(row.capability_version), status: row.status as ChildPreparationOwnershipStatus,
 		parentRevision: row.parent_revision === null ? null : String(row.parent_revision),
 		parentReceiptJson: row.parent_receipt_json === null ? null : String(row.parent_receipt_json),
+		parentExecutionStartedAt: row.parent_execution_started_at === null || row.parent_execution_started_at === undefined ? null : String(row.parent_execution_started_at),
 		createdAt: String(row.created_at), updatedAt: String(row.updated_at),
 	};
 }

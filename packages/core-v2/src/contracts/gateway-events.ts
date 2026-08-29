@@ -144,9 +144,13 @@ export const ChildLifecycleEventSchema = z.object({
 		ctx.addIssue({ code: "custom", path: ["detail", "handoffArtifactId"], message: "queued child requires its handoff reference" });
 	if ((event.type === "child.resumable" || event.type === "continuation.checkpointed" || event.type === "continuation.resumed") && event.detail.checkpointArtifactId === undefined)
 		ctx.addIssue({ code: "custom", path: ["detail", "checkpointArtifactId"], message: "continuation event requires its checkpoint reference" });
+	// A terminal event is included in the trace that its traceArtifactId would
+	// identify. Requiring that identity here would make the evidence hash
+	// circular. The result and receipt are causal inputs; the trace is linked
+	// by the atomic settlement record, outside the event payload.
 	if (["child.completed", "child.failed", "child.escalated"].includes(event.type) &&
-		(event.detail.resultArtifactId === undefined || event.detail.receiptArtifactId === undefined || event.detail.traceArtifactId === undefined))
-		ctx.addIssue({ code: "custom", path: ["detail"], message: "terminal child event requires result, receipt, and trace references" });
+		(event.detail.resultArtifactId === undefined || event.detail.receiptArtifactId === undefined))
+		ctx.addIssue({ code: "custom", path: ["detail"], message: "terminal child event requires result and receipt references" });
 });
 
 /** Validate before gateway retention and before trace projection. */

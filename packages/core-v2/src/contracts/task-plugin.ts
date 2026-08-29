@@ -38,6 +38,7 @@ export interface TaskLedgerRow {
 		| "preparing"
 		| "awaiting_execution"
 		| "resumable"
+		| "delivery_pending"
 		| "verifying"
 		| "reviewing"
 		| "completed"

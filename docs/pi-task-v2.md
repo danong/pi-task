@@ -64,17 +64,23 @@ linked below are evidence anchors, not an inventory snapshot.
 
 ### Current state for a fresh session
 
+**Active M5 hardening: closed; ready to begin M5.5 subject to repository gates.**
+Implementation remains the final authority for shipped behavior. The current
+closure authority is [`reports/m5-hardening-closure.md`](../reports/m5-hardening-closure.md).
+Earlier M5 review reports remain historical evidence with their original
+findings; this update does not rewrite them.
+
 - **Shipped M1–M5:** typed execution, context control plane, bounded execution,
   and durable sequential parent→child continuation exist in the current v2
   implementation.
-- **Active M5 hardening:** a post-land review found gaps in crash-authoritative
-  preparation, public edge resume, persisted-plan lineage, cost-cap honesty,
-  and terminal evidence. Repairs may exist on an unlanded development stack;
-  do not describe them as shipped until repository gates pass and `main` moves.
-- **Planned M5.5:** preserve value from failed inference through engine-owned
-  settlement, a minimal deterministically bounded continuation record, and
-  linear resume of the latest failed state. It does not solve reasoning or
+- **Planned M5.5:** engine-owned settlement, a bounded passive continuation
+  record containing only continuation-relevant visible event state, and linear
+  resume of the latest failed state by run ID. It does not solve reasoning or
   strategy failures.
+
+`maxCostUsd` / `--max-cost-usd` remains unsupported as a live interruption cap:
+new submissions reject it until provider-neutral live cost signals exist;
+measured final usage remains reporting-only.
 - **Planned M6:** make Tau the default, archive v1 outside its active context,
   and systematically capture real-task outcomes and failures. Later architecture
   is chosen from that evidence rather than a preplanned infrastructure list.
@@ -419,32 +425,40 @@ continuation workflow.
 
 M4.1 hardens verification and trace debuggability without adding transcripts
 or private reasoning. Verification measures per-command `durationMs` (injectable
-clock for determinism), emits bounded structural evidence (`index/digest/exitCode/timedOut/durationMs` with `executed/expected/omitted/capped` capped at 24), and rejects impossible counts. The CLI announces `run: <attemptId>` before execution and prints `receipt/trace/failure artifact:` paths at termination; `model.assigned` now carries `engineVersion/milestone/specHash/familyId/attemptId/attemptNumber`. Every terminal `task.failed` carries a stable `stage`/`code` taxonomy (`setup/context/session/workspace/verification/acceptance/delivery/workflow/internal` × `session_timed_out/worker_failed/verification_failed/...`) for both CLI and daemon paths, and `mise run trace-report -- <trace.json> [report.md]` renders a bounded single-run explanation. The first useful dogfood timeout (67 turns, 108 tool calls, `$0.19`, `prompt exceeded 600000ms`) is retained as `test/fixtures/dogfood/m41-verification-timeout.trace.json` — not a performance baseline, but the evidence that prompted independent execution caps for M5.
+clock for determinism), emits bounded structural evidence whose cap is defined
+by the implementation, and rejects impossible counts. The CLI announces
+`run: <attemptId>` before execution and prints `receipt/trace/failure artifact:`
+paths at termination; `model.assigned` now carries the engine and attempt
+identities. Every terminal `task.failed` carries a stable stage/code taxonomy
+for both CLI and daemon paths, and `mise run trace-report -- <trace.json>
+renders a bounded single-run explanation. The retained timeout fixture under
+`packages/core-v2/test/fixtures/dogfood/` is evidence for independent execution
+caps, not a performance baseline; consult the fixture and source for details.
 
 ### M5 — durable sequential composition and self-hosting
 
-M5 is shipped, but post-land hardening is active. The ordinary v2 CLI can select
+M5 is shipped and its hardening closure is closed in the repaired tree; the tree
+is ready to begin M5.5 subject to repository gates. The current closure
+authority is [`reports/m5-hardening-closure.md`](../reports/m5-hardening-closure.md).
+Earlier M5 review reports remain historical evidence with their original
+findings, rather than being silently rewritten. The ordinary v2 CLI can select
 one explicit raw-context continuation child with `--child-spec`. A child
 receives its own validated spec, provider-owned workspace continuation, context
 plan, and bounded declarative checkpoint/handoff—not a transcript. Parent/child
-edges and provider compatibility are durable. The post-land review report under
-`reports/` is the authority for unresolved hardening findings; passing the full
-repository gates is required before claiming those repairs shipped.
+edges and provider compatibility are durable.
 
-M5 proved a narrow mechanism: a prepared sequential child can preserve a
-workspace and bounded state across process restart. It did **not** make every
-standalone/review/repair attempt resumable, preserve the useful visible Pi
-session stream, or automatically settle verified work when a model misses its
-final `yield`. Those gaps define M5.5 rather than being hidden under the M5
-claim.
+M5 remains a narrow mechanism: a prepared sequential child can preserve a
+workspace and bounded state across process restart. The existing M5
+`--resume <edge-id>` operation is an edge-oriented selector for that path; it
+is distinct from M5.5's planned public run-ID status and resume contract.
 
-### M5.5 — preserve value from failed inference
+### M5.5 — planned: preserve value from failed inference
 
-M5.5 has one boundary: make the latest failed attempt cheaper to continue than
-starting from scratch. It is linear recovery, not generalized branching,
-memory, or strategy correction.
+M5.5 is planned, not implemented. Its one boundary is to make the latest failed
+attempt cheaper to continue than starting from scratch. It is linear recovery,
+not generalized branching, memory, or strategy correction.
 
-M5.5 delivers three capabilities:
+M5.5 is limited to three capabilities:
 
 1. **Engine-owned settlement.** When preserved changes satisfy artifact policy,
    integrate cleanly, and pass engine-owned verification, missing a final model

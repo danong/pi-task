@@ -343,9 +343,12 @@ export function attachWatchdogs(
 			userOnAction?.(action);
 		},
 	});
+	// Arm before subscribing: injectable/test hosts may synchronously replay
+	// their initial turn event from subscribe, and that first turn still
+	// belongs to this watchdog boundary.
+	driver.start();
 	const unsubscribe = handle.subscribe((event) => driver.onEvent(event));
 	driver.onCleanup(unsubscribe);
-	driver.start();
 	return {
 		driver,
 		dispose: () => driver.dispose(),

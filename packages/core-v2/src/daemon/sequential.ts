@@ -33,6 +33,7 @@ import {
 	TraceCollector,
 	traceEventFromGateway,
 } from "../contracts/trace.ts";
+import { admitTaskLifecycleEvent } from "../contracts/gateway-events.ts";
 import { VerificationEvidenceSchema } from "../contracts/verification-driver.ts";
 import {
 	isWorkspaceContinuationError,
@@ -52,6 +53,7 @@ import { InMemoryTaskGateway } from "../gateway/in-memory.ts";
 import {
 	LedgerStore,
 	type SequentialEdgeConfig,
+	type ChildTerminalSettlement,
 } from "../ledger/store.ts";
 import { assertNoMaxCostUsd } from "../budget/execution-budget.ts";
 import { parseTaskSpec } from "./task-runner.ts";
@@ -143,12 +145,33 @@ class SequentialEvidenceStream {
 			this.childTrace.record(traceEventFromGateway(event, this.childTaskId));
 	}
 
-	finish(parentOutcome: TaskReceipt["verdict"], childOutcome: TaskReceipt["verdict"]): { parent: ReturnType<TraceCollector["finish"]>; child: ReturnType<TraceCollector["finish"]> } {
+	/** Record a canonical terminal event without making gateway delivery part
+	 * of the trace hash. It is admitted exactly like a gateway event. */
+	recordCanonical(event: TaskLifecycleEvent): void {
+		this.record(admitTaskLifecycleEvent(event));
+	}
+
+	recordUsage(parentReceipt: TaskReceipt, childReceipt: TaskReceipt): void {
+		const usageFor = (receipt: TaskReceipt) => ({
+			status: receipt.usageStatus === "measured" ? "measured" as const : "unavailable" as const,
+			costUsd: receipt.costUsd,
+			inputTokens: receipt.inputTokens,
+			outputTokens: receipt.outputTokens,
+			cacheReadTokens: receipt.cacheReadTokens,
+			// TaskReceipt intentionally stays compact and does not carry cache-write
+			// tokens; zero is the truthful compatibility value for this projection.
+			cacheWriteTokens: 0,
+		});
+		this.parentTrace.setUsage(usageFor(parentReceipt));
+		this.childTrace.setUsage(usageFor(childReceipt));
+	}
+
+	finishChild(outcome: TaskReceipt["verdict"]): ReturnType<TraceCollector["finish"]> {
+		return this.childTrace.finish(outcome);
+	}
+	finishParent(outcome: TaskReceipt["verdict"]): ReturnType<TraceCollector["finish"]> {
 		this.unsubscribe();
-		return {
-			parent: this.parentTrace.finish(parentOutcome),
-			child: this.childTrace.finish(childOutcome),
-		};
+		return this.parentTrace.finish(outcome);
 	}
 }
 
@@ -156,6 +179,11 @@ export interface SequentialTaskSpec {
 	parentSpecMarkdown: string;
 	childSpecMarkdown: string;
 }
+export type SequentialDeliveryPolicy = "canonical" | "pending";
+
+/** `canonical` is an explicit direct-library policy: immutable canonical
+ * artifacts are the caller's delivery boundary. CLI callers use `pending`
+ * and acknowledge their external receipt/trace writes separately. */
 export interface RunSequentialTaskOptions extends SequentialTaskSpec {
 	projectDir: string;
 	artifactsDir: string;
@@ -180,6 +208,7 @@ export interface RunSequentialTaskOptions extends SequentialTaskSpec {
 	contextArtifactStore?: ContextArtifactStore;
 	onContextEvent?: (event: ContextEvidenceEvent) => void;
 	onEvent?: (event: SessionHostEvent) => void;
+	deliveryPolicy?: SequentialDeliveryPolicy;
 }
 
 /** Everything required by a new daemon to resume an already-ready edge. */
@@ -201,6 +230,7 @@ export interface SequentialRuntimeDependencies {
 	contextArtifactStore?: ContextArtifactStore;
 	onContextEvent?: (event: ContextEvidenceEvent) => void;
 	onEvent?: (event: SessionHostEvent) => void;
+	deliveryPolicy?: SequentialDeliveryPolicy;
 }
 
 export interface SequentialPrepareResult {
@@ -208,14 +238,14 @@ export interface SequentialPrepareResult {
 	parentTaskId: string;
 	childTaskId: string;
 	edgeId?: string;
-	status: "preparing" | "ready" | "failed" | "escalated" | "blocked";
+	status: "preparing" | "ready" | "completed" | "failed" | "escalated" | "blocked" | "delivery_pending";
 	failureCode?: SequentialFailureCode;
 }
 
 export type SequentialFailureCode =
 	| "unsupported" | "missing" | "stale" | "revision_mismatch"
 	| "malformed_token" | "checkpoint_missing" | "handoff_invalid"
-	| "corrupt" | "incompatible" | "provider_error";
+	| "corrupt" | "incompatible" | "provider_error" | "delivery_failed";
 
 export interface SequentialRunResult {
 	parent: TaskReceipt;
@@ -223,7 +253,7 @@ export interface SequentialRunResult {
 	parentTaskId: string;
 	childTaskId: string;
 	edgeId?: string;
-	status: "completed" | "failed" | "escalated" | "blocked" | "resumable";
+	status: "completed" | "failed" | "escalated" | "blocked" | "resumable" | "delivery_pending";
 	failureCode?: SequentialFailureCode;
 }
 
@@ -262,6 +292,20 @@ function artifactJson(
 	namespace: string = kind,
 ) {
 	return store.putJson(value, { namespace, kind, sensitivity: "internal", sourceRevision });
+}
+
+/** Compute the same immutable identity as putJson without touching storage.
+ * This lets the terminal event carry causal result/receipt identities while
+ * deliberately omitting its own trace identity. */
+function artifactJsonReference(
+	store: ContextArtifactStore,
+	value: unknown,
+	sourceRevision: string,
+	kind: ImmutableArtifactReference["kind"],
+	namespace: string = kind,
+): ImmutableArtifactReference {
+	const bytes = Buffer.from(`${stableStringify(value)}\n`, "utf8");
+	return store.reference(bytes, { namespace, kind, mediaType: "application/json", sensitivity: "internal", sourceRevision });
 }
 
 function providerChangedPaths(facts: SequentialExecutionFacts): string[] {
@@ -363,12 +407,28 @@ export async function prepareSequentialChild(options: RunSequentialTaskOptions):
 	assertNoMaxCostUsd(options.maxCostUsd);
 	const parentSpec = parseTaskSpec(options.parentSpecMarkdown);
 	const childSpec = parseTaskSpec(options.childSpecMarkdown);
-	const parentTaskId = options.parentTaskId ?? id("seq");
-	const childTaskId = options.childTaskId ?? id("child");
-	const edgeId = options.edgeId ?? id("edge");
+	const requestedParentTaskId = options.parentTaskId ?? id("seq");
+	const requestedChildTaskId = options.childTaskId ?? id("child");
+	const requestedEdgeId = options.edgeId ?? id("edge");
 	const ledger = new LedgerStore(options.dbPath);
 	const gateway = options.gateway ?? new InMemoryTaskGateway({ store: ledger });
 	try {
+		// Reuse the durable owner when a retry supplies any stable library
+		// identity. This keeps explicit retries from accidentally pairing a
+		// previous edge with freshly generated parent/child ids.
+		const ownerByEdge = ledger.getChildPreparationOwnershipByEdge(requestedEdgeId);
+		const ownerByParent = options.parentTaskId === undefined
+			? null
+			: ledger.getActiveChildPreparationOwnershipByParent(options.parentTaskId);
+		const existingOwner = ownerByEdge ?? ownerByParent;
+		if (existingOwner !== null &&
+			(options.parentTaskId !== undefined && options.parentTaskId !== existingOwner.parentTaskId ||
+			 options.childTaskId !== undefined && options.childTaskId !== existingOwner.plannedChildTaskId ||
+			 options.edgeId !== undefined && options.edgeId !== existingOwner.edgeId))
+			throw new Error("sequential retry identity conflicts with durable preparation");
+		const parentTaskId = existingOwner?.parentTaskId ?? requestedParentTaskId;
+		const childTaskId = existingOwner?.plannedChildTaskId ?? requestedChildTaskId;
+		const edgeId = existingOwner?.edgeId ?? requestedEdgeId;
 		// Reserve ownership before the parent session starts. The reservation is
 		// the recovery boundary: an accepted parent can never look standalone
 		// merely because the process died before child rows were attached.
@@ -379,16 +439,41 @@ export async function prepareSequentialChild(options: RunSequentialTaskOptions):
 		catch (error) { providerError = error; }
 		const reservedProviderIdentity = capabilityIdentity(continuationCapability ?? {}) ?? "unavailable";
 		const reservedProviderVersion = capabilityVersion(continuationCapability ?? {}) ?? "unavailable";
-		const existingOwner = ledger.getChildPreparationOwnershipByEdge(edgeId);
 		const preparationId = existingOwner?.preparationId ?? id("prep");
 		const owner = ledger.persistChildPreparationOwner({
 			preparationId, edgeId, parentTaskId, plannedChildTaskId: childTaskId,
 			driver: options.workspaceDriver.name, capabilityIdentity: reservedProviderIdentity,
 			capabilityVersion: reservedProviderVersion,
 		});
+		const existingEdge = ledger.getTaskEdge(owner.edgeId);
+		if (owner.status === "blocked") {
+			return { parent: fallbackReceipt(owner.parentTaskId), parentTaskId: owner.parentTaskId, childTaskId: owner.plannedChildTaskId, edgeId: owner.edgeId, status: "blocked", failureCode: "provider_error" };
+		}
+		if (existingEdge !== null && (existingEdge.status === "delivery_pending" || ["completed", "failed", "escalated"].includes(existingEdge.status))) {
+			const durableParent = owner.parentReceiptJson === null
+				? fallbackReceipt(owner.parentTaskId)
+				: TaskReceiptSchema.parse(JSON.parse(owner.parentReceiptJson));
+			return { parent: durableParent, parentTaskId: owner.parentTaskId, childTaskId: owner.plannedChildTaskId, edgeId: owner.edgeId, status: existingEdge.status as "completed" | "failed" | "escalated" | "delivery_pending" };
+		}
 		let parentReceipt: TaskReceipt;
 		let parentRevision: string;
 		if (owner.status === "parent_pending") {
+			// Mark execution before the provider/session boundary. If the process
+			// disappears before acceptance is recorded, the next invocation sees
+			// this fence and blocks instead of replaying the parent.
+			const hadPriorParentSession = ledger.listSessions(parentTaskId).length > 0;
+			const executionClaim = ledger.beginChildParentExecution(preparationId);
+			if (!executionClaim.acquired) {
+				// A pre-existing marker/session belongs to an earlier process and is
+				// not safe to execute again. This also fences databases created by
+				// the pre-hardening implementation. A losing concurrent caller does
+				// not block the winner; it observes preparation ownership instead.
+				if (owner.parentExecutionStartedAt !== null || hadPriorParentSession) {
+					ledger.blockChildPreparation(preparationId);
+					return { parent: fallbackReceipt(parentTaskId), parentTaskId, childTaskId, edgeId, status: "blocked", failureCode: "provider_error" };
+				}
+				return { parent: fallbackReceipt(parentTaskId), parentTaskId, childTaskId, edgeId, status: "preparing", failureCode: "provider_error" };
+			}
 			const parent = await runIsolatedTask({
 				specMarkdown: options.parentSpecMarkdown, projectDir: options.projectDir,
 				artifactsDir: options.artifactsDir, dbPath: options.dbPath, model: options.model,
@@ -402,6 +487,9 @@ export async function prepareSequentialChild(options: RunSequentialTaskOptions):
 				...(options.onContextEvent === undefined ? {} : { onContextEvent: options.onContextEvent }),
 				...(options.onEvent === undefined ? {} : { onEvent: options.onEvent }),
 				taskId: parentTaskId, reuseExistingTask: true, deferSuccessfulTerminal: true,
+				onAccepted: ({ receipt, revision }) => {
+					ledger.recordChildParentAcceptance(preparationId, JSON.stringify(receipt), revision);
+				},
 			});
 			if (parent.receipt.verdict !== "ship") {
 				ledger.blockChildPreparation(preparationId);
@@ -411,9 +499,16 @@ export async function prepareSequentialChild(options: RunSequentialTaskOptions):
 			parentRevision = parent.mergedCommitId ?? sha(parentTaskId).slice("sha256:".length);
 			ledger.recordChildParentAcceptance(preparationId, JSON.stringify(parentReceipt), parentRevision);
 		} else {
-			if (!owner.parentReceiptJson || !owner.parentRevision)
-				throw new Error("accepted child preparation has no durable parent receipt");
-			parentReceipt = TaskReceiptSchema.parse(JSON.parse(owner.parentReceiptJson));
+			if (!owner.parentReceiptJson || !owner.parentRevision) {
+				ledger.blockChildPreparation(preparationId);
+				return { parent: fallbackReceipt(parentTaskId), parentTaskId, childTaskId, edgeId, status: "blocked", failureCode: "missing" };
+			}
+			try {
+				parentReceipt = TaskReceiptSchema.parse(JSON.parse(owner.parentReceiptJson));
+			} catch {
+				ledger.blockChildPreparation(preparationId);
+				return { parent: fallbackReceipt(parentTaskId), parentTaskId, childTaskId, edgeId, status: "blocked", failureCode: "corrupt" };
+			}
 			parentRevision = owner.parentRevision;
 		}
 		const parent = { receipt: parentReceipt, mergedCommitId: parentRevision };
@@ -441,9 +536,12 @@ export async function prepareSequentialChild(options: RunSequentialTaskOptions):
 			const sourceRevision = sha(workspaceRevision);
 			const plan = planContext({ goal: childSpec.goal, requirements: childSpec.requirements, candidates: [], sourceRevision: workspaceRevision, modelId: options.model, toolSchemaIdentity: "sequential-child", mode: "raw" });
 			const planRef = options.artifactStore.putJson(plan, { namespace: "plan", kind: "plan", sensitivity: "internal", sourceRevision: workspaceRevision });
-			const checkpoint = createWorkingCheckpoint({ epochId: "parent-handoff", workspaceRevision, plan: planRef, requirements: parentSpec.requirements.map((_, index) => ({ id: `r${index + 1}`, status: "satisfied" as const })), verification: { status: "passed" }, summary: { nextActions: ["continue accepted parent work"] } });
+			// This checkpoint belongs to the child execution epoch. Parent
+			// acceptance is represented by the handoff decision, not by marking
+			// unrelated child requirements satisfied.
+			const checkpoint = createWorkingCheckpoint({ epochId: "child-handoff", workspaceRevision, plan: planRef, requirements: childSpec.requirements.map((_, index) => ({ id: `r${index + 1}`, status: "open" as const })), verification: { status: "unknown" }, summary: { nextActions: ["continue accepted parent work"] } });
 			const checkpointRef = persistWorkingCheckpoint(options.artifactStore, checkpoint);
-			const handoff: ChildHandoff = buildChildHandoff({ version: 1, parentTaskId, childTaskId, relationship: "continuation", checkpointId: checkpointRef.id, planId: planRef.id, sourceRevision, requirementState: parentSpec.requirements.map((_, index) => ({ id: `r${index + 1}`, status: "complete", summary: "parent requirement accepted" })), decisions: ["parent verification and acceptance passed"], openQuestions: [], nextActions: ["execute direct continuation"], changedPaths: [], artifactReferences: [], verification: { status: "passed", evidenceReferences: [] } });
+			const handoff: ChildHandoff = buildChildHandoff({ version: 1, parentTaskId, childTaskId, relationship: "continuation", checkpointId: checkpointRef.id, planId: planRef.id, sourceRevision, requirementState: childSpec.requirements.map((_, index) => ({ id: `r${index + 1}`, status: "pending" as const, summary: "child requirement pending" })), decisions: ["parent verification and acceptance passed"], openQuestions: [], nextActions: ["execute direct continuation"], changedPaths: [], artifactReferences: [], verification: { status: "passed", evidenceReferences: [] } });
 			const handoffRef = artifactJson(options.artifactStore, handoff, workspaceRevision, "handoff");
 			const childSpecRef = artifactJson(options.artifactStore, { version: 1, kind: "sequential-child-spec", markdown: options.childSpecMarkdown }, workspaceRevision, "context", "context");
 			const parentReceiptRef = artifactJson(options.artifactStore, parent.receipt, workspaceRevision, "receipt");
@@ -471,7 +569,7 @@ export async function prepareSequentialChild(options: RunSequentialTaskOptions):
 				prepared = { context, continuation: await continuationCapability.preserveContinuation(context) };
 			}
 			const final = prepared.continuation.revision === parentRevision ? initial : buildArtifacts(prepared.continuation.revision);
-			const continuationId = id("cont");
+			const continuationId = `cont-${edgeId}`;
 			ledger.completeChildPreparation(edgeId, { id: `${childTaskId}-workspace`, driver: options.workspaceDriver.name, ...prepared.context }, { id: continuationId, taskId: childTaskId, driver: options.workspaceDriver.name, providerVersion, capabilityIdentity: providerIdentity, capabilityVersion: providerVersion, opaqueToken: prepared.continuation.opaqueToken, revision: prepared.continuation.revision }, final.config);
 			gateway.emit({ type: "child.queued", taskId: parentTaskId, detail: { parentTaskId, childTaskId, relationship: "continuation", ordinal: 1, handoffArtifactId: final.handoffRef.id, checkpointArtifactId: final.checkpointRef.id, status: "ready" } });
 			return { parent: parent.receipt, parentTaskId, childTaskId, edgeId, status: "ready" };
@@ -495,6 +593,7 @@ export async function resumeSequentialChild(edgeId: string, runtime: SequentialR
 	assertNoMaxCostUsd(runtime.maxCostUsd);
 	const ledger = new LedgerStore(runtime.dbPath);
 	const gateway = runtime.gateway ?? new InMemoryTaskGateway({ store: ledger });
+	const deliveryPolicy = runtime.deliveryPolicy ?? "canonical";
 	try {
 		const edge = ledger.getTaskEdge(edgeId);
 		if (!edge || edge.childTaskId === null) {
@@ -502,6 +601,48 @@ export async function resumeSequentialChild(edgeId: string, runtime: SequentialR
 			return { parent: missing, childTaskId: "unknown-child", parentTaskId: "unknown-parent", edgeId, status: "blocked", failureCode: "missing" };
 		}
 		const childTaskId = edge.childTaskId;
+		// A terminal outbox owns this edge once terminal evidence construction has
+		// begun. Replay only immutable writes and linkage; never validate/resume a
+		// provider or create another child session on this path.
+		const pendingTerminal = ledger.getChildTerminalSettlement(edgeId);
+		if (pendingTerminal !== null) {
+			const recoverTerminal = (): SequentialRunResult => {
+				try {
+					const write = (value: unknown, reference: ImmutableArtifactReference): ImmutableArtifactReference => {
+						const actual = runtime.artifactStore.putJson(value, { namespace: reference.namespace, kind: reference.kind, sensitivity: reference.sensitivity, sourceRevision: reference.sourceRevision, mediaType: reference.mediaType });
+						if (!equalReference(actual, reference)) throw new Error("terminal evidence identity changed during replay");
+						return actual;
+					};
+					write(pendingTerminal.verification, pendingTerminal.verificationReference);
+					write(pendingTerminal.result, pendingTerminal.resultReference);
+					write(pendingTerminal.receipt, pendingTerminal.receiptReference);
+					write(pendingTerminal.trace, pendingTerminal.traceReference);
+					write(pendingTerminal.parentReceipt, pendingTerminal.parentReceiptReference);
+					write(pendingTerminal.parentTrace, pendingTerminal.parentTraceReference);
+					if (pendingTerminal.state === "pending") ledger.settleChild(edgeId, pendingTerminal.childStatus, {
+						verificationArtifactId: pendingTerminal.verificationReference.id, resultArtifactId: pendingTerminal.resultReference.id, receiptArtifactId: pendingTerminal.receiptReference.id, traceArtifactId: pendingTerminal.traceReference.id,
+						verificationReference: pendingTerminal.verificationReference,
+						parentReceiptArtifactId: pendingTerminal.parentReceiptReference.id, parentTraceArtifactId: pendingTerminal.parentTraceReference.id,
+						resultReference: pendingTerminal.resultReference, receiptReference: pendingTerminal.receiptReference, traceReference: pendingTerminal.traceReference,
+						parentReceiptReference: pendingTerminal.parentReceiptReference, parentTraceReference: pendingTerminal.parentTraceReference,
+					}, { deliveryAcknowledged: false });
+					const parent = TaskReceiptSchema.parse(pendingTerminal.parentReceipt);
+					const child = TaskReceiptSchema.parse(pendingTerminal.receipt);
+					if (deliveryPolicy === "canonical") {
+						ledger.acknowledgeChildDeliveryStep(edgeId, "receipt");
+						ledger.acknowledgeChildDeliveryStep(edgeId, "trace");
+						ledger.acknowledgeChildDeliveryStep(edgeId, "final_receipt");
+						return { parent, child, parentTaskId: edge.parentTaskId, childTaskId, edgeId, status: pendingTerminal.childStatus };
+					}
+					return { parent: parentOutcome(parent, "delivery_pending", child), child, parentTaskId: edge.parentTaskId, childTaskId, edgeId, status: "delivery_pending", failureCode: "delivery_failed" };
+				} catch {
+					const parent = (() => { try { return TaskReceiptSchema.parse(pendingTerminal.parentReceipt); } catch { return fallbackReceipt(edge.parentTaskId); } })();
+					const child = (() => { try { return TaskReceiptSchema.parse(pendingTerminal.receipt); } catch { return undefined; } })();
+					return { parent: parentOutcome(parent, "resumable"), ...(child === undefined ? {} : { child }), parentTaskId: edge.parentTaskId, childTaskId, edgeId, status: "resumable", failureCode: "provider_error" };
+				}
+			};
+			return recoverTerminal();
+		}
 		const facts: SequentialExecutionFacts = { finalizations: [] };
 		const stream = new SequentialEvidenceStream(edge.parentTaskId, childTaskId, gateway);
 		const workspaceDriver = evidenceDriver(runtime.workspaceDriver, facts);
@@ -672,9 +813,15 @@ export async function resumeSequentialChild(edgeId: string, runtime: SequentialR
 				gateway.emit({ type: "child.resumable", taskId: childTaskId, detail });
 				return { parent: parentOutcome(parentReceipt, "resumable"), ...(childReceipt === undefined ? {} : { child: childReceipt }), parentTaskId: edge.parentTaskId, childTaskId, edgeId, status: "resumable" };
 			} catch (error) {
-				if (!isWorkspaceContinuationError(error)) throw error;
-				ledger.blockChild(edgeId);
-				return blockedResult(edge, error.code, parentReceipt);
+				// A failed refresh cannot leave a claimed edge for generic retry:
+				// the provider may already own a changed workspace revision. Block
+				// the edge durably and return a non-ship outcome instead of replaying
+				// either the parent or the interrupted child.
+				try { ledger.blockChild(edgeId); } catch { /* preserve the refresh failure */ }
+				const code = isWorkspaceContinuationError(error)
+					? error.code
+					: error instanceof RangeError ? "corrupt" : "provider_error";
+				return blockedResult(edge, code, parentReceipt);
 			}
 		};
 
@@ -702,78 +849,92 @@ export async function resumeSequentialChild(edgeId: string, runtime: SequentialR
 		const status = terminalStatus(child.receipt);
 		facts.verification = stream.verification;
 		const verificationFact = facts.verification;
+		let terminalOutboxInstalled = false;
 		try {
 			if (verificationFact === undefined || verificationFact.evidence === undefined)
 				throw new Error("verification provider did not return structural evidence");
 			const verificationEvidence = VerificationEvidenceSchema.parse(verificationFact.evidence);
-			const verificationRef = artifactJson(runtime.artifactStore, {
-				version: 1,
-				passed: verificationFact.passed,
-				evidence: verificationEvidence,
-			}, sha(config.sourceRevision), "verification");
+			const verification = { version: 1, passed: verificationFact.passed, evidence: verificationEvidence };
+			const verificationRef = artifactJsonReference(runtime.artifactStore, verification, sha(config.sourceRevision), "verification");
 			const result = terminalChildResult(facts, edge.parentTaskId, edge.childTaskId, child.receipt, verificationRef);
-			const aggregateVerdict = parentOutcome(parentReceipt, status, child.receipt).verdict;
-			const traces = stream.finish(aggregateVerdict, child.receipt.verdict);
-			const resultRef = artifactJson(runtime.artifactStore, result, config.sourceRevision, "result");
-			const receiptRef = artifactJson(runtime.artifactStore, child.receipt, config.sourceRevision, "receipt");
-			const traceRef = artifactJson(runtime.artifactStore, traces.child, config.sourceRevision, "trace");
-			const childDependency = ChildDependencySummarySchema.parse({
-				childTaskId: edge.childTaskId,
-				edgeId,
-				verdict: child.receipt.verdict,
-				receiptReference: receiptRef,
-				traceReference: traceRef,
-			});
-			const aggregateReceipt = parentOutcome(parentReceipt, status, child.receipt, childDependency);
-			const parentReceiptRef = artifactJson(runtime.artifactStore, aggregateReceipt, config.sourceRevision, "receipt");
-			const parentTraceRef = artifactJson(runtime.artifactStore, traces.parent, config.sourceRevision, "trace");
-			// Store complete references before the edge transaction. If any
-			// immutable write or ledger insertion fails, settlement is never
-			// attempted and the parent cannot be reported as shipped.
-			for (const [taskId, role, reference] of [
-				[edge.childTaskId, "verification", verificationRef],
-				[edge.childTaskId, "result", resultRef],
-				[edge.childTaskId, "receipt", receiptRef],
-				[edge.childTaskId, "trace", traceRef],
-				[edge.parentTaskId, "receipt", parentReceiptRef],
-				[edge.parentTaskId, "trace", parentTraceRef],
-			] as const)
-				ledger.insertTaskArtifact({ taskId, role, artifactId: reference.id, mediaType: reference.mediaType, sourceRevision: reference.sourceRevision, reference });
+			const resultRef = artifactJsonReference(runtime.artifactStore, result, config.sourceRevision, "result");
+			const receiptRef = artifactJsonReference(runtime.artifactStore, child.receipt, config.sourceRevision, "receipt");
+
+			// Terminal facts are admitted before either trace is finalized. The
+			// trace identity itself is intentionally absent from this event: putting
+			// it in its own content hash would be circular.
+			const terminalDetail = { parentTaskId: edge.parentTaskId, childTaskId: edge.childTaskId, relationship: "continuation" as const, ordinal: edge.ordinal, handoffArtifactId: edge.handoffArtifactId, checkpointArtifactId: config.checkpointReference.id, status, resultArtifactId: resultRef.id, receiptArtifactId: receiptRef.id };
+			stream.recordUsage(parentReceipt, child.receipt);
+			stream.recordCanonical({ type: status === "completed" ? "child.completed" : status === "escalated" ? "child.escalated" : "child.failed", taskId: edge.childTaskId, detail: terminalDetail });
+			const childTrace = stream.finishChild(child.receipt.verdict);
+			const traceRef = artifactJsonReference(runtime.artifactStore, childTrace, config.sourceRevision, "trace");
+			const childDependency = ChildDependencySummarySchema.parse({ childTaskId: edge.childTaskId, edgeId, verdict: child.receipt.verdict, receiptReference: receiptRef, traceReference: traceRef });
+			const linkedAggregateReceipt = parentOutcome(parentReceipt, status, child.receipt, childDependency);
+			const parentReceiptRef = artifactJsonReference(runtime.artifactStore, linkedAggregateReceipt, config.sourceRevision, "receipt");
+			const aggregateEvent: TaskLifecycleEvent = linkedAggregateReceipt.verdict === "ship"
+				? { type: "task.completed", taskId: edge.parentTaskId, detail: { verdict: "ship" } }
+				: linkedAggregateReceipt.verdict === "escalate"
+					? { type: "task.escalated", taskId: edge.parentTaskId, detail: { verdict: "escalate" } }
+					: { type: "task.failed", taskId: edge.parentTaskId, detail: { cause: "child terminal evidence did not ship", stage: "delivery", code: "delivery_failed" } };
+			stream.recordCanonical(aggregateEvent);
+			const parentTrace = stream.finishParent(linkedAggregateReceipt.verdict);
+			const parentTraceRef = artifactJsonReference(runtime.artifactStore, parentTrace, config.sourceRevision, "trace");
+			const terminal: Omit<ChildTerminalSettlement, "state" | "delivery"> = {
+				edgeId, childStatus: status, verificationReference: verificationRef, resultReference: resultRef, receiptReference: receiptRef, traceReference: traceRef,
+				parentReceiptReference: parentReceiptRef, parentTraceReference: parentTraceRef,
+				verification, result, receipt: child.receipt, trace: childTrace, parentReceipt: linkedAggregateReceipt, parentTrace,
+			};
+			// This is the durable fence before the first evidence write. A crash at
+			// any subsequent write boundary replays this outbox, not the child.
+			ledger.beginChildTerminalSettlement(terminal);
+			terminalOutboxInstalled = true;
+			for (const [value, reference] of [
+				[verification, verificationRef], [result, resultRef], [child.receipt, receiptRef], [childTrace, traceRef],
+				[linkedAggregateReceipt, parentReceiptRef], [parentTrace, parentTraceRef],
+			] as const) {
+				const actual = artifactJson(runtime.artifactStore, value, reference.sourceRevision, reference.kind, reference.namespace);
+				if (!equalReference(actual, reference)) throw new Error("terminal artifact identity changed during write");
+			}
 			ledger.settleChild(edgeId, status, {
-				resultArtifactId: resultRef.id,
-				receiptArtifactId: receiptRef.id,
-				traceArtifactId: traceRef.id,
-			});
+				verificationArtifactId: verificationRef.id, resultArtifactId: resultRef.id, receiptArtifactId: receiptRef.id, traceArtifactId: traceRef.id,
+				verificationReference: verificationRef,
+				parentReceiptArtifactId: parentReceiptRef.id, parentTraceArtifactId: parentTraceRef.id,
+				resultReference: resultRef, receiptReference: receiptRef, traceReference: traceRef,
+				parentReceiptReference: parentReceiptRef, parentTraceReference: parentTraceRef,
+			}, { deliveryAcknowledged: false });
 			try {
 				await workspaceDriver.cleanupWorkspace(resumed);
 				ledger.setWorkspaceStatus(`${edge.childTaskId}-workspace`, "released");
-			} catch {
-				// Terminal evidence is already durable; preserve cleanup failure for boot hygiene.
-				ledger.setWorkspaceStatus(`${edge.childTaskId}-workspace`, "orphaned");
+			} catch { ledger.setWorkspaceStatus(`${edge.childTaskId}-workspace`, "orphaned"); }
+			// Gateway delivery follows the canonical durable linkage. It must not
+			// turn an already-settled ledger outcome back into a fake child failure.
+			try { gateway.emit({ type: status === "completed" ? "child.completed" : status === "escalated" ? "child.escalated" : "child.failed", taskId: edge.childTaskId, detail: terminalDetail }); gateway.emit(aggregateEvent); } catch { /* durable evidence remains authoritative */ }
+			if (deliveryPolicy === "canonical") {
+				ledger.acknowledgeChildDeliveryStep(edgeId, "receipt");
+				ledger.acknowledgeChildDeliveryStep(edgeId, "trace");
+				ledger.acknowledgeChildDeliveryStep(edgeId, "final_receipt");
+				return { parent: linkedAggregateReceipt, child: child.receipt, parentTaskId: edge.parentTaskId, childTaskId: edge.childTaskId, edgeId, status };
 			}
-			const detail = { parentTaskId: edge.parentTaskId, childTaskId: edge.childTaskId, relationship: "continuation" as const, ordinal: edge.ordinal, handoffArtifactId: edge.handoffArtifactId, checkpointArtifactId: config.checkpointReference.id, status, resultArtifactId: resultRef.id, receiptArtifactId: receiptRef.id, traceArtifactId: traceRef.id };
-			gateway.emit({ type: status === "completed" ? "child.completed" : status === "escalated" ? "child.escalated" : "child.failed", taskId: edge.childTaskId, detail });
-			if (aggregateReceipt.verdict === "ship")
-				gateway.emit({ type: "task.completed", taskId: edge.parentTaskId, detail: { verdict: "ship" } });
-			else if (aggregateReceipt.verdict === "escalate")
-				gateway.emit({ type: "task.escalated", taskId: edge.parentTaskId, detail: { verdict: "escalate" } });
-			else
-				gateway.emit({ type: "task.failed", taskId: edge.parentTaskId, detail: { cause: "child terminal evidence did not ship", stage: "delivery", code: "delivery_failed" } });
-			return { parent: aggregateReceipt, child: child.receipt, parentTaskId: edge.parentTaskId, childTaskId: edge.childTaskId, edgeId, status };
+			return { parent: parentOutcome(parentReceipt, "delivery_pending", child.receipt, childDependency), child: child.receipt, parentTaskId: edge.parentTaskId, childTaskId: edge.childTaskId, edgeId, status: "delivery_pending", failureCode: "delivery_failed" };
 		} catch (error) {
-			try {
-				ledger.blockChild(edgeId);
-			} catch { /* retain the original evidence/settlement failure */ }
-			try {
-				gateway.emit({ type: "child.blocked", taskId: edge.childTaskId, detail: { parentTaskId: edge.parentTaskId, childTaskId: edge.childTaskId, relationship: "continuation", ordinal: edge.ordinal, handoffArtifactId: edge.handoffArtifactId, checkpointArtifactId: config.checkpointReference.id, status: "blocked" } });
-			} catch { /* gateway admission must not mask the non-ship result */ }
-			return { parent: parentOutcome(parentReceipt, "failed", child.receipt), child: child.receipt, parentTaskId: edge.parentTaskId, childTaskId: edge.childTaskId, edgeId, status: "failed", failureCode: "provider_error" };
+			if (!terminalOutboxInstalled) {
+				try { ledger.blockChild(edgeId); } catch { /* retain the original evidence/settlement failure */ }
+				try { gateway.emit({ type: "child.blocked", taskId: edge.childTaskId, detail: { parentTaskId: edge.parentTaskId, childTaskId: edge.childTaskId, relationship: "continuation", ordinal: edge.ordinal, handoffArtifactId: edge.handoffArtifactId, checkpointArtifactId: config.checkpointReference.id, status: "blocked" } }); } catch { /* admission must not mask non-ship */ }
+				return { parent: parentOutcome(parentReceipt, "failed", child.receipt), child: child.receipt, parentTaskId: edge.parentTaskId, childTaskId: edge.childTaskId, edgeId, status: "failed", failureCode: "provider_error" };
+			}
+			// Pending terminal evidence is recoverable. Keep the edge claimed and
+			// report resumable so callers cannot mistake this attempt for a ship.
+			return { parent: parentOutcome(parentReceipt, "resumable", child.receipt), child: child.receipt, parentTaskId: edge.parentTaskId, childTaskId: edge.childTaskId, edgeId, status: "resumable", failureCode: "provider_error" };
 		}
 	} finally { ledger.close(); }
 }
 
 /** Compatibility composition retained for existing callers. */
 export async function runSequentialTask(options: RunSequentialTaskOptions): Promise<SequentialRunResult> {
+	// This composition is itself a new execution ingress. Validate before
+	// constructing its gateway ledger so unsupported cost caps cannot leave any
+	// durable or provider-visible effect behind.
+	assertNoMaxCostUsd(options.maxCostUsd);
 	// A direct sequential run must have one gateway instance for both phases;
 	// otherwise the parent lifecycle facts disappear at the process-local
 	// prepare/resume seam and the terminal trace would be synthetic.
@@ -781,8 +942,10 @@ export async function runSequentialTask(options: RunSequentialTaskOptions): Prom
 	const gateway = options.gateway ?? new InMemoryTaskGateway({ store: gatewayLedger });
 	try {
 		const prepared = await prepareSequentialChild({ ...options, gateway });
+		if ((prepared.status === "delivery_pending") && prepared.edgeId !== undefined)
+			return resumeSequentialChild(prepared.edgeId, { ...options, gateway });
 		if (prepared.status !== "ready" || prepared.edgeId === undefined)
-			return { ...prepared, status: prepared.status === "escalated" ? "escalated" : prepared.status === "blocked" ? "blocked" : prepared.status === "preparing" ? "resumable" : "failed" };
+			return { ...prepared, status: prepared.status === "completed" ? "completed" : prepared.status === "escalated" ? "escalated" : prepared.status === "blocked" ? "blocked" : prepared.status === "preparing" ? "resumable" : prepared.status === "delivery_pending" ? "delivery_pending" : "failed" };
 		return resumeSequentialChild(prepared.edgeId, { ...options, gateway });
 	} finally {
 		gatewayLedger?.close();

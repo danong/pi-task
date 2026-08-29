@@ -31,6 +31,8 @@ import { parseCliArgs, cliHelp, cliExitCode, CLI_EDGE_BLOCKED_EXIT, CLI_EDGE_TER
 import { LedgerStore } from "../src/ledger/store.ts";
 import { prepareSequentialChild } from "../src/daemon/sequential.ts";
 import { ContextArtifactStore } from "../src/context/artifact-store.ts";
+import { writeReceiptArtifact } from "../src/guards/receipts.ts";
+import { writeTraceArtifact } from "../src/contracts/trace.ts";
 import { deriveTaskId } from "../src/daemon/task-runner.ts";
 import { JujutsuWorkspaceDriver } from "../src/workspaces/jj-driver.ts";
 import {
@@ -991,6 +993,33 @@ export async function runTests(): Promise<void> {
 			"CLI resumes a capped child from its checkpoint and derives a fresh ship receipt from settlement",
 		);
 		cappedAfterSecond.close();
+
+		// M5-C4 fault ladder: each external boundary fails in a fresh CLI
+		// invocation. Every retry crosses close/reopen and must only redeliver;
+		// the parent and child sessions remain exactly one each.
+		const deliveryFixture = join(root, "delivery-faults");
+		mkdirSync(deliveryFixture); const deliveryRepo = join(deliveryFixture, "repo"); initRepo(deliveryRepo);
+		const deliveryDb = join(deliveryFixture, "ledger.sqlite"); const deliveryArtifacts = join(deliveryFixture, "artifacts"); const deliveryContinuations = join(deliveryFixture, "continuations"); const deliverySpawns = { value: 0 };
+		const deliveryPrepared = await prepareSequentialChild({ parentSpecMarkdown: PARENT_SPEC, childSpecMarkdown: CHILD_SPEC, projectDir: deliveryRepo, artifactsDir: join(deliveryFixture, "failures"), dbPath: deliveryDb, model: "fake/model", workspaceDriver: new JujutsuWorkspaceDriver({ projectDir: deliveryRepo }), host: fakeHost("ok", deliverySpawns, { artifactFile: preparingFile }), artifactStore: new ContextArtifactStore({ root: deliveryContinuations }) });
+		let receiptWrites = 0; let traceWrites = 0;
+		const deliveryDeps: CliDependencies = {
+			host: fakeHost("ok", deliverySpawns, { artifactFile: preparingFile, warmRewrite: true }),
+			workspaceDriver: new JujutsuWorkspaceDriver({ projectDir: deliveryRepo }), write: () => undefined,
+			writeReceiptArtifact: (receipt, dir) => { receiptWrites += 1; return receiptWrites === 1 || receiptWrites === 4 ? undefined : writeReceiptArtifact(receipt, dir); },
+			writeTraceArtifact: (trace, dir) => { traceWrites += 1; return traceWrites === 3 ? { ok: false, error: "simulated trace write failure" } : writeTraceArtifact(trace, dir); },
+		};
+		const deliveryFirst = await runCli(["--resume", deliveryPrepared.edgeId!, "--project-dir", deliveryRepo, "--model", "fake/model", "--db", deliveryDb, "--artifacts-dir", deliveryArtifacts], deliveryDeps);
+		const deliveryAfterReceipt = new LedgerStore(deliveryDb); const deliveryEdgeAfterReceipt = deliveryAfterReceipt.getTaskEdge(deliveryPrepared.edgeId!); deliveryAfterReceipt.close();
+		check(deliveryFirst.exitCode === 3 && deliveryEdgeAfterReceipt?.status === "delivery_pending", "receipt write failure leaves sequential ledger delivery pending");
+		const deliverySecond = await runCli(["--resume", deliveryPrepared.edgeId!, "--project-dir", deliveryRepo, "--model", "fake/model", "--db", deliveryDb, "--artifacts-dir", deliveryArtifacts], deliveryDeps);
+		const deliveryAfterTrace = new LedgerStore(deliveryDb); const deliveryEdgeAfterTrace = deliveryAfterTrace.getTaskEdge(deliveryPrepared.edgeId!); deliveryAfterTrace.close();
+		check(deliverySecond.exitCode === 3 && deliveryEdgeAfterTrace?.status === "delivery_pending", "trace write failure leaves sequential ledger delivery pending");
+		const deliveryThird = await runCli(["--resume", deliveryPrepared.edgeId!, "--project-dir", deliveryRepo, "--model", "fake/model", "--db", deliveryDb, "--artifacts-dir", deliveryArtifacts], deliveryDeps);
+		const deliveryAfterRewrite = new LedgerStore(deliveryDb); const deliveryEdgeAfterRewrite = deliveryAfterRewrite.getTaskEdge(deliveryPrepared.edgeId!); deliveryAfterRewrite.close();
+		check(deliveryThird.exitCode === 3 && deliveryEdgeAfterRewrite?.status === "delivery_pending", "final shipped-receipt rewrite failure leaves ledger delivery pending");
+		const deliveryFourth = await runCli(["--resume", deliveryPrepared.edgeId!, "--project-dir", deliveryRepo, "--model", "fake/model", "--db", deliveryDb, "--artifacts-dir", deliveryArtifacts], deliveryDeps);
+		const deliveryDone = new LedgerStore(deliveryDb); const deliveryDoneEdge = deliveryDone.getTaskEdge(deliveryPrepared.edgeId!); const deliveryOutbox = deliveryDone.getChildTerminalSettlement(deliveryPrepared.edgeId!); const deliveryParentSessions = deliveryDone.listSessions(deliveryPrepared.parentTaskId).length; const deliveryChildSessions = deliveryDone.listSessions(deliveryPrepared.childTaskId).length; deliveryDone.close();
+		check(deliveryFourth.exitCode === 0 && deliveryDoneEdge?.status === "completed" && deliveryOutbox?.delivery.receiptDelivered === true && deliveryOutbox.delivery.traceDelivered === true && deliveryOutbox.delivery.finalReceiptDelivered === true && deliveryParentSessions === 1 && deliveryChildSessions === 1 && deliverySpawns.value === 2, "delivery-only retry acknowledges all boundaries with ledger/receipt agreement and zero respawns");
 
 		// Selector outcomes are resolved before provider construction. A terminal
 		// repeat is a successful no-op, while an absent edge is a usage error.

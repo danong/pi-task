@@ -16,6 +16,7 @@ import type {
 	TaskGateway,
 	WorkspaceDriver,
 } from "./contracts/index.ts";
+import { TaskReceiptSchema } from "./contracts/payloads.ts";
 import {
 	TraceCollector,
 	finalizeArtifactAcceptance,
@@ -98,6 +99,10 @@ export interface CliDependencies {
 	write?: (line: string) => void;
 	writeError?: (line: string) => void;
 	contextProviderFactory?: ContextProviderFactory;
+	/** Fault-injectable transport seams; the ledger still requires explicit
+	 * acknowledgement after each successful external write. */
+	writeReceiptArtifact?: typeof writeReceiptArtifact;
+	writeTraceArtifact?: typeof writeTraceArtifact;
 }
 
 export type CliExecutionStatus =
@@ -105,7 +110,8 @@ export type CliExecutionStatus =
 	| "failed"
 	| "escalated"
 	| "blocked"
-	| "resumable";
+	| "resumable"
+	| "delivery_pending";
 
 export interface CliResult {
 	exitCode: number;
@@ -126,7 +132,7 @@ Execute exactly one pi-task-v2 task in an isolated jj workspace.
 Options:
   --spec, -s <file>             Task markdown file (Goal, Requirements, Verification)
   --child-spec <file>           One durable continuation child (raw context only)
-  --resume <edge-id>            Resume one durable continuation edge (raw context only; terminal is a no-op)
+  --resume <edge-id>            Resume or redeliver one durable continuation edge (raw context only; terminal is a no-op)
   --project-dir <directory>     Project jj repository (default: current directory)
   --model, -m <provider/model>  Worker model (required unless PI_TASK_V2_MODEL is set)
   --state-dir <directory>       State root for the ledger and artifacts
@@ -531,8 +537,9 @@ function finishTrace(
 	trace: TraceCollector,
 	artifactsDir: string,
 	outcome: "ship" | "failed" | "escalate",
+	writer: typeof writeTraceArtifact = writeTraceArtifact,
 ): TraceWriteResult {
-	const initial = writeTraceArtifact(trace.finish("failed"), artifactsDir);
+	const initial = writer(trace.finish("failed"), artifactsDir);
 	if (!initial.ok) return initial;
 	try {
 		trace.record({
@@ -547,7 +554,7 @@ function finishTrace(
 			error: error instanceof Error ? error.message : String(error),
 		};
 	}
-	return writeTraceArtifact(trace.finish(outcome), artifactsDir);
+	return writer(trace.finish(outcome), artifactsDir);
 }
 
 /** Execute the adapter without calling process.exit; suitable for tests. */
@@ -560,6 +567,8 @@ export async function runCli(
 	const writeError =
 		dependencies.writeError ??
 		((line: string) => process.stderr.write(`${line}\n`));
+	const receiptWriter = dependencies.writeReceiptArtifact ?? writeReceiptArtifact;
+	const traceWriter = dependencies.writeTraceArtifact ?? writeTraceArtifact;
 	let args: ParsedCliArgs;
 	try {
 		args = parseCliArgs(argv);
@@ -605,10 +614,15 @@ export async function runCli(
 
 	const paths = pathsFor(args, projectDir);
 	let familyId = args.resumeEdgeId ?? deriveTaskId(childSpecMarkdown === undefined ? specMarkdown : `${specMarkdown}\n<!-- continuation -->\n${childSpecMarkdown}`, projectDir);
+	// Sequential submissions reuse an active preparation reservation. A normal
+	// standalone submission still resolves a fresh attempt below; only the
+	// durable parent-to-child owner opts into identity reuse.
+	let sequentialOwner: ReturnType<LedgerStore["getActiveChildPreparationOwnershipByParent"]> = null;
 	let trace: TraceCollector | undefined;
 	let traceTaskId = familyId;
 	let runAnnounced = false;
 	let daemon: Awaited<ReturnType<typeof startDaemon>> | undefined;
+	let sequentialEdgeId: string | undefined;
 	const announceRun = (): void => {
 		if (runAnnounced) return;
 		write(`run: ${traceTaskId}`);
@@ -676,12 +690,28 @@ export async function runCli(
 			// setup failure can use the same first/warm-ledger identity as a run.
 			const identityStore = new LedgerStore(paths.dbPath);
 			try {
-				traceTaskId = resolveAttemptId(identityStore, familyId);
+				sequentialOwner = childSpecMarkdown === undefined
+					? null
+					: identityStore.getActiveChildPreparationOwnershipByParent(familyId);
+				traceTaskId = sequentialOwner?.parentTaskId ?? resolveAttemptId(identityStore, familyId);
 			} finally {
 				identityStore.close();
 			}
 		}
-		daemon = await daemonStarter(paths.dbPath, { projectDir });
+		// Resume boot validates against fresh artifact/provider instances before
+		// selector delivery. Ordinary standalone boot remains capability-free.
+		const bootWorkspaceDriver = args.resumeEdgeId === undefined
+			? undefined
+			: (dependencies.workspaceDriver ?? new JujutsuWorkspaceDriver({ projectDir }));
+		const bootArtifactStore = args.resumeEdgeId === undefined
+			? undefined
+			: new ContextArtifactStore({ root: join(dirname(paths.artifactsDir), "continuations") });
+		daemon = await daemonStarter(paths.dbPath, {
+			projectDir,
+			...(bootWorkspaceDriver === undefined ? {} : { workspaceDriver: bootWorkspaceDriver }),
+			...(bootArtifactStore === undefined ? {} : { artifactStore: bootArtifactStore }),
+			...(args.resumeEdgeId === undefined ? {} : { model: args.model }),
+		});
 		if (args.resumeEdgeId !== undefined) {
 			// Select non-runnable states before constructing providers or traces. This
 			// keeps selector outcomes deterministic and makes terminal selection a
@@ -707,7 +737,7 @@ export async function runCli(
 			// durable manifest.
 			traceTaskId = selectedEdge.parentTaskId;
 			familyId = traceTaskId;
-		} else {
+		} else if (sequentialOwner === null) {
 			const daemonAttemptId = resolveAttemptId(daemon.store, familyId);
 			if (daemonAttemptId !== traceTaskId)
 				throw new Error(
@@ -719,7 +749,7 @@ export async function runCli(
 			...(args.wallTimeoutMs === undefined ? {} : { wallTimeoutMs: args.wallTimeoutMs }),
 		});
 		announceRun();
-		const workspaceDriver =
+		const workspaceDriver = bootWorkspaceDriver ??
 			dependencies.workspaceDriver ??
 			new JujutsuWorkspaceDriver({ projectDir });
 		if (!(await workspaceDriver.isSupported()))
@@ -777,8 +807,9 @@ export async function runCli(
 			const result = args.resumeEdgeId !== undefined
 				? await (async () => {
 						const sequential = await resumeSequentialChild(args.resumeEdgeId!, {
+							deliveryPolicy: "pending",
 							...sharedExecution,
-							artifactStore: new ContextArtifactStore({ root: join(dirname(paths.artifactsDir), "continuations") }),
+							artifactStore: bootArtifactStore ?? new ContextArtifactStore({ root: join(dirname(paths.artifactsDir), "continuations") }),
 							contextCapabilitiesFactory: acquisitionFactoryFromLegacy(selectedContextFactory),
 							...(contextArtifactStore === undefined ? {} : { contextArtifactStore }),
 							onContextEvent: (event: ContextEvidenceEvent) =>
@@ -795,9 +826,11 @@ export async function runCli(
 								recordSessionEvent(trace!, event, turnState);
 							},
 						});
+						sequentialEdgeId = sequential.edgeId;
 						resumeBlocked = sequential.status === "blocked";
 						executionStatus = sequential.status;
-						return { receipt: sequential.parent, conflicts: sequential.status === "escalated" ? ["child escalation"] : [] };
+						const canonical = sequential.edgeId === undefined ? null : daemon!.store.getChildTerminalSettlement(sequential.edgeId);
+						return { receipt: canonical === null ? sequential.parent : TaskReceiptSchema.parse(canonical.parentReceipt), conflicts: sequential.status === "escalated" ? ["child escalation"] : [] };
 					})()
 				: childSpecMarkdown === undefined
 					? await runIsolatedTask({
@@ -822,17 +855,21 @@ export async function runCli(
 					: await (async () => {
 							const sequential = await runSequentialTask({
 								...sharedExecution,
+								deliveryPolicy: "pending",
 								parentSpecMarkdown: specMarkdown,
 								childSpecMarkdown,
 								artifactStore: new ContextArtifactStore({ root: join(dirname(paths.artifactsDir), "continuations") }),
 								parentTaskId: traceTaskId,
-								childTaskId: `${traceTaskId}-child`,
-								edgeId: `${traceTaskId}-edge`,
+								childTaskId: sequentialOwner?.plannedChildTaskId ?? `${traceTaskId}-child`,
+								edgeId: sequentialOwner?.edgeId ?? `${traceTaskId}-edge`,
 								contextCapabilitiesFactory: acquisitionFactoryFromLegacy(selectedContextFactory),
 								...(contextArtifactStore === undefined ? {} : { contextArtifactStore }),
 								onEvent: (event) => write(renderProgress(event)),
 							});
-							return { receipt: sequential.parent, conflicts: sequential.status === "escalated" ? ["child escalation"] : [] };
+							sequentialEdgeId = sequential.edgeId;
+							const canonical = sequential.edgeId === undefined ? null : daemon!.store.getChildTerminalSettlement(sequential.edgeId);
+							const canonicalParent = canonical === null ? sequential.parent : TaskReceiptSchema.parse(canonical.parentReceipt);
+							return { receipt: canonicalParent, conflicts: sequential.status === "escalated" ? ["child escalation"] : [] };
 						})();
 			if (resumeBlocked) {
 				const message = `edge ${args.resumeEdgeId!} is durably blocked`;
@@ -840,6 +877,16 @@ export async function runCli(
 				return { exitCode: CLI_EDGE_BLOCKED_EXIT, error: message };
 			}
 			const receipt = result.receipt;
+			const acknowledgeExternal = (step: "receipt" | "trace" | "final_receipt", code: "receipt_write_failed" | "trace_write_failed" | "final_receipt_rewrite_failed", detail: string): boolean => {
+				if (sequentialEdgeId === undefined) return true;
+				try {
+					daemon!.store.acknowledgeChildDeliveryStep(sequentialEdgeId, step);
+					return true;
+				} catch (error) {
+					try { daemon!.store.recordChildDeliveryFailure(sequentialEdgeId, code, detail || (error instanceof Error ? error.message : String(error))); } catch { /* preserve the original delivery failure */ }
+					return false;
+				}
+			};
 			executionStatus ??= receipt.verdict === "ship"
 				? "completed"
 				: receipt.verdict === "escalate"
@@ -865,11 +912,14 @@ export async function runCli(
 				receipt.verdict === "ship"
 					? { ...receipt, verdict: "failed" as const }
 					: receipt;
-			const receiptPath = writeReceiptArtifact(
+			const receiptPath = receiptWriter(
 				provisionalReceipt,
 				paths.artifactsDir,
 			);
-			const receiptDelivered = receiptPath !== undefined;
+			const receiptDelivered = receiptPath !== undefined && acknowledgeExternal("receipt", "receipt_write_failed", "receipt artifact write failed");
+			if (receiptPath === undefined && sequentialEdgeId !== undefined) {
+				try { daemon!.store.recordChildDeliveryFailure(sequentialEdgeId, "receipt_write_failed", "receipt artifact write failed"); } catch { /* retain non-ship result */ }
+			}
 			trace.record({
 				type: "receipt.delivered",
 				phase: "artifact",
@@ -913,7 +963,12 @@ export async function runCli(
 				trace,
 				paths.artifactsDir,
 				traceOutcome,
+				traceWriter,
 			);
+			const traceDurablyDelivered = traceDelivery.ok && acknowledgeExternal("trace", "trace_write_failed", traceDelivery.error ?? "trace artifact write failed");
+			if (!traceDelivery.ok && sequentialEdgeId !== undefined) {
+				try { daemon!.store.recordChildDeliveryFailure(sequentialEdgeId, "trace_write_failed", traceDelivery.error ?? "trace artifact write failed"); } catch { /* retain non-ship result */ }
+			}
 			const finalized = finalizeArtifactAcceptance(
 				{
 					accepted: true,
@@ -923,13 +978,13 @@ export async function runCli(
 						? {}
 						: { commitId: receipt.commitIds[0] }),
 				},
-				{ receiptDelivered, traceDelivered: traceDelivery.ok },
+				{ receiptDelivered, traceDelivered: traceDurablyDelivered },
 			);
 			const deliveryError = [
 				...(receiptDelivered
 					? []
 					: [`receipt artifact delivery failed at ${paths.artifactsDir}`]),
-				...(traceDelivery.ok
+				...(traceDurablyDelivered
 					? []
 					: [
 							`trace artifact delivery failed: ${traceDelivery.error ?? "unknown error"}`,
@@ -961,7 +1016,7 @@ export async function runCli(
 					});
 				}
 			}
-			if (!ships && (!receiptDelivered || !traceDelivery.ok)) {
+			if (!ships && (!receiptDelivered || !traceDurablyDelivered)) {
 				return {
 					exitCode: CLI_ARTIFACT_EXIT,
 					status: executionStatus,
@@ -984,9 +1039,13 @@ export async function runCli(
 			// Replace the provisional receipt only after both delivery checks
 			// passed. A failed rewrite leaves the already durable failed receipt.
 			const deliveredReceiptPath = ships
-				? writeReceiptArtifact(finalReceipt, paths.artifactsDir)
+				? receiptWriter(finalReceipt, paths.artifactsDir)
 				: receiptPath;
-			if (deliveredReceiptPath === undefined) {
+			const finalReceiptDelivered = deliveredReceiptPath !== undefined && acknowledgeExternal("final_receipt", "final_receipt_rewrite_failed", "final shipped receipt rewrite failed");
+			if (deliveredReceiptPath === undefined && sequentialEdgeId !== undefined) {
+				try { daemon!.store.recordChildDeliveryFailure(sequentialEdgeId, "final_receipt_rewrite_failed", "final shipped receipt rewrite failed"); } catch { /* retain non-ship result */ }
+			}
+			if (deliveredReceiptPath === undefined || !finalReceiptDelivered) {
 				writeFailureArtifact({
 					artifactsDir: paths.artifactsDir,
 					runId: trace.taskId,
@@ -997,6 +1056,10 @@ export async function runCli(
 					receipt: { ...receipt, verdict: "failed" as const },
 					error: "receipt artifact delivery failed during finalization",
 				};
+			}
+			if (sequentialEdgeId !== undefined) {
+				const deliveredEdge = daemon!.store.getTaskEdge(sequentialEdgeId);
+				if (deliveredEdge?.status === "completed" || deliveredEdge?.status === "failed" || deliveredEdge?.status === "escalated") executionStatus = deliveredEdge.status;
 			}
 			write(`receipt: ${JSON.stringify(finalReceipt)}`);
 			write(`receipt artifact: ${deliveredReceiptPath}`);

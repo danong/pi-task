@@ -3,7 +3,12 @@
 **Status: Active and normative for v2 implementation shape.** This companion
 to [the product contract](pi-task-v2.md) defines the detailed
 capability taxonomy, boundary artifacts, context pipeline, observability
-contract, and conformance expectations. Historical material under
+contract, and conformance expectations. **Active M5 hardening: closed; the
+tree is ready to begin M5.5 subject to repository gates.** Implementation
+remains authoritative for shipped behavior. The current closure authority is
+[`reports/m5-hardening-closure.md`](../reports/m5-hardening-closure.md).
+Earlier M5 review reports remain historical evidence with their original
+findings; this status does not rewrite them. Historical material under
 [`old/`](old/README.md) is non-normative.
 
 ## 1. Capability taxonomy
@@ -208,7 +213,9 @@ produced.
 ### Completed M1 observability behavior
 
 M1 ships this contract as a bounded trace artifact with a versioned,
-provider-neutral event vocabulary. It records observed turns as well as
+provider-neutral event vocabulary. Its structural limits are implementation-
+owned; consult the source contracts and tests rather than duplicating counts
+here. It records observed turns as well as
 lifecycle, tool, context, model, usage, verification, artifact, and recovery
 activity, without requiring transcripts or private reasoning. Usage is
 explicitly `measured` or `unavailable`; a zero value with the latter status is
@@ -378,18 +385,33 @@ for M5. M5 owns the parent/child continuation workflow and self-hosting proof.
 
 ### M5 status
 
-M5 is implemented and hermetically conformant. Durable sequential parent/child
-composition uses M4 context plans and checkpoints rather than transcripts.
-Conformance covers child workspace isolation, bounded handoff and return
-artifacts, parent integration, preparing-edge boot authority, close/reopen
-provider continuation, capped/interrupted-child recovery, typed dependency
-blocking, admitted lifecycle evidence, and canonical receipts/traces.
+M5 is implemented and hermetically conformant. Its hardening closure is closed
+in the repaired tree, which is ready to begin M5.5 subject to repository gates;
+the [current closure authority](../reports/m5-hardening-closure.md) records the
+closure evidence. Durable sequential parent/child composition uses M4 context
+plans and checkpoints rather than transcripts. Conformance covers child
+workspace isolation, bounded handoff and return artifacts, parent integration,
+preparing-edge boot authority, close/reopen provider continuation,
+capped/interrupted-child recovery, typed dependency blocking, admitted lifecycle
+evidence, and canonical receipts/traces.
 
 The product gate is self-hosting: the normal v2 task surface can select one
 explicit continuation child and use it for focused work on this repository;
 continuation reuses provider workspace state plus structured checkpoints; and
 accepted output passes the repository's verification and artifact policy.
-Internal ledger rows alone do not satisfy the gate.
+Internal ledger rows alone do not satisfy the gate. The existing M5
+`--resume <edge-id>` operation is an edge-oriented selector, not M5.5's planned
+run-ID recovery contract.
+
+### M5.5 status
+
+M5.5 is planned, not implemented. Keep its scope narrow: engine-owned
+settlement, a bounded passive record of continuation-relevant visible Pi JSON
+events, and linear resume of the latest state by run ID. It does not solve
+reasoning or strategy failures, generalized recovery, or branching. The
+`maxCostUsd` / `--max-cost-usd` option remains unsupported as a live
+interruption cap until provider-neutral live cost signals exist; measured final
+usage remains reporting-only.
 
 M6 remains an adoption decision rather than an implied cutover. Existing remote,
 parallel, plugin, or benchmark foundations do not establish a default task

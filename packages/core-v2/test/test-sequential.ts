@@ -14,6 +14,7 @@ import { InMemoryTaskGateway } from "../src/gateway/in-memory.ts";
 import { LedgerStore, type SequentialEdgeConfig } from "../src/ledger/store.ts";
 import type { ImmutableArtifactReference } from "../src/contracts/context-lifecycle.ts";
 import { prepareSequentialChild, resumeSequentialChild, runSequentialTask } from "../src/daemon/sequential.ts";
+import { startDaemon } from "../src/daemon/start.ts";
 import { JujutsuWorkspaceDriver } from "../src/workspaces/jj-driver.ts";
 
 const PARENT = `## Goal\nParent change.\n\n## Requirements\n- R1: write parent.txt\n\n## Verification\n- test -f parent.txt\n\n## Artifact Policy\n- Required: parent.txt\n- Change required\n`;
@@ -33,7 +34,7 @@ class Handle implements SessionHandle {
 		this.result = { files_changed: [file], summary: "fake output that must not cross handoff", commit_ids: [], deviations: [] };
 	}
 	async abort(): Promise<void> {}
-	async stats() { return { sessionFile: undefined, sessionId: `fake-${this.index}`, userMessages: 1, assistantMessages: 1, toolCalls: 0, toolResults: 0, totalMessages: 2, tokens: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, total: 2 }, cost: 0 }; }
+	async stats() { return { sessionFile: undefined, sessionId: `fake-${this.index}`, userMessages: 1, assistantMessages: 1, toolCalls: 0, toolResults: 0, totalMessages: 2, tokens: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, total: 2 }, cost: 0.0123 }; }
 	async setModel(): Promise<void> {}
 	close(): void {}
 }
@@ -132,8 +133,13 @@ export async function runTests(): Promise<void> {
 		check(childTraceRef?.kind === "trace" && childTraceRef.namespace === "trace" && childTraceRef.sourceRevision === edgeConfig?.sourceRevision && parentTraceRef?.kind === "trace" && parentTraceRef.namespace === "trace" && parentTraceRef.sourceRevision === edgeConfig?.sourceRevision && parentTraceRef.id !== childTraceRef.id, "parent and child traces are distinct typed artifacts");
 		const childResult = childResultRef === undefined ? undefined : JSON.parse(readFileSync(join(artifacts.root, "result", childResultRef.id.slice("sha256:".length)), "utf8")) as { changedPaths?: Array<{ path: string }>; verification?: { evidenceReferences?: unknown[] } };
 		check(childResult?.changedPaths?.some((entry) => entry.path === "child.txt") === true && (childResult.verification?.evidenceReferences?.length ?? 0) > 0, "child result contains provider changed-path and verification evidence");
-		const childTrace = childTraceRef === undefined ? undefined : JSON.parse(readFileSync(join(artifacts.root, "trace", childTraceRef.id.slice("sha256:".length)), "utf8")) as { events: Array<{ type: string }> };
-		check(childTrace?.events.some((event) => event.type === "verification.completed") === true, "child trace records admitted verification lifecycle facts");
+		const childTrace = childTraceRef === undefined ? undefined : JSON.parse(readFileSync(join(artifacts.root, "trace", childTraceRef.id.slice("sha256:".length)), "utf8")) as { events: Array<{ type: string }>; usage?: { status: string; costUsd: number } };
+		check(childTrace?.events.some((event) => event.type === "verification.completed") === true && childTrace?.events.some((event) => event.type === "child.completed"), "child trace records admitted verification and terminal lifecycle facts");
+		check(childTrace?.events.findIndex((event) => event.type === "verification.completed")! < childTrace?.events.findIndex((event) => event.type === "child.completed")!, "child trace preserves verification before terminal ordering");
+		check(childTrace?.usage?.status === "measured" && childTrace.usage.costUsd === 0.0123, "settled sequential child trace retains measured provider cost");
+		const parentTrace = parentTraceRef === undefined ? undefined : JSON.parse(readFileSync(join(artifacts.root, "trace", parentTraceRef.id.slice("sha256:".length)), "utf8")) as { events: Array<{ type: string }> };
+		check(parentTrace?.events.some((event) => event.type === "child.completed") === true && parentTrace?.events.some((event) => event.type === "task.completed") === true, "aggregate trace persists child and parent terminal lifecycle facts");
+		check(parentTrace?.events.findIndex((event) => event.type === "child.completed")! < parentTrace?.events.findIndex((event) => event.type === "task.completed")!, "aggregate trace preserves child-before-parent terminal ordering");
 		const terminalIndex = events.findIndex((event) => event.type === "child.completed");
 		const parentTerminalIndex = events.findIndex((event) => event.type === "task.completed" && event.taskId === result.parentTaskId);
 		check(terminalIndex >= 0 && parentTerminalIndex > terminalIndex, "child evidence settles before aggregate parent ship lifecycle");
@@ -157,6 +163,8 @@ export async function runTests(): Promise<void> {
 		const restartArtifactStore = new ContextArtifactStore({ root: restartArtifactsDir });
 		const prepared = await prepareSequentialChild({ parentSpecMarkdown: PARENT, childSpecMarkdown: CHILD, projectDir: restartRepo, artifactsDir: join(root, "restart-failures"), dbPath: restartDb, model: "fake/model", workspaceDriver: new JujutsuWorkspaceDriver({ projectDir: restartRepo }), host: host(restartCalls, restartPrompts, restartEpochs), artifactStore: restartArtifactStore });
 		check(prepared.status === "ready" && prepared.edgeId !== undefined, "preparation leaves one ready durable edge");
+		const explicitRetry = await prepareSequentialChild({ parentSpecMarkdown: PARENT, childSpecMarkdown: CHILD, projectDir: restartRepo, artifactsDir: join(root, "restart-failures"), dbPath: restartDb, model: "fake/model", workspaceDriver: new JujutsuWorkspaceDriver({ projectDir: restartRepo }), host: host(restartCalls, restartPrompts, restartEpochs), artifactStore: restartArtifactStore, parentTaskId: prepared.parentTaskId, childTaskId: prepared.childTaskId, edgeId: prepared.edgeId! });
+		check(explicitRetry.status === "ready" && explicitRetry.edgeId === prepared.edgeId && restartCalls.value === 1, "explicit library retry preserves the parent, child, and edge identities without replaying the parent");
 		const beforeRestart = new LedgerStore(restartDb); const restartConfig = prepared.edgeId ? beforeRestart.getSequentialEdgeConfig(prepared.edgeId) : null;
 		check(restartConfig?.handoffReference.namespace === "handoff" && restartConfig?.checkpointReference.namespace === "checkpoint" && restartConfig?.planReference.namespace === "plan", "complete immutable ingress references round-trip");
 		// Replace the durable plan with a distinctive, otherwise valid plan. This
@@ -190,7 +198,16 @@ export async function runTests(): Promise<void> {
 			beforeRestart.db.prepare("UPDATE sequential_edge_configs SET handoff_reference_json = ?, checkpoint_reference_json = ?, plan_reference_json = ?, ingress_config_reference_json = ? WHERE edge_id = ?").run(JSON.stringify(handoffReference), JSON.stringify(checkpointReference), JSON.stringify(planReference), JSON.stringify(ingressConfigReference), prepared.edgeId);
 			beforeRestart.db.prepare("UPDATE task_edges SET handoff_artifact_id = ?, checkpoint_artifact_id = ? WHERE edge_id = ?").run(handoffReference.id, checkpointReference.id, prepared.edgeId);
 		}
-		beforeRestart.close();
+		const claimedForBoot = new LedgerStore(restartDb);
+		check(claimedForBoot.claimReadyChild(prepared.edgeId!) !== null, "boot regression owns a claimed edge before close");
+		claimedForBoot.close();
+		const bootBoundary = await startDaemon(restartDb, {
+			artifactStore: new ContextArtifactStore({ root: restartArtifactsDir }),
+			workspaceDriver: new JujutsuWorkspaceDriver({ projectDir: restartRepo }),
+			model: "fake/model",
+		});
+		check(bootBoundary.childReconciled.resumable.includes(prepared.edgeId!) && bootBoundary.store.getTaskEdge(prepared.edgeId!)?.status === "resumable", "fresh boot validates a claimed edge before marking it resumable");
+		bootBoundary.store.close();
 		const resumed = await resumeSequentialChild(prepared.edgeId!, { projectDir: restartRepo, artifactsDir: join(root, "restart-failures"), dbPath: restartDb, model: "fake/model", workspaceDriver: new JujutsuWorkspaceDriver({ projectDir: restartRepo }), host: host(restartCalls, restartPrompts, restartEpochs), artifactStore: new ContextArtifactStore({ root: restartArtifactsDir }) });
 		const resumedEpoch = restartEpochs[1];
 		check(resumed.status === "completed" && existsSync(join(restartRepo, "parent.txt")) && existsSync(join(restartRepo, "child.txt")) && restartCalls.value === 2, "close/reopen resume verifies parent once and child once");
@@ -224,6 +241,20 @@ export async function runTests(): Promise<void> {
 		// close/reopen, including the interval before a child task exists. The
 		// generic retry pass sees the owner and therefore cannot replay parent
 		// acceptance while artifacts or provider work are incomplete.
+		const fenceDb = join(root, "parent-acceptance-fence.sqlite");
+		const fenceLedger = new LedgerStore(fenceDb);
+		fenceLedger.insertTask({ id: "fence-parent", goal: "accepted parent" });
+		fenceLedger.persistChildPreparationOwner({ preparationId: "fence-prep", edgeId: "fence-edge", parentTaskId: "fence-parent", plannedChildTaskId: "fence-child", driver: "fake", capabilityIdentity: "fake.continuation", capabilityVersion: "1" });
+		fenceLedger.beginChildParentExecution("fence-prep");
+		fenceLedger.close();
+		const reopenedFence = new LedgerStore(fenceDb);
+		const fenceBoot = reopenedFence.reconcileChildEdgesOnBoot();
+		const fenceGeneric = reopenedFence.reconcileOnBoot();
+		const fencedOwner = reopenedFence.getChildPreparationOwnership("fence-prep");
+		check(fenceBoot.preparing.includes("fence-prep") && fenceGeneric.requeued.length === 0 && fencedOwner?.parentExecutionStartedAt !== null, "close/reopen preserves the accepted-parent execution fence before acceptance durability");
+		reopenedFence.blockChildPreparation("fence-prep");
+		reopenedFence.close();
+
 		const faultDb = join(root, "fault-boundary.sqlite");
 		const faultLedger = new LedgerStore(faultDb);
 		faultLedger.insertTask({ id: "fault-parent", goal: "accepted parent" });
@@ -234,10 +265,11 @@ export async function runTests(): Promise<void> {
 		const beforeAcceptanceBoot = faultReopen.reconcileChildEdgesOnBoot();
 		const beforeAcceptanceTasks = faultReopen.reconcileOnBoot();
 		check(beforeAcceptanceBoot.preparing.includes("fault-prep") && beforeAcceptanceTasks.requeued.length === 0 && faultReopen.getTask("fault-parent")?.status === "preparing", "preliminary preparation is classified before generic retry");
+		faultReopen.beginChildParentExecution("fault-prep");
 		faultReopen.recordChildParentAcceptance("fault-prep", JSON.stringify({ taskId: "fault-parent", verdict: "ship" }), "parent-revision");
 		faultReopen.close();
 		faultReopen = new LedgerStore(faultDb);
-		check(faultReopen.getChildPreparationOwnership("fault-prep")?.status === "parent_accepted" && faultReopen.getTask("fault-child") === null, "accepted parent survives before child creation without replay");
+		check(faultReopen.getChildPreparationOwnership("fault-prep")?.status === "parent_accepted" && faultReopen.getChildPreparationOwnership("fault-prep")?.parentExecutionStartedAt !== null && faultReopen.getTask("fault-child") === null, "accepted parent survives before child creation without replay");
 		faultReopen.beginChildArtifactPersistence("fault-prep");
 		faultReopen.close();
 		faultReopen = new LedgerStore(faultDb);
@@ -260,10 +292,12 @@ export async function runTests(): Promise<void> {
 		const capRepo = join(root, "repo-capped"); mkdirSync(capRepo); execSync("jj git init --colocate", { cwd: capRepo, stdio: "pipe" }); writeFileSync(join(capRepo, "README.md"), "fixture\n"); execSync('JJ_EDITOR=true jj commit -m init', { cwd: capRepo, stdio: "pipe" });
 		const capDb = join(root, "capped.sqlite"); const capArtifactsRoot = join(root, "capped-artifacts"); const capCalls = { value: 0 };
 		const capPrepared = await prepareSequentialChild({ parentSpecMarkdown: PARENT, childSpecMarkdown: RESUMABLE_CHILD, projectDir: capRepo, artifactsDir: join(root, "capped-failures"), dbPath: capDb, model: "fake/model", workspaceDriver: new JujutsuWorkspaceDriver({ projectDir: capRepo }), host: host(capCalls), artifactStore: new ContextArtifactStore({ root: capArtifactsRoot }) });
-		const beforeCapLedger = new LedgerStore(capDb); const beforeCapCheckpoint = beforeCapLedger.getTaskEdge(capPrepared.edgeId!)?.checkpointArtifactId; beforeCapLedger.close();
+		const beforeCapLedger = new LedgerStore(capDb); const beforeCapEdge = beforeCapLedger.getTaskEdge(capPrepared.edgeId!); const beforeCapCheckpoint = beforeCapEdge?.checkpointArtifactId; beforeCapLedger.close();
+		const initialCapCheckpoint = beforeCapCheckpoint === null || beforeCapCheckpoint === undefined ? undefined : JSON.parse(readFileSync(join(capArtifactsRoot, "checkpoint", beforeCapCheckpoint.slice("sha256:".length)), "utf8")) as { epochId?: string; requirements?: Array<{ id: string; status: string }> };
+		check(initialCapCheckpoint?.epochId === "child-handoff" && initialCapCheckpoint.requirements?.length === 2 && initialCapCheckpoint.requirements.every((requirement) => requirement.status === "open"), "child checkpoint tracks child requirements rather than satisfied parent requirements");
 		const capped = await resumeSequentialChild(capPrepared.edgeId!, { projectDir: capRepo, artifactsDir: join(root, "capped-failures"), dbPath: capDb, model: "fake/model", workspaceDriver: new JujutsuWorkspaceDriver({ projectDir: capRepo }), host: interruptingHost(capCalls), artifactStore: new ContextArtifactStore({ root: capArtifactsRoot }), maxTurns: 1 });
-		const cappedLedger = new LedgerStore(capDb); const cappedEdge = cappedLedger.getTaskEdge(capPrepared.edgeId!); const cappedSessions = cappedLedger.listSessions(capPrepared.childTaskId).length; cappedLedger.close();
-		check(capped.status === "resumable" && cappedEdge?.status === "resumable" && cappedEdge.checkpointArtifactId !== beforeCapCheckpoint, "cap atomically refreshes checkpoint and marks child resumable");
+		const cappedLedger = new LedgerStore(capDb); const cappedEdge = cappedLedger.getTaskEdge(capPrepared.edgeId!); const cappedSessions = cappedLedger.listSessions(capPrepared.childTaskId).length; const interruptedSession = cappedLedger.listSessions(capPrepared.childTaskId)[0]; cappedLedger.close();
+		check(capped.status === "resumable" && cappedEdge?.status === "resumable" && cappedEdge.checkpointArtifactId !== beforeCapCheckpoint && interruptedSession?.status === "exhausted", "cap atomically refreshes checkpoint, persists exhausted session status, and marks child resumable");
 		const capCompleted = await resumeSequentialChild(capPrepared.edgeId!, { projectDir: capRepo, artifactsDir: join(root, "capped-failures"), dbPath: capDb, model: "fake/model", workspaceDriver: new JujutsuWorkspaceDriver({ projectDir: capRepo }), host: host({ value: 1 }), artifactStore: new ContextArtifactStore({ root: capArtifactsRoot }) });
 		const capDoneLedger = new LedgerStore(capDb); const finalSessions = capDoneLedger.listSessions(capPrepared.childTaskId).length; capDoneLedger.close();
 		check(capCompleted.status === "completed" && existsSync(join(capRepo, "partial.txt")) && existsSync(join(capRepo, "child.txt")) && cappedSessions === 1 && finalSessions === 2, `resumed child preserves partial work and completes verification in a new session (${capCompleted.status}, partial=${existsSync(join(capRepo, "partial.txt"))}, child=${existsSync(join(capRepo, "child.txt"))}, sessions=${cappedSessions}/${finalSessions})`);
@@ -274,15 +308,17 @@ export async function runTests(): Promise<void> {
 		const missingDb = join(root, "missing.sqlite"); const missingArtifactsRoot = join(root, "missing-artifacts"); const missingPrepared = await prepareSequentialChild({ parentSpecMarkdown: PARENT, childSpecMarkdown: CHILD, projectDir: missingRepo, artifactsDir: join(root, "missing-failures"), dbPath: missingDb, model: "fake/model", workspaceDriver: new JujutsuWorkspaceDriver({ projectDir: missingRepo }), host: host(), artifactStore: new ContextArtifactStore({ root: missingArtifactsRoot }) });
 		const missingLedger = new LedgerStore(missingDb); const missingConfig = missingPrepared.edgeId ? missingLedger.getSequentialEdgeConfig(missingPrepared.edgeId) : null; missingLedger.close();
 		if (missingConfig) rmSync(join(missingArtifactsRoot, "checkpoint", missingConfig.checkpointReference.id.slice("sha256:".length)));
-		const missing = await resumeSequentialChild(missingPrepared.edgeId!, { projectDir: missingRepo, artifactsDir: join(root, "missing-failures"), dbPath: missingDb, model: "fake/model", workspaceDriver: new JujutsuWorkspaceDriver({ projectDir: missingRepo }), host: host(), artifactStore: new ContextArtifactStore({ root: missingArtifactsRoot }) });
-		check(missing.status === "blocked" && missing.failureCode === "checkpoint_missing", "missing immutable dependency becomes typed durable block");
+		const missingBoot = await startDaemon(missingDb, { artifactStore: new ContextArtifactStore({ root: missingArtifactsRoot }), workspaceDriver: new JujutsuWorkspaceDriver({ projectDir: missingRepo }), model: "fake/model" });
+		check(missingBoot.childReconciled.blocked.includes(missingPrepared.edgeId!) && missingBoot.childReconciled.blockedEvidence[0]?.code === "missing" && missingBoot.childReconciled.blockedEvidence[0]?.dependency === "checkpoint", "boot missing immutable dependency becomes typed durable block");
+		missingBoot.store.close();
 
 		const badRepo = join(root, "repo-bad"); mkdirSync(badRepo); execSync("jj git init --colocate", { cwd: badRepo, stdio: "pipe" }); writeFileSync(join(badRepo, "README.md"), "fixture\\n"); execSync('JJ_EDITOR=true jj commit -m init', { cwd: badRepo, stdio: "pipe" });
 		const badDb = join(root, "bad.sqlite"); const badArtifactsRoot = join(root, "bad-artifacts"); const badPrepared = await prepareSequentialChild({ parentSpecMarkdown: PARENT, childSpecMarkdown: CHILD, projectDir: badRepo, artifactsDir: join(root, "bad-failures"), dbPath: badDb, model: "fake/model", workspaceDriver: new JujutsuWorkspaceDriver({ projectDir: badRepo }), host: host(), artifactStore: new ContextArtifactStore({ root: badArtifactsRoot }) });
 		const badLedger = new LedgerStore(badDb); const badConfig = badPrepared.edgeId ? badLedger.getSequentialEdgeConfig(badPrepared.edgeId) : null; badLedger.close();
 		if (badConfig) writeFileSync(join(badArtifactsRoot, "handoff", badConfig.handoffReference.id.slice("sha256:".length)), "corrupt\\n");
-		const corrupt = await resumeSequentialChild(badPrepared.edgeId!, { projectDir: badRepo, artifactsDir: join(root, "bad-failures"), dbPath: badDb, model: "fake/model", workspaceDriver: new JujutsuWorkspaceDriver({ projectDir: badRepo }), host: host(), artifactStore: new ContextArtifactStore({ root: badArtifactsRoot }) });
-		check(corrupt.status === "blocked" && corrupt.failureCode === "corrupt", "corrupt immutable dependency becomes typed durable block");
+		const corruptBoot = await startDaemon(badDb, { artifactStore: new ContextArtifactStore({ root: badArtifactsRoot }), workspaceDriver: new JujutsuWorkspaceDriver({ projectDir: badRepo }), model: "fake/model" });
+		check(corruptBoot.childReconciled.blocked.includes(badPrepared.edgeId!) && corruptBoot.childReconciled.blockedEvidence[0]?.code === "corrupt" && corruptBoot.childReconciled.blockedEvidence[0]?.dependency === "handoff", "boot corrupt immutable dependency becomes typed durable block");
+		corruptBoot.store.close();
 
 		// Child failure is a terminal parent failure, never a parent ship.
 		const repoFail = join(root, "repo-fail"); mkdirSync(repoFail); execSync("jj git init --colocate", { cwd: repoFail, stdio: "pipe" }); writeFileSync(join(repoFail, "README.md"), "fixture\\n"); execSync('JJ_EDITOR=true jj commit -m init', { cwd: repoFail, stdio: "pipe" });
@@ -290,15 +326,35 @@ export async function runTests(): Promise<void> {
 		const failed = await runSequentialTask({ parentSpecMarkdown: PARENT, childSpecMarkdown: FAILING_CHILD, projectDir: repoFail, artifactsDir: join(root, "failures-2"), dbPath: failDb, model: "fake/model", workspaceDriver: new JujutsuWorkspaceDriver({ projectDir: repoFail }), host: host(), artifactStore: new ContextArtifactStore({ root: join(root, "artifacts-2") }) });
 		check(failed.status === "failed" && failed.parent.verdict === "failed" && failLedger.getTask(failed.parentTaskId)?.status === "failed", "parent cannot ship when child verification fails"); failLedger.close();
 
-		// A terminal evidence persistence failure blocks settlement and therefore
-		// cannot turn the admitted parent into a ship outcome.
+		// An immutable-write failure leaves a durable terminal outbox. It cannot
+		// ship yet, but close/reopen retries evidence and linkage without a child
+		// respawn.
 		const evidenceFailureRepo = join(root, "repo-evidence-failure"); mkdirSync(evidenceFailureRepo); execSync("jj git init --colocate", { cwd: evidenceFailureRepo, stdio: "pipe" }); writeFileSync(join(evidenceFailureRepo, "README.md"), "fixture\n"); execSync('JJ_EDITOR=true jj commit -m init', { cwd: evidenceFailureRepo, stdio: "pipe" });
-		const evidenceFailureDb = join(root, "evidence-failure.sqlite"); const evidenceFailureArtifacts = new ContextArtifactStore({ root: join(root, "evidence-failure-artifacts") });
-		const evidencePrepared = await prepareSequentialChild({ parentSpecMarkdown: PARENT, childSpecMarkdown: CHILD, projectDir: evidenceFailureRepo, artifactsDir: join(root, "evidence-failure-recovery"), dbPath: evidenceFailureDb, model: "fake/model", workspaceDriver: new JujutsuWorkspaceDriver({ projectDir: evidenceFailureRepo }), host: host(), artifactStore: evidenceFailureArtifacts });
-		evidenceFailureArtifacts.putJson = (() => { throw new Error("simulated evidence persistence failure"); }) as typeof evidenceFailureArtifacts.putJson;
-		const evidenceFailed = await resumeSequentialChild(evidencePrepared.edgeId!, { projectDir: evidenceFailureRepo, artifactsDir: join(root, "evidence-failure-recovery"), dbPath: evidenceFailureDb, model: "fake/model", workspaceDriver: new JujutsuWorkspaceDriver({ projectDir: evidenceFailureRepo }), host: host(), artifactStore: evidenceFailureArtifacts });
+		const evidenceFailureDb = join(root, "evidence-failure.sqlite"); const evidenceFailureArtifacts = new ContextArtifactStore({ root: join(root, "evidence-failure-artifacts") }); const evidenceCalls = { value: 0 };
+		const evidencePrepared = await prepareSequentialChild({ parentSpecMarkdown: PARENT, childSpecMarkdown: CHILD, projectDir: evidenceFailureRepo, artifactsDir: join(root, "evidence-failure-recovery"), dbPath: evidenceFailureDb, model: "fake/model", workspaceDriver: new JujutsuWorkspaceDriver({ projectDir: evidenceFailureRepo }), host: host(evidenceCalls), artifactStore: evidenceFailureArtifacts });
+		const originalPutJson = evidenceFailureArtifacts.putJson;
+		let evidenceWrites = 0;
+		evidenceFailureArtifacts.putJson = function (this: ContextArtifactStore, value, metadata) {
+			if (evidenceWrites++ >= 1) throw new Error("simulated evidence persistence failure");
+			return originalPutJson.call(this, value, metadata);
+		} as typeof evidenceFailureArtifacts.putJson;
+		const evidenceFailed = await resumeSequentialChild(evidencePrepared.edgeId!, { projectDir: evidenceFailureRepo, artifactsDir: join(root, "evidence-failure-recovery"), dbPath: evidenceFailureDb, model: "fake/model", workspaceDriver: new JujutsuWorkspaceDriver({ projectDir: evidenceFailureRepo }), host: host(evidenceCalls), artifactStore: evidenceFailureArtifacts });
 		const evidenceFailureLedger = new LedgerStore(evidenceFailureDb); const evidenceFailureEdge = evidenceFailureLedger.getTaskEdge(evidencePrepared.edgeId!);
-		check(evidenceFailed.status === "failed" && evidenceFailed.parent.verdict !== "ship" && evidenceFailureEdge?.status === "blocked" && evidenceFailureLedger.getTask(evidenceFailed.parentTaskId)?.status === "failed", "failed terminal evidence persistence prevents parent ship"); evidenceFailureLedger.close();
+		check(evidenceFailed.status === "resumable" && evidenceFailed.parent.verdict !== "ship" && evidenceFailureEdge?.status === "claimed" && evidenceFailureLedger.getChildTerminalSettlement(evidencePrepared.edgeId!)?.state === "pending", "failed terminal evidence persistence remains recoverable and cannot ship parent"); evidenceFailureLedger.close();
+		evidenceFailureArtifacts.putJson = originalPutJson;
+		const originalSettle = LedgerStore.prototype.settleChild;
+		let settlementFault = true;
+		LedgerStore.prototype.settleChild = function (this: LedgerStore, edgeId, status, artifacts) {
+			if (settlementFault) { settlementFault = false; throw new Error("simulated settlement failure"); }
+			return originalSettle.call(this, edgeId, status, artifacts);
+		};
+		const settlementFailed = await resumeSequentialChild(evidencePrepared.edgeId!, { projectDir: evidenceFailureRepo, artifactsDir: join(root, "evidence-failure-recovery"), dbPath: evidenceFailureDb, model: "fake/model", workspaceDriver: new JujutsuWorkspaceDriver({ projectDir: evidenceFailureRepo }), host: host(evidenceCalls), artifactStore: evidenceFailureArtifacts });
+		LedgerStore.prototype.settleChild = originalSettle;
+		const afterSettlementFault = new LedgerStore(evidenceFailureDb);
+		check(settlementFailed.status === "resumable" && afterSettlementFault.getTaskEdge(evidencePrepared.edgeId!)?.status === "claimed", "settlement failure leaves canonical outbox pending without shipping"); afterSettlementFault.close();
+		const evidenceRecovered = await resumeSequentialChild(evidencePrepared.edgeId!, { projectDir: evidenceFailureRepo, artifactsDir: join(root, "evidence-failure-recovery"), dbPath: evidenceFailureDb, model: "fake/model", workspaceDriver: new JujutsuWorkspaceDriver({ projectDir: evidenceFailureRepo }), host: host(evidenceCalls), artifactStore: evidenceFailureArtifacts });
+		const evidenceDoneLedger = new LedgerStore(evidenceFailureDb);
+		check(evidenceRecovered.status === "completed" && evidenceDoneLedger.getTaskEdge(evidencePrepared.edgeId!)?.status === "completed" && evidenceDoneLedger.getChildTerminalSettlement(evidencePrepared.edgeId!)?.state === "linked", "terminal outbox close/reopen recovery links exactly once"); evidenceDoneLedger.close();
 
 		// A missing continuation capability blocks durably without child spawn.
 		const repoBlock = join(root, "repo-block"); mkdirSync(repoBlock); execSync("jj git init --colocate", { cwd: repoBlock, stdio: "pipe" }); writeFileSync(join(repoBlock, "README.md"), "fixture\\n"); execSync('JJ_EDITOR=true jj commit -m init', { cwd: repoBlock, stdio: "pipe" });

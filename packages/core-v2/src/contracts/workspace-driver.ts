@@ -97,6 +97,12 @@ export interface WorkspaceContinuationCapability {
 		taskId: string,
 		preparationId: string,
 	): Promise<WorkspaceContinuationPreparation>;
+	/** Read-only provider target check for boot reconciliation. It must not
+	 * claim, consume, snapshot, clean, or otherwise mutate the continuation. */
+	validateContinuation?(
+		taskId: string,
+		continuation: WorkspaceContinuation,
+	): Promise<void>;
 	preserveContinuation(
 		context: WorkspaceContext,
 	): Promise<WorkspaceContinuation>;

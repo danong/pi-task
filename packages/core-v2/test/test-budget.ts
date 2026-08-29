@@ -19,6 +19,9 @@ import {
 	MAX_COST_USD_UNSUPPORTED_MESSAGE,
 } from "../src/budget/execution-budget.ts";
 import { runParallelTask } from "../src/daemon/parallel.ts";
+import { runSequentialTask } from "../src/daemon/sequential.ts";
+import { startDaemon } from "../src/daemon/start.ts";
+import { ContextArtifactStore } from "../src/context/artifact-store.ts";
 import type { SessionHandle, SessionHost, SessionHostConfig, SessionHostEvent } from "../src/sessions/host.ts";
 import { JujutsuWorkspaceDriver } from "../src/workspaces/jj-driver.ts";
 
@@ -172,22 +175,56 @@ export async function runTests(): Promise<void> {
 		check(budgetReason(1, 1, { maxTurns: 0, maxCostUsd: 0 }) === null, "no cap -> null");
 	}
 
-	// R1 daemon ingress: a configured cost cap is rejected before the daemon
-	// can validate/provision a workspace or spawn a session.
+	// R1/R2/R5: every library/daemon ingress rejects a configured cost cap,
+	// including zero, before opening a ledger or touching workspace/provider/
+	// session dependencies. The error text is the same stable contract as CLI.
 	{
-		let costError: unknown;
+		const root = mkdtempSync(join(tmpdir(), "core-v2-budget-ingress-"));
 		try {
-			await runParallelTask({
-				subTasks: [],
-				projectDir: "/does-not-exist",
-				artifactsDir: "/does-not-exist/artifacts",
-				dbPath: "/does-not-exist/ledger.sqlite",
-				model: "fake/model",
-				workspaceDriver: new JujutsuWorkspaceDriver({ projectDir: "/does-not-exist" }),
-				maxCostUsd: 0,
-			});
-		} catch (error) { costError = error; }
-		check(costError instanceof Error && costError.message === MAX_COST_USD_UNSUPPORTED_MESSAGE, "daemon maxCostUsd rejects before workspace/session work");
+			const dbPath = join(root, "ledger.sqlite");
+			const artifactsDir = join(root, "artifacts");
+			const calls = { workspace: 0, session: 0 };
+			const workspaceDriver = {
+				name: "side-effect-probe",
+				integrationMode: "task-base",
+				prepare: async () => { calls.workspace += 1; },
+				prepareIntegrationBase: async () => { calls.workspace += 1; return "base"; },
+				createWorkspace: async () => { calls.workspace += 1; throw new Error("must not create workspace"); },
+			} as any;
+			const host = {
+				spawn: async () => { calls.session += 1; throw new Error("must not spawn session"); },
+			} as unknown as SessionHost;
+			let parallelError: unknown;
+			try {
+				await runParallelTask({
+					subTasks: [SPEC], projectDir: root, artifactsDir, dbPath,
+					model: "fake/model", workspaceDriver, host, maxCostUsd: 0,
+				});
+			} catch (error) { parallelError = error; }
+			check(parallelError instanceof Error && parallelError.message === MAX_COST_USD_UNSUPPORTED_MESSAGE, "parallel daemon ingress uses stable maxCostUsd message");
+			check(!existsSync(dbPath) && calls.workspace === 0 && calls.session === 0, "parallel maxCostUsd rejection precedes ledger, workspace, and session side effects");
+
+			let sequentialError: unknown;
+			try {
+				await runSequentialTask({
+					parentSpecMarkdown: SPEC, childSpecMarkdown: SPEC,
+					projectDir: root, artifactsDir, dbPath, model: "fake/model",
+					workspaceDriver, host,
+					artifactStore: new ContextArtifactStore({ root: join(root, "continuations") }),
+					maxCostUsd: 0,
+				});
+			} catch (error) { sequentialError = error; }
+			check(sequentialError instanceof Error && sequentialError.message === MAX_COST_USD_UNSUPPORTED_MESSAGE, "sequential daemon ingress uses stable maxCostUsd message");
+			check(!existsSync(dbPath) && calls.workspace === 0 && calls.session === 0, "sequential maxCostUsd rejection precedes ledger, workspace, and session side effects");
+
+			let startError: unknown;
+			try { await startDaemon(dbPath, { maxCostUsd: 0 }); }
+			catch (error) { startError = error; }
+			check(startError instanceof Error && startError.message === MAX_COST_USD_UNSUPPORTED_MESSAGE, "daemon start uses stable maxCostUsd message");
+			check(!existsSync(dbPath), "daemon start maxCostUsd rejection precedes ledger creation");
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
 	}
 
 	// Watchdog driver: maxTurns aborts with budget_exceeded, wall with wall_timeout, independent
@@ -348,6 +385,7 @@ export async function runTests(): Promise<void> {
 					check((assigned?.detail as any)?.wallTimeoutMs === 98765, `trace model.assigned wallTimeoutMs=98765, got ${JSON.stringify(assigned?.detail)}`);
 					const report = renderTraceReport(trace, result.tracePath);
 					check(report.includes("Configured wallTimeoutMs: 98765"), "trace-report renders wallTimeoutMs from plumbing run");
+					check(report.includes("Cost USD: 1.25"), "trace-report retains settled provider-neutral measured cost");
 				} else {
 					check(false, "wall run produced trace path");
 				}

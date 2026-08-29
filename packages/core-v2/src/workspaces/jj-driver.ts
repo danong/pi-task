@@ -121,6 +121,8 @@ export class JujutsuWorkspaceDriver implements WorkspaceDriver {
 		version: JUJUTSU_CONTINUATION_VERSION,
 		prepareContinuation: (taskId, preparationId) =>
 			this.prepareContinuation(taskId, preparationId),
+		validateContinuation: (taskId, continuation) =>
+			this.validateContinuation(taskId, continuation),
 		preserveContinuation: (context) => this.preserveContinuation(context),
 		resumeContinuation: (taskId, token) =>
 			this.resumeContinuation(taskId, token),
@@ -271,13 +273,12 @@ export class JujutsuWorkspaceDriver implements WorkspaceDriver {
 		return Object.freeze({ opaqueToken, revision });
 	}
 
-	/** Resolve a token after restart by checking every provider-owned workspace
-	 * identity. No driver instance state, path supplied by the caller, or jj
-	 * branch name crosses this API. */
-	private async resumeContinuation(
+	/** Read-only continuation lookup used by boot validation and resume. It does
+	 * not populate driver state or create/claim a workspace. */
+	private async findContinuationWorkspace(
 		taskId: string,
 		continuation: WorkspaceContinuation,
-	): Promise<WorkspaceContext> {
+	): Promise<string> {
 		if (
 			taskId.length === 0 ||
 			taskId.length > 256 ||
@@ -313,32 +314,51 @@ export class JujutsuWorkspaceDriver implements WorkspaceDriver {
 				"workspace continuation registry is unavailable",
 			);
 		const workspaces = parseMachineWorkspaceList(listed.stdout);
-		let ownedName: string | undefined;
 		for (const [name, revision] of workspaces) {
-			if (
-				continuationToken(taskId, name, continuation.revision) ===
-				continuation.opaqueToken
-			) {
-				ownedName = name;
+			if (continuationToken(taskId, name, continuation.revision) === continuation.opaqueToken) {
 				if (revision.commitId !== continuation.revision)
 					throw new WorkspaceContinuationError(
 						"stale",
 						"workspace continuation revision no longer matches",
 					);
-				break;
+				return name;
 			}
 		}
-		if (ownedName === undefined) {
-			const sameRevision = [...workspaces.values()].some(
-				(revision) => revision.commitId === continuation.revision,
-			);
+		const sameRevision = [...workspaces.values()].some(
+			(revision) => revision.commitId === continuation.revision,
+		);
+		throw new WorkspaceContinuationError(
+			sameRevision ? "malformed_token" : "missing",
+			sameRevision
+				? "continuation token is not owned by this jj provider"
+				: "workspace continuation target is missing",
+		);
+	}
+
+	private async validateContinuation(
+		taskId: string,
+		continuation: WorkspaceContinuation,
+	): Promise<void> {
+		const name = await this.findContinuationWorkspace(taskId, continuation);
+		const root = await execJj(
+			["workspace", "root", "--name", name, "--ignore-working-copy"],
+			this.#opts.projectDir,
+		);
+		if (root.code !== 0 || root.stdout.trim().length === 0)
 			throw new WorkspaceContinuationError(
-				sameRevision ? "malformed_token" : "missing",
-				sameRevision
-					? "continuation token is not owned by this jj provider"
-					: "workspace continuation target is missing",
+				"missing",
+				"workspace continuation root is missing",
 			);
-		}
+	}
+
+	/** Resolve a token after restart by checking every provider-owned workspace
+	 * identity. No driver instance state, path supplied by the caller, or jj
+	 * branch name crosses this API. */
+	private async resumeContinuation(
+		taskId: string,
+		continuation: WorkspaceContinuation,
+	): Promise<WorkspaceContext> {
+		const ownedName = await this.findContinuationWorkspace(taskId, continuation);
 		const root = await execJj(
 			["workspace", "root", "--name", ownedName, "--ignore-working-copy"],
 			this.#opts.projectDir,

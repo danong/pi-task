@@ -500,7 +500,7 @@ export async function runTests(): Promise<void> {
 				seed.close();
 			};
 
-			const bootAndCheck = async (edgeId: string, state: string, expected: "preparing" | "ready" | "resumable"): Promise<void> => {
+			const bootAndCheck = async (edgeId: string, state: string, expected: "preparing" | "ready" | "resumable" | "blocked"): Promise<void> => {
 				const daemon = await startDaemon(join(dir, `${edgeId}.db`));
 				const edge = daemon.store.getTaskEdge(edgeId);
 				check(edge?.status === expected, `${state} edge remains ${expected}`);
@@ -522,14 +522,14 @@ export async function runTests(): Promise<void> {
 			const claimedDb = join(dir, "edge-claimed.db");
 			seedEdge(claimedDb, "edge-claimed", "claimed");
 			const claimedDaemon = await startDaemon(claimedDb);
-			check(claimedDaemon.childReconciled.resumable.includes("edge-claimed"), "complete claimed edge becomes resumable");
-			check(claimedDaemon.store.getTaskEdge("edge-claimed")?.status === "resumable", "claimed edge is durably resumable");
+			check(claimedDaemon.childReconciled.blocked.includes("edge-claimed"), "unvalidated claimed edge fails closed");
+			check(claimedDaemon.store.getTaskEdge("edge-claimed")?.status === "blocked", "unvalidated claimed edge is durably blocked");
 			check(!claimedDaemon.reconciled.requeued.includes("edge-claimed-parent") && !claimedDaemon.reconciled.requeued.includes("edge-claimed-child"), "claimed linked tasks bypass generic requeue");
 			claimedDaemon.store.close();
 
 			const resumableDb = join(dir, "edge-resumable.db");
 			seedEdge(resumableDb, "edge-resumable", "resumable");
-			await bootAndCheck("edge-resumable", "resumable", "resumable");
+			await bootAndCheck("edge-resumable", "resumable", "blocked");
 
 			const blockedDb = join(dir, "edge-blocked.db");
 			seedEdge(blockedDb, "edge-blocked", "claimed");
