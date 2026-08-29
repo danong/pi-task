@@ -371,6 +371,23 @@ export function runTests(): Promise<void> {
 		);
 	}
 
+	// ─── Engine settlement observes settle without another prompt ─────
+	{
+		const timers = new FakeTimers();
+		const rig = makeFakeHandle();
+		const attached = attachWatchdogs(rig.handle, {
+			timers,
+			settledAction: "observe",
+			onAction: (action) => rig.actions.push(action),
+		});
+		rig.emit({ type: "settled" });
+		check(
+			rig.prompts.length === 0 && rig.actions.length === 0,
+			"observe-only settlement issues no nudge or extra model prompt",
+		);
+		attached.dispose();
+	}
+
 	// ─── Deterministic purity at the driver seam ──────────────────────
 	// (The driver is only as good as the pure functions it consults; those
 	// are covered exhaustively in test-watchdogs.ts. Here we just confirm a

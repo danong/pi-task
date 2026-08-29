@@ -80,6 +80,9 @@ export interface WatchdogDriverOptions {
 	onAction?: (action: WatchdogAction) => void;
 	/** Overrides the nudge text the pure settle decision would carry. */
 	nudgeText?: string;
+	/** The isolated engine-settlement lane observes its original settle without
+	 * issuing a second model prompt. Other lanes keep the default nudge. */
+	settledAction?: "nudge" | "observe";
 }
 
 /** Ends: a driver that has latched a terminal abort action. */
@@ -102,6 +105,7 @@ export class WatchdogDriver {
 	readonly #timers: WatchdogTimerSource;
 	readonly #onAction: ((action: WatchdogAction) => void) | undefined;
 	readonly #nudgeText: string;
+	readonly #settledAction: "nudge" | "observe";
 	readonly limits: WatchdogLimits;
 
 	#startedAtMs = 0;
@@ -135,6 +139,7 @@ export class WatchdogDriver {
 		this.#timers = options.timers ?? systemTimerSource;
 		this.#onAction = options.onAction;
 		this.#nudgeText = options.nudgeText ?? DEFAULT_SETTLE_NUDGE_TEXT;
+		this.#settledAction = options.settledAction ?? "nudge";
 	}
 
 	/** Whether the watchdog is armed. */
@@ -208,9 +213,12 @@ export class WatchdogDriver {
 				break;
 			}
 			case "error":
-				// Activity-only events: lastEvent/activity updated above.
+			case "cancelled":
+			case "rejected":
+				// Activity-only terminal facts: the owning runner decides disposition.
 				break;
 			case "settled": {
+				if (this.#settledAction === "observe") break;
 				const action = decideSettleAction(
 					event.type,
 					this.#hasYielded,

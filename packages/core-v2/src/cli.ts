@@ -20,6 +20,7 @@ import { TaskReceiptSchema } from "./contracts/payloads.ts";
 import {
 	TraceCollector,
 	finalizeArtifactAcceptance,
+	MODEL_YIELD_SETTLEMENT_SOURCE,
 	projectCliGatewayEvent,
 	writeTraceArtifact,
 	type TraceWriteResult,
@@ -363,6 +364,8 @@ function renderGatewayEvent(event: TaskLifecycleEvent): string {
 			return "merge completed";
 		case "merge.conflict":
 			return `merge conflict: ${event.detail.conflicts.join(", ")}`;
+		case "task.delivery_pending":
+			return "outcome: delivery pending";
 		case "task.completed":
 			return `outcome: ${event.detail.verdict}`;
 		case "task.failed":
@@ -404,6 +407,8 @@ export function renderProgress(
 		return `tool end: ${event.toolName}${event.isError ? " (error)" : ""}`;
 	if (event.type === "settled") return "session settled";
 	if (event.type === "yielded") return "worker yielded";
+	if (event.type === "cancelled") return "session cancelled";
+	if (event.type === "rejected") return "worker rejected";
 	if (event.type === "error") return `session error: ${event.message}`;
 	return renderGatewayEvent(event);
 }
@@ -455,6 +460,8 @@ function recordSessionEvent(
 	if (
 		event.type === "settled" ||
 		event.type === "yielded" ||
+		event.type === "cancelled" ||
+		event.type === "rejected" ||
 		event.type === "error"
 	) {
 		if (turnState.active) {
@@ -474,6 +481,17 @@ function recordSessionEvent(
 				code:
 					event.code === "timed_out" ? "session_timed_out" : "session_failed",
 				hostCode: event.code,
+			},
+		});
+	} else if (event.type === "cancelled" || event.type === "rejected") {
+		trace.record({
+			type: "session.ended",
+			phase: "session",
+			taskId: trace.taskId,
+			sessionId: `${trace.taskId}-worker`,
+			detail: {
+				outcome: event.type,
+				...(event.type === "rejected" ? { reason: event.reason } : {}),
 			},
 		});
 	} else if (event.type === "yielded") {
@@ -836,6 +854,7 @@ export async function runCli(
 					? await runIsolatedTask({
 							...sharedExecution,
 							specMarkdown,
+							deferSuccessfulTerminal: true,
 							contextCapabilitiesFactory: acquisitionFactoryFromLegacy(selectedContextFactory),
 							...(contextArtifactStore === undefined ? {} : { contextArtifactStore }),
 							onContextEvent: (event: ContextEvidenceEvent) =>
@@ -877,6 +896,21 @@ export async function runCli(
 				return { exitCode: CLI_EDGE_BLOCKED_EXIT, error: message };
 			}
 			const receipt = result.receipt;
+			const standaloneDeliveryPending =
+				sequentialEdgeId === undefined && receipt.verdict === "ship";
+			if (standaloneDeliveryPending) {
+				daemon!.store.setTaskStatus(receipt.taskId, "delivery_pending");
+				tracedGateway.emit({
+					type: "task.delivery_pending",
+					taskId: receipt.taskId,
+					sessionId: `${receipt.taskId}-worker`,
+					detail: {
+						settlementSource:
+							receipt.settlementSource ?? MODEL_YIELD_SETTLEMENT_SOURCE,
+					},
+				});
+				executionStatus = "delivery_pending";
+			}
 			const acknowledgeExternal = (step: "receipt" | "trace" | "final_receipt", code: "receipt_write_failed" | "trace_write_failed" | "final_receipt_rewrite_failed", detail: string): boolean => {
 				if (sequentialEdgeId === undefined) return true;
 				try {
@@ -955,7 +989,7 @@ export async function runCli(
 			// facts; a task ships iff the runner shipped and both artifacts exist.
 			const traceOutcome =
 				receipt.verdict === "ship"
-					? receiptDelivered
+					? receiptDelivered && !standaloneDeliveryPending
 						? "ship"
 						: "failed"
 					: receipt.verdict;
@@ -1053,9 +1087,60 @@ export async function runCli(
 				});
 				return {
 					exitCode: CLI_ARTIFACT_EXIT,
+					status: executionStatus,
 					receipt: { ...receipt, verdict: "failed" as const },
+					...(traceDelivery.path === undefined
+						? {}
+						: { tracePath: traceDelivery.path }),
 					error: "receipt artifact delivery failed during finalization",
 				};
+			}
+			let finalTracePath = traceDelivery.path;
+			if (standaloneDeliveryPending) {
+				const settlementSource =
+					receipt.settlementSource ?? MODEL_YIELD_SETTLEMENT_SOURCE;
+				trace.record({
+					type: "task.completed",
+					phase: "task",
+					taskId: receipt.taskId,
+					sessionId: `${receipt.taskId}-worker`,
+					detail: { verdict: "ship", settlementSource },
+				});
+				const terminalTrace = traceWriter(
+					trace.finish("ship"),
+					paths.artifactsDir,
+				);
+				if (!terminalTrace.ok) {
+					const rollbackReceipt = {
+						...receipt,
+						verdict: "failed" as const,
+					};
+					receiptWriter(rollbackReceipt, paths.artifactsDir);
+					writeFailureArtifact({
+						artifactsDir: paths.artifactsDir,
+						runId: trace.taskId,
+						cause: `trace artifact delivery failed during terminal finalization: ${terminalTrace.error ?? "unknown error"}`,
+					});
+					return {
+						exitCode: CLI_ARTIFACT_EXIT,
+						status: "delivery_pending",
+						receipt: rollbackReceipt,
+						receiptPath: deliveredReceiptPath,
+						error: terminalTrace.error ?? "terminal trace delivery failed",
+					};
+				}
+				finalTracePath = terminalTrace.path;
+				// External receipt and terminal trace are durable before the ledger
+				// becomes completed. A process loss before this mutation therefore
+				// remains conservatively replayable as delivery_pending.
+				daemon!.store.setTaskStatus(receipt.taskId, "completed");
+				gateway.emit({
+					type: "task.completed",
+					taskId: receipt.taskId,
+					sessionId: `${receipt.taskId}-worker`,
+					detail: { verdict: "ship", settlementSource },
+				});
+				executionStatus = "completed";
 			}
 			if (sequentialEdgeId !== undefined) {
 				const deliveredEdge = daemon!.store.getTaskEdge(sequentialEdgeId);
@@ -1063,16 +1148,16 @@ export async function runCli(
 			}
 			write(`receipt: ${JSON.stringify(finalReceipt)}`);
 			write(`receipt artifact: ${deliveredReceiptPath}`);
-			if (traceDelivery.path !== undefined)
-				write(`trace artifact: ${traceDelivery.path}`);
+			if (finalTracePath !== undefined)
+				write(`trace artifact: ${finalTracePath}`);
 			return {
 				exitCode: cliExitCode(finalReceipt.verdict, result.conflicts),
 				status: executionStatus,
 				receipt: finalReceipt,
 				receiptPath: deliveredReceiptPath,
-				...(traceDelivery.path === undefined
+				...(finalTracePath === undefined
 					? {}
-					: { tracePath: traceDelivery.path }),
+					: { tracePath: finalTracePath }),
 			};
 		} catch (error) {
 			const message = validationError(error);

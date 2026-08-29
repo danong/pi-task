@@ -27,9 +27,11 @@ import {
 	classifyChildRestart,
 	LedgerStore,
 	reconcileCrashedTask,
+	type NewStandaloneRecovery,
 	type SequentialEdgeConfig,
 } from "../src/ledger/store.ts";
 import type { ImmutableArtifactReference } from "../src/contracts/context-lifecycle.ts";
+import type { RecoveryStatus } from "../src/contracts/recovery-status.ts";
 
 function tempDb(): { path: string; dir: string } {
 	const dir = mkdtempSync(join(tmpdir(), "pi-task-v2-ledger-"));
@@ -421,6 +423,202 @@ export function runTests(): Promise<void> {
 			const repeatedDelivery = reopenedDelivery.acknowledgeChildDeliveryStep("delivery-edge", "final_receipt");
 			check(terminalDelivery.status === "completed" && repeatedDelivery.status === "completed" && reopenedDelivery.getTask("delivery-parent")?.status === "completed", "idempotent final acknowledgement completes ledger delivery");
 			reopenedDelivery.close();
+		}
+
+		// ─── M5.5 standalone recovery ledger (ADR seam 1/3) ───────────────
+		{
+			const store = new LedgerStore(tmp.path + ".recovery");
+			const specHash = "sha256:" + "c".repeat(64);
+			const recordId = "sha256:" + "d".repeat(64);
+			const isoDay = 86_400_000;
+			const make = (
+				runId: string,
+				overrides: Partial<NewStandaloneRecovery> = {},
+			): RecoveryStatus =>
+				store.createRecoveryRecord({
+					runId,
+					taskId: "task-family-1",
+					specHash,
+					workspaceStateId: `workspace-state-${runId}`,
+					continuationRecordId: recordId,
+					capPolicyId: "cap-v1-core-default",
+					expiresAt: new Date(Date.now() + isoDay).toISOString(),
+					engineVersion: "engine-v1",
+					workspaceCapabilityId: "fake.continuation/v1",
+					...overrides,
+				});
+			check(
+				store.db.prepare("SELECT name FROM sqlite_master WHERE name = 'standalone_recovery'").get() !== undefined &&
+					store.db.prepare("SELECT name FROM sqlite_master WHERE name = 'standalone_recovery_status_overrides'").get() !== undefined,
+				"recovery migration installs the identity ledger and its status overlay",
+			);
+
+			// createRecoveryRecord inserts a resumable row with validated identities.
+			const run1 = make("run-1");
+			check(
+				run1.phase === "resumable" && run1.resumeAllowed === true &&
+					run1.blockedReason === null && run1.successorRunId === null,
+				"createRecoveryRecord inserts a resumable row",
+			);
+			// Ledger holds ONLY identities: the recovery row stores the exact
+			// reference strings and no body ever spills into the other tables.
+			const rawRecovery = store.db.prepare("SELECT * FROM standalone_recovery WHERE run_id = 'run-1'").get() as Record<string, unknown>;
+			check(
+				rawRecovery.spec_hash === specHash &&
+					rawRecovery.workspace_state_id === "workspace-state-run-1" &&
+					rawRecovery.continuation_record_id === recordId &&
+					rawRecovery.cap_policy_id === "cap-v1-core-default" &&
+					rawRecovery.engine_version === "engine-v1" &&
+					rawRecovery.workspace_capability_id === "fake.continuation/v1",
+				"recovery rows carry identity references, never bodies",
+			);
+			for (const [table, column] of [
+				["tasks", "id"], ["micro_sessions", "id"], ["workspaces", "id"],
+				["task_edges", "edge_id"], ["workspace_continuations", "id"],
+				["task_artifacts", "task_id"], ["child_preparation_ownership", "preparation_id"],
+			] as const)
+				check(
+					Number((store.db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n) === 0,
+					`recovery rows do not leak bodies into ${table}`,
+				);
+
+			// Lineage resolution: follow the successor chain to the latest member.
+			make("run-2", { predecessorRunId: "run-1" });
+			make("run-3", { predecessorRunId: "run-2" });
+			const resolved = store.getRecoveryStatus("run-1")!;
+			check(
+				resolved.runId === "run-3" && resolved.predecessorRunId === "run-2" &&
+					resolved.successorRunId === null && resolved.phase === "resumable",
+				"getRecoveryStatus resolves a run id to the latest lineage member",
+			);
+			check(
+				store.getRecoveryStatus("run-2")!.runId === "run-3" &&
+					store.getRecoveryStatus("run-3")!.runId === "run-3",
+				"middle and latest runs resolve to the same terminal member",
+			);
+			const predecessorLink = store.db.prepare("SELECT successor_run_id FROM standalone_recovery WHERE run_id = 'run-2'").get() as { successor_run_id: string | null };
+			check(predecessorLink.successor_run_id === "run-3", "predecessor rows store the successor identity");
+			check(store.getRecoveryStatus("no-such-run") === null, "missing run resolves to null");
+
+			// Family reads resolve the latest lineage fact for a task family.
+			make("family-a1", { taskId: "family-alpha" });
+			make("family-a2", { taskId: "family-alpha", predecessorRunId: "family-a1" });
+			check(
+				store.getLatestRecoveryForFamily("family-alpha")?.runId === "family-a2",
+				"getLatestRecoveryForFamily returns the latest lineage member",
+			);
+			check(
+				store.getLatestRecoveryForFamily("no-such-family") === null,
+				"unknown family resolves to null",
+			);
+			check(
+				store.getLatestRecoveryForFamily("task-family-1")?.runId === "run-3" &&
+					store.getLatestRecoveryForFamily("task-family-1")?.taskId === "task-family-1",
+				"family status carries lineage-resolved facts",
+			);
+
+			// Expiry is now applied fail-closed (seam 4c): expired resumable rows report blocked.
+			const expired = make("run-expired", { expiresAt: new Date(Date.now() - isoDay).toISOString() });
+			check(
+				expired.phase === "blocked" && expired.blockedReason === "expired" && expired.resumeAllowed === false && store.getRecoveryStatus("run-expired")!.resumeAllowed === false && store.getRecoveryStatus("run-expired")!.blockedReason === "expired",
+				"expiry is applied fail-closed: expired resumable reports blocked/expired before claim",
+			);
+
+			// Typed blockers round-trip and the schema rejects untyped values.
+			const isoFuture = new Date(Date.now() + isoDay).toISOString();
+			store.db.prepare(
+				`INSERT INTO standalone_recovery
+				 (run_id, task_id, spec_hash, phase, resume_allowed, blocked_reason,
+				  workspace_state_id, continuation_record_id, cap_policy_id, expires_at,
+				  engine_version, workspace_capability_id)
+				 VALUES (?, ?, ?, 'blocked', 0, ?, NULL, NULL, 'cap-v1-core-default', ?, 'engine-v1', NULL)`,
+			).run("run-blocked", "task-family-1", specHash, "incompatible", isoFuture);
+			const blocked = store.getRecoveryStatus("run-blocked")!;
+			check(
+				blocked.phase === "blocked" && blocked.resumeAllowed === false &&
+					blocked.blockedReason === "incompatible" &&
+					blocked.workspaceStateId === null && blocked.continuationRecordId === null,
+				"typed blocker round-trips through the ledger",
+			);
+			const badBlocker = expectThrow(() => store.db.prepare(
+				`INSERT INTO standalone_recovery
+				 (run_id, task_id, spec_hash, phase, resume_allowed, blocked_reason,
+				  cap_policy_id, expires_at, engine_version)
+				 VALUES (?, ?, ?, 'blocked', 0, ?, 'cap-v1-core-default', ?, 'engine-v1')`,
+			).run("run-bad-blocker", "task-family-1", specHash, "bogus", isoFuture));
+			check(badBlocker.includes("CHECK"), "untyped blocker is rejected by the schema");
+			const badPhase = expectThrow(() => store.db.prepare(
+				`INSERT INTO standalone_recovery
+				 (run_id, task_id, spec_hash, phase, resume_allowed, cap_policy_id,
+				  expires_at, engine_version)
+				 VALUES (?, ?, ?, 'paused', 1, 'cap-v1-core-default', ?, 'engine-v1')`,
+			).run("run-bad-phase", "task-family-1", specHash, isoFuture));
+			check(badPhase.includes("CHECK"), "untyped phase is rejected by the schema");
+
+			// Validated identities: malformed hashes, unknown predecessors, and
+			// duplicate successors are rejected; identical reruns are idempotent.
+			check(
+				expectThrow(() => store.createRecoveryRecord({
+					runId: "bad-spec", taskId: "task-family-1", specHash: "not-a-hash",
+					workspaceStateId: "ws", continuationRecordId: recordId,
+					capPolicyId: "cap-v1-core-default", expiresAt: isoFuture,
+					engineVersion: "engine-v1", workspaceCapabilityId: "fake.continuation/v1",
+				})).includes("sha256"),
+				"recovery record rejects a malformed spec hash",
+			);
+			check(
+				expectThrow(() => store.createRecoveryRecord({
+					runId: "bad-cap", taskId: "task-family-1", specHash,
+					workspaceStateId: "ws", continuationRecordId: recordId,
+					capPolicyId: "cap-99", expiresAt: isoFuture,
+					engineVersion: "engine-v1", workspaceCapabilityId: "fake.continuation/v1",
+				})).length > 0,
+				"recovery record rejects an untyped cap policy",
+			);
+			check(
+				expectThrow(() => store.createRecoveryRecord({
+					runId: "orphan", taskId: "task-family-1", specHash,
+					predecessorRunId: "no-such", workspaceStateId: "ws",
+					continuationRecordId: recordId, capPolicyId: "cap-v1-core-default",
+					expiresAt: isoFuture, engineVersion: "engine-v1",
+					workspaceCapabilityId: "fake.continuation/v1",
+				})).includes("predecessor run does not exist"),
+				"recovery record rejects an unknown predecessor",
+			);
+			check(
+				expectThrow(() => store.createRecoveryRecord({
+					runId: "fork", taskId: "task-family-1", specHash,
+					predecessorRunId: "run-1", workspaceStateId: "ws",
+					continuationRecordId: recordId, capPolicyId: "cap-v1-core-default",
+					expiresAt: isoFuture, engineVersion: "engine-v1",
+					workspaceCapabilityId: "fake.continuation/v1",
+				})).includes("already has a successor"),
+				"a failed run cannot fork a second successor",
+			);
+			const repeatedFamily = make("family-a1", { taskId: "family-alpha" });
+			check(
+				repeatedFamily.phase === "resumable" && repeatedFamily.resumeAllowed === true,
+				"createRecoveryRecord is idempotent for an identical run",
+			);
+			check(
+				expectThrow(() => store.createRecoveryRecord({
+					runId: "family-a1", taskId: "family-alpha", specHash,
+					workspaceStateId: "different-workspace", continuationRecordId: recordId,
+					capPolicyId: "cap-v1-core-default", expiresAt: isoFuture,
+					engineVersion: "engine-v1", workspaceCapabilityId: "fake.continuation/v1",
+				})).includes("conflicts with durable state"),
+				"a conflicting recovery identity is rejected",
+			);
+
+			store.close();
+			const reopenedRecovery = new LedgerStore(tmp.path + ".recovery");
+			check(
+				Number((reopenedRecovery.db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version) === LEDGER_SCHEMA_VERSION &&
+					reopenedRecovery.getRecoveryStatus("run-1")!.runId === "run-3" &&
+					reopenedRecovery.getRecoveryStatus("run-blocked")!.blockedReason === "incompatible",
+				"recovery ledger migration, lineage, and blockers survive close/reopen",
+			);
+			reopenedRecovery.close();
 		}
 
 		// True pre-v3 fixture: build only the v1/v2 tables, rather than opening

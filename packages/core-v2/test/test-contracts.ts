@@ -21,6 +21,9 @@
  * Standalone: npx tsx packages/core-v2/test/test-contracts.ts
  */
 
+import { mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import {
@@ -57,6 +60,24 @@ import type {
 	ChildHandoff,
 	ChildResult,
 } from "../src/contracts/index.ts";
+import {
+	CONTINUATION_RECORD_VERSION,
+	CapPolicyIdSchema,
+	ContinuationCapPolicySchema,
+	ContinuationRecordSchema,
+	ContinuationToolPairSchema,
+	DEFAULT_CONTINUATION_CAP_POLICY,
+	DEFAULT_CONTINUATION_CAP_POLICY_ID,
+	hashRecord,
+	isContinuationBlocker,
+	isExpired,
+	type ContinuationRecord,
+} from "../src/contracts/continuation-record.ts";
+import {
+	CONTINUATION_STORE_VERSION,
+	createContinuationStore,
+	type ContinuationStore,
+} from "../src/context/continuation-store.ts";
 
 // ─── Compile-time subscription-level typing (enforced by tsc) ────────
 
@@ -872,11 +893,283 @@ export async function runTests(): Promise<void> {
 		);
 	}
 
+	// ─── M5.5 continuation records + typed local store (contracts only) ──
+	{
+		const nowIso = new Date("2026-08-29T12:00:00.000Z").toISOString();
+		const laterIso = new Date("2099-01-01T00:00:00.000Z").toISOString();
+		const makeRecord = (): ContinuationRecord =>
+			ContinuationRecordSchema.parse({
+				version: CONTINUATION_RECORD_VERSION,
+				compilerVersion: "compiler-v1",
+				capPolicyId: DEFAULT_CONTINUATION_CAP_POLICY_ID,
+				createdAt: nowIso,
+				expiresAt: laterIso,
+				engineVersion: "engine-v1",
+				workspaceCapabilityId: "workspace.jj.v1",
+				PiJsonVersion: "pi-json-v1",
+				taskId: "task-1",
+				specHash: "sha256:" + "1".repeat(64),
+				artifactPolicyHash: "sha256:" + "2".repeat(64),
+				taskGoal: "Ship a feature.",
+				artifactPolicy: '{"accept": {"maxBytes": 1024}}',
+				workspaceRef: "opaque-workspace-continuation:rev-1",
+				failureEvidence: {
+					kind: "process",
+					summary: "worker process exited before yield",
+					verificationStatus: "not-run",
+					timestamp: nowIso,
+				},
+				toolPairs: [
+					{
+						callId: "call-1",
+						sequence: 0,
+						toolName: "read",
+						args: { path: "a.ts" },
+						result: { lines: 3 },
+						isError: false,
+						timestamp: nowIso,
+					},
+				],
+				contextEntries: [
+					{
+						id: "ctx-1",
+						sequence: 1,
+						kind: "message",
+						text: "visible context entry",
+						timestamp: nowIso,
+					},
+				],
+				checkpointRefs: ["sha256:" + "3".repeat(64)],
+			});
+		const parsed = makeRecord();
+
+		// Round-trip parse: the record survives JSON serialize → parse intact.
+		const roundTripped = ContinuationRecordSchema.parse(
+			JSON.parse(JSON.stringify(parsed)),
+		);
+		check(
+			stableStringify(roundTripped) === stableStringify(parsed) &&
+				ContinuationToolPairSchema.parse(parsed.toolPairs[0]!).callId ===
+					"call-1",
+			"ContinuationRecord round-trips through JSON",
+		);
+
+		// Blocker vocabulary is exact and stable.
+		const blockers = [
+			"continuation_missing",
+			"corrupt",
+			"expired",
+			"incompatible",
+			"over_budget",
+			"blocked",
+		];
+		check(
+			blockers.every((blocker) => isContinuationBlocker(blocker)) &&
+				!isContinuationBlocker("bogus"),
+			"ContinuationBlocker enum accepts exactly the stable vocabulary",
+		);
+
+		// Cap defaults are present: exported, referenced, but not applied.
+		const defaultCap = ContinuationCapPolicySchema.parse(
+			DEFAULT_CONTINUATION_CAP_POLICY,
+		);
+		check(
+			defaultCap.maxBytes > 0 &&
+				defaultCap.maxTokens > 0 &&
+				defaultCap.maxPairs > 0 &&
+				defaultCap.maxContextEntries > 0 &&
+				defaultCap.maxBytesPerEntry > 0 &&
+				defaultCap.expiryMs > 0 &&
+				CapPolicyIdSchema.parse(DEFAULT_CONTINUATION_CAP_POLICY_ID) ===
+					DEFAULT_CONTINUATION_CAP_POLICY_ID,
+			"default cap policy exported with a versioned cap-v1 identity and positive limits",
+		);
+
+		// Mandatory authority can never be pruned or overridden: missing any
+		// of taskGoal/artifactPolicy/workspaceRef/failureEvidence fails.
+		for (const field of [
+			"taskGoal",
+			"artifactPolicy",
+			"workspaceRef",
+			"failureEvidence",
+		]) {
+			let accepted = true;
+			try {
+				ContinuationRecordSchema.parse({ ...parsed, [field]: undefined });
+			} catch {
+				accepted = false;
+			}
+			check(
+				!accepted,
+				`record rejects missing mandatory authority field: ${field}`,
+			);
+		}
+		let unknownAccepted = true;
+		try {
+			ContinuationRecordSchema.parse({ ...parsed, transcript: "secret" });
+		} catch {
+			unknownAccepted = false;
+		}
+		check(
+			!unknownAccepted,
+			"record is strict and rejects hidden transcript content",
+		);
+		let wrongVersionAccepted = true;
+		try {
+			ContinuationRecordSchema.parse({ ...parsed, version: 2 });
+		} catch {
+			wrongVersionAccepted = false;
+		}
+		check(!wrongVersionAccepted, "record rejects unsupported versions");
+
+		// Deterministic hash: identical semantic input — even key-reordered —
+		// hashes to identical bytes.
+		const reordered = JSON.parse(JSON.stringify(parsed)) as Record<
+			string,
+			unknown
+		>;
+		const reversedKeys = Object.fromEntries(
+			Object.keys(reordered)
+				.reverse()
+				.map((key) => [key, reordered[key]]),
+		);
+		const reorderedRecord = ContinuationRecordSchema.parse(reversedKeys);
+		check(
+			hashRecord(parsed) === hashRecord(roundTripped) &&
+				hashRecord(reorderedRecord) === hashRecord(parsed),
+			"hashRecord is deterministic and key-order independent",
+		);
+
+		// Typed local store: write/read/exists/delete round-trip at 0600,
+		// hash-validated reads, and a validation gate that is not a pruner.
+		const storeRoot = mkdtempSync(join(tmpdir(), "core-v2-continuation-store-"));
+		try {
+			const store: ContinuationStore = createContinuationStore({
+				root: storeRoot,
+			});
+			check(
+				CONTINUATION_STORE_VERSION === 1,
+				"continuation store is versioned",
+			);
+			check(
+				(await store.validate(parsed)).status === "valid",
+				"store validate accepts a canonical record",
+			);
+			const missingAuthority = await store.validate({
+				...parsed,
+				taskGoal: undefined,
+			});
+			check(
+				missingAuthority.status === "blocked" &&
+					missingAuthority.blocker === "corrupt",
+				"store validate fails closed on missing authority with a typed corrupt blocker",
+			);
+			const expiredValidation = await store.validate({
+				...parsed,
+				expiresAt: new Date(Date.now() - 60_000).toISOString(),
+			});
+			check(
+				expiredValidation.status === "blocked" &&
+					expiredValidation.blocker === "expired",
+				"store validate rejects expired records with a typed expired blocker",
+			);
+			check(
+				isExpired({
+					...parsed,
+					expiresAt: new Date(Date.now() - 1).toISOString(),
+				}) && !isExpired(parsed),
+				"isExpired flags past expiry only",
+			);
+			const id = await store.write(parsed);
+			check(id === hashRecord(parsed), "write returns the deterministic hash");
+			const readBack = await store.read(id);
+			check(
+				readBack !== undefined &&
+					stableStringify(readBack) === stableStringify(parsed),
+				"store read round-trips the record",
+			);
+			check(
+				(await store.validate(readBack!)).status === "valid",
+				"stored record passes the validation gate",
+			);
+			check(
+				(statSync(join(storeRoot, id.slice("sha256:".length))).mode &
+					0o777) === 0o600,
+				"continuation record file is 0600",
+			);
+			check(await store.exists(id), "store exists after write");
+			check(
+				(await store.delete(id)) === true &&
+					!(await store.exists(id)) &&
+					(await store.read(id)) === undefined &&
+					(await store.delete(id)) === false,
+				"store delete removes the record and reports absence",
+			);
+
+			// Hash-validated reads fail closed on tampered bodies.
+			const tamperStore = createContinuationStore({
+				root: join(storeRoot, "tamper"),
+			});
+			const tamperId = await tamperStore.write(parsed);
+			writeFileSync(
+				join(storeRoot, "tamper", tamperId.slice("sha256:".length)),
+				"tampered",
+				"utf8",
+			);
+			let tamperDetected = false;
+			try {
+				await tamperStore.read(tamperId);
+			} catch {
+				tamperDetected = true;
+			}
+			check(tamperDetected, "store read fails closed on corrupt records");
+
+			// The default cap policy IS now applied at the store gate (R4/R5): a
+			// record beyond its maxPairs fails admission with a typed blocker,
+			// and writing it fails closed instead of persisting over-cap state.
+			const overDefaultPolicy = ContinuationRecordSchema.parse({
+				...parsed,
+				toolPairs: Array.from({ length: 300 }, (_, i) => ({
+					callId: `call-${i}`,
+					sequence: i,
+					toolName: "read",
+					args: {},
+					result: {},
+					isError: false,
+					timestamp: nowIso,
+				})),
+			});
+			check(
+				overDefaultPolicy.toolPairs.length >
+					DEFAULT_CONTINUATION_CAP_POLICY.maxPairs,
+				"fixture exceeds the default pair cap",
+			);
+			const overPolicyValidation = await store.validate(overDefaultPolicy);
+			check(
+				overPolicyValidation.status === "blocked" &&
+					overPolicyValidation.blocker === "over_budget",
+				"store validate applies the cap policy: over-pair record is blocked over_budget",
+			);
+			let overPolicyWriteRejected = false;
+			try {
+				await store.write(overDefaultPolicy);
+			} catch {
+				overPolicyWriteRejected = true;
+			}
+			check(
+				overPolicyWriteRejected,
+				"store write fails closed on an over-cap record",
+			);
+		} finally {
+			rmSync(storeRoot, { recursive: true, force: true });
+		}
+	}
+
 	if (errors.length > 0) {
 		throw new Error("test-contracts failed:\n  ✗ " + errors.join("\n  ✗ "));
 	}
 	console.log(
-		"✓ contracts: schema round-trips, deterministic serialization, subscription typing, six seams",
+		"✓ contracts: schema round-trips, deterministic serialization, subscription typing, six seams, continuation records + local store",
 	);
 }
 

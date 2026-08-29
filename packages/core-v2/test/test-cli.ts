@@ -275,6 +275,23 @@ function fakeHost(
 	};
 }
 
+function noYieldHost(promptCalls: { value: number }): SessionHost {
+	return {
+		spawn: (config: SessionHostConfig) => {
+			const handle = new FakeHandle(config.cwd, "ok");
+			const prompt = handle.prompt.bind(handle);
+			Object.defineProperty(handle, "prompt", {
+				value: async () => {
+					promptCalls.value += 1;
+					await prompt();
+					handle.result = undefined;
+				},
+			});
+			return Promise.resolve(handle);
+		},
+	};
+}
+
 function interruptingHost(counter: { value: number }): SessionHost {
 	return {
 		spawn: (config: SessionHostConfig) => {
@@ -694,9 +711,10 @@ export async function runTests(): Promise<void> {
 		);
 		check(
 			successTaskId !== undefined &&
-				successLifecycle.length === 2 &&
+				successLifecycle.map((event) => event.type).join(",") ===
+					"task.queued,task.delivery_pending,task.completed" &&
 				successLifecycle.every((event) => event.taskId === successTaskId),
-			"success event stream has one canonical task lifecycle",
+			"success event stream crosses the durable delivery fence once",
 		);
 		check(
 			successTaskId !== undefined &&
@@ -716,6 +734,57 @@ export async function runTests(): Promise<void> {
 			!workspaces.includes("v2-task-"),
 			"successful worker workspace is cleaned up",
 		);
+
+		// Public standalone no-yield settlement uses one original prompt and
+		// crosses the same delivery fence before its terminal trace/ledger fact.
+		const noYieldRepo = join(root, "no-yield-repo");
+		initRepo(noYieldRepo);
+		const noYieldDb = join(root, "no-yield.sqlite");
+		const noYieldArtifacts = join(root, "no-yield-artifacts");
+		const noYieldPromptCalls = { value: 0 };
+		const noYield = await runCli(
+			[
+				"--spec",
+				specPath,
+				"--project-dir",
+				noYieldRepo,
+				"--model",
+				"fake/model",
+				"--db",
+				noYieldDb,
+				"--artifacts-dir",
+				noYieldArtifacts,
+			],
+			{
+				...deps,
+				host: noYieldHost(noYieldPromptCalls),
+				workspaceDriver: new JujutsuWorkspaceDriver({ projectDir: noYieldRepo }),
+				write: () => undefined,
+			},
+		);
+		check(
+			noYield.exitCode === 0 &&
+				noYield.receipt?.settlementSource === "engine_derived" &&
+				noYieldPromptCalls.value === 1,
+			`public no-yield settlement ships with one prompt (got ${noYield.exitCode}/${noYieldPromptCalls.value})`,
+		);
+		const noYieldTrace = readTrace(noYield.tracePath);
+		check(
+			noYieldTrace.outcome === "ship" &&
+				noYieldTrace.events.some(
+					(event) =>
+						event.type === "task.completed" &&
+						event.detail?.settlementSource === "engine_derived",
+				),
+			"public engine settlement trace has terminal engine-derived evidence",
+		);
+		const noYieldLedger = new LedgerStore(noYieldDb);
+		check(
+			noYield.receipt?.taskId !== undefined &&
+				noYieldLedger.getTask(noYield.receipt.taskId)?.status === "completed",
+			"public engine settlement completes ledger after delivery",
+		);
+		noYieldLedger.close();
 
 		// The ordinary v2 CLI exposes the daemon-owned parent→child path as a
 		// thin adapter; both sessions run through the same jj/verify pipeline.
@@ -1485,6 +1554,7 @@ export async function runTests(): Promise<void> {
 		const receiptFailureRepo = join(root, "receipt-failure-repo");
 		initRepo(receiptFailureRepo);
 		const receiptFailureArtifacts = join(root, "receipt-failure-artifacts");
+		const receiptFailureDb = join(root, "receipt-failure.sqlite");
 		const receiptFailureOutput: string[] = [];
 		mkdirSync(receiptFailureArtifacts, { recursive: true });
 		const receiptFailureTaskId = deriveTaskId(SPEC, receiptFailureRepo);
@@ -1500,7 +1570,7 @@ export async function runTests(): Promise<void> {
 				"--model",
 				"fake/model",
 				"--db",
-				join(root, "receipt-failure.sqlite"),
+				receiptFailureDb,
 				"--artifacts-dir",
 				receiptFailureArtifacts,
 			],
@@ -1517,9 +1587,18 @@ export async function runTests(): Promise<void> {
 			`receipt delivery failure maps to artifact exit (${receiptFailure.exitCode}, ${receiptFailure.error ?? ""})`,
 		);
 		check(
-			receiptFailure.receipt?.verdict === "failed",
-			"receipt delivery failure returns a non-ship receipt",
+			receiptFailure.receipt?.verdict === "failed" &&
+				receiptFailure.status === "delivery_pending",
+			"receipt delivery failure returns non-ship delivery-pending facts",
 		);
+		const receiptFailureLedger = new LedgerStore(receiptFailureDb);
+		check(
+			receiptFailure.receipt?.taskId !== undefined &&
+				receiptFailureLedger.getTask(receiptFailure.receipt.taskId)?.status ===
+					"delivery_pending",
+			"receipt delivery failure cannot leave standalone ledger completed",
+		);
+		receiptFailureLedger.close();
 		check(
 			!receiptFailureOutput.some((line) => line.startsWith("receipt: ")),
 			"receipt delivery failure does not print a ship receipt",
@@ -1566,6 +1645,7 @@ export async function runTests(): Promise<void> {
 		const traceFailureRepo = join(root, "trace-failure-repo");
 		initRepo(traceFailureRepo);
 		const traceFailureArtifacts = join(root, "trace-failure-artifacts");
+		const traceFailureDb = join(root, "trace-failure.sqlite");
 		mkdirSync(traceFailureArtifacts, { recursive: true });
 		mkdirSync(
 			join(
@@ -1582,7 +1662,7 @@ export async function runTests(): Promise<void> {
 				"--model",
 				"fake/model",
 				"--db",
-				join(root, "trace-failure.sqlite"),
+				traceFailureDb,
 				"--artifacts-dir",
 				traceFailureArtifacts,
 			],
@@ -1599,9 +1679,18 @@ export async function runTests(): Promise<void> {
 			"trace delivery failure maps to artifact exit",
 		);
 		check(
-			traceFailure.receipt?.verdict === "failed",
-			"trace delivery failure returns a non-ship receipt",
+			traceFailure.receipt?.verdict === "failed" &&
+				traceFailure.status === "delivery_pending",
+			"trace delivery failure returns non-ship delivery-pending facts",
 		);
+		const traceFailureLedger = new LedgerStore(traceFailureDb);
+		check(
+			traceFailure.receipt?.taskId !== undefined &&
+				traceFailureLedger.getTask(traceFailure.receipt.taskId)?.status ===
+					"delivery_pending",
+			"trace delivery failure cannot leave standalone ledger completed",
+		);
+		traceFailureLedger.close();
 		check(
 			traceFailure.error?.includes("trace artifact delivery failed") === true,
 			`trace delivery failure is actionable (${traceFailure.error ?? ""})`,
@@ -1625,6 +1714,62 @@ export async function runTests(): Promise<void> {
 				),
 			"trace delivery failure retains a durable failure explanation",
 		);
+
+		// Final shipped-receipt failure keeps the already durable trace non-ship.
+		const finalReceiptFailureRepo = join(root, "final-receipt-failure-repo");
+		initRepo(finalReceiptFailureRepo);
+		const finalReceiptFailureArtifacts = join(
+			root,
+			"final-receipt-failure-artifacts",
+		);
+		const finalReceiptFailureDb = join(root, "final-receipt-failure.sqlite");
+		let finalReceiptWrites = 0;
+		const finalReceiptFailure = await runCli(
+			[
+				"--spec",
+				specPath,
+				"--project-dir",
+				finalReceiptFailureRepo,
+				"--model",
+				"fake/model",
+				"--db",
+				finalReceiptFailureDb,
+				"--artifacts-dir",
+				finalReceiptFailureArtifacts,
+			],
+			{
+				...deps,
+				workspaceDriver: new JujutsuWorkspaceDriver({
+					projectDir: finalReceiptFailureRepo,
+				}),
+				writeReceiptArtifact: (receipt, artifactsDir) => {
+					finalReceiptWrites += 1;
+					return finalReceiptWrites === 1
+						? writeReceiptArtifact(receipt, artifactsDir)
+						: undefined;
+				},
+				write: () => undefined,
+			},
+		);
+		check(
+			finalReceiptFailure.exitCode === 3 &&
+				finalReceiptFailure.status === "delivery_pending" &&
+				finalReceiptFailure.receipt?.verdict === "failed",
+			"final receipt failure remains non-ship and delivery pending",
+		);
+		check(
+			readTrace(finalReceiptFailure.tracePath).outcome === "failed",
+			"final receipt failure leaves the durable standalone trace non-ship",
+		);
+		const finalReceiptFailureLedger = new LedgerStore(finalReceiptFailureDb);
+		check(
+			finalReceiptFailure.receipt?.taskId !== undefined &&
+				finalReceiptFailureLedger.getTask(
+					finalReceiptFailure.receipt.taskId,
+				)?.status === "delivery_pending",
+			"final receipt failure cannot advance standalone ledger completion",
+		);
+		finalReceiptFailureLedger.close();
 
 		const unavailableRepo = join(root, "unavailable-repo");
 		initRepo(unavailableRepo);

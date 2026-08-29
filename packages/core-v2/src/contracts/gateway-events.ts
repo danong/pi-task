@@ -30,6 +30,7 @@ export const TASK_LIFECYCLE_EVENTS = [
 	"review.completed",
 	"merge.completed",
 	"merge.conflict",
+	"task.delivery_pending",
 	"task.completed",
 	"task.failed",
 	"task.escalated",
@@ -202,6 +203,12 @@ export type TaskLifecycleEvent =
 			detail: string;
 	  }
 	| {
+			type: "task.delivery_pending";
+			taskId: string;
+			sessionId?: string;
+			detail: { settlementSource: SettlementSource };
+	  }
+	| {
 			type: "task.completed";
 			taskId: string;
 			sessionId?: string;
@@ -261,6 +268,7 @@ export function eventTypeOf(event: TaskLifecycleEvent): TaskLifecycleEventType {
 		case "review.completed":
 		case "merge.completed":
 		case "merge.conflict":
+		case "task.delivery_pending":
 		case "task.completed":
 		case "task.failed":
 		case "task.escalated":

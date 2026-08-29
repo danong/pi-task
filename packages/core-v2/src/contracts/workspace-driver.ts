@@ -8,6 +8,8 @@
  * --ignore-working-copy for read-only calls.
  */
 
+import { z } from "zod";
+
 /** A live worker workspace. No shared mutable state — the driver owns it. */
 export interface WorkspaceContext {
 	taskId: string;
@@ -112,38 +114,45 @@ export interface WorkspaceContinuationCapability {
 	): Promise<WorkspaceContext>;
 }
 
+/** Runtime-validated provider evidence. Provider-neutral identities are
+ * nonempty strings; repository path safety is enforced by content acceptance. */
+const EvidencePathListSchema = z.array(z.string().min(1));
+
 /** Engine-owned evidence for one finalized worker workspace. */
-export interface WorkspaceFinalization {
-	/** Stable jj change id for the committed worker tip. */
-	changeId: string;
-	/** Authoritative jj commit id for the committed worker tip. */
-	commitId: string;
-	/** Repository-relative paths changed from the task base, including deletions. */
-	changedPaths: readonly string[];
-	/** Whether the worker produced any tree changes relative to the task base. */
-	hasChanges: boolean;
-	/** Provider-observed paths present in the finalized worker tree. */
-	presentFiles?: readonly string[];
-	/** Provider-observed paths deleted by the worker. */
-	deletedFiles?: readonly string[];
-}
+export const WorkspaceFinalizationSchema = z
+	.object({
+		/** Stable provider change identity for the committed worker tip. */
+		changeId: z.string().min(1),
+		/** Authoritative provider commit identity for the committed worker tip. */
+		commitId: z.string().min(1),
+		/** Paths changed from the task base, including deletions. */
+		changedPaths: EvidencePathListSchema,
+		hasChanges: z.boolean(),
+		presentFiles: EvidencePathListSchema.optional(),
+		deletedFiles: EvidencePathListSchema.optional(),
+	})
+	.strict()
+	.superRefine((value, ctx) => {
+		if (value.hasChanges !== (value.changedPaths.length > 0))
+			ctx.addIssue({
+				code: z.ZodIssueCode.custom,
+				message: "hasChanges disagrees with changedPaths",
+			});
+	});
+export type WorkspaceFinalization = z.infer<typeof WorkspaceFinalizationSchema>;
 
 /** Result of an atomic combine across all workers' workspaces. */
-export interface CombineOutcome {
-	/** The merged base's COMMIT id (post-squash). */
-	commitId: string;
-	/** Repo-relative paths still conflicted after deterministic union. */
-	conflicts: string[];
-	/** Files the combine changed vs the pre-merge base — the honest
-	 *  filesChanged for aggregate receipts (review M4). */
-	filesChanged: number;
-	/** Provider-observed integrated paths, including deletions. */
-	changedPaths?: readonly string[];
-	/** Provider-observed paths present in the integrated tree. */
-	presentFiles?: readonly string[];
-	/** Provider-observed paths deleted from the integration base. */
-	deletedFiles?: readonly string[];
-}
+export const CombineOutcomeSchema = z
+	.object({
+		commitId: z.string().min(1),
+		conflicts: EvidencePathListSchema,
+		filesChanged: z.number().int().nonnegative(),
+		changedPaths: EvidencePathListSchema.optional(),
+		presentFiles: EvidencePathListSchema.optional(),
+		deletedFiles: EvidencePathListSchema.optional(),
+	})
+	.strict();
+export type CombineOutcome = z.infer<typeof CombineOutcomeSchema>;
 
 export interface WorkspaceDriver {
 	name: string;

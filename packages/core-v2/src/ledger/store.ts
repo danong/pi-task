@@ -15,13 +15,56 @@
  * idempotently. The first version creates all four tables.
  */
 
+import { existsSync, unlinkSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import {
 	ImmutableArtifactReferenceSchema,
 	type ImmutableArtifactReference,
 } from "../contracts/context-lifecycle.ts";
+import { CapPolicyIdSchema } from "../contracts/continuation-record.ts";
+import {
+	compareRecoveryForPruning,
+	isRecoveryExpired,
+	type RecoveryBlocker,
+	type RecoveryPhase,
+	type RecoveryStatus,
+} from "../contracts/recovery-status.ts";
 
-export const LEDGER_SCHEMA_VERSION = 11;
+export const LEDGER_SCHEMA_VERSION = 12;
+
+/** Successful runs add zero additional inference: only non-completed / non-shipped
+ * terminal outcomes retain recovery state. */
+export function shouldPersistRecovery(taskStatus: string): boolean {
+	return taskStatus !== "completed" && taskStatus !== "ship";
+}
+
+/** Delete a continuation body file if it exists; never touches canonical
+ * receipts/traces. Returns true when a file was removed. */
+function deleteContinuationBodyFile(storeRoot: string, recordId: string | null): boolean {
+	if (recordId === null || !/^sha256:[a-f0-9]{64}$/.test(recordId)) return false;
+	const target = join(resolve(storeRoot), recordId.slice("sha256:".length));
+	try {
+		unlinkSync(target);
+		return true;
+	} catch (error: unknown) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+		throw error;
+	}
+}
+
+async function deleteContinuationBodyAsync(
+	store: { delete(id: string): Promise<boolean> } | undefined,
+	storeRoot: string | undefined,
+	recordId: string | null,
+): Promise<boolean> {
+	if (recordId === null) return false;
+	if (store !== undefined) {
+		try { return await store.delete(recordId); } catch { return false; }
+	}
+	if (storeRoot !== undefined) return deleteContinuationBodyFile(storeRoot, recordId);
+	return false;
+}
 
 export type TaskStatus =
 	| "queued"
@@ -236,6 +279,22 @@ export interface NewWorkspaceContinuation {
 	opaqueToken: string;
 	revision: string;
 	status?: WorkspaceContinuationStatus;
+}
+
+/** A resumable standalone-recovery row (ADR docs/adr/m5.5-linear-recovery.md
+ * seam 1). Identities and references only — never bodies. The predecessor
+ * links this run to its lineage; at most one successor may exist per row. */
+export interface NewStandaloneRecovery {
+	runId: string;
+	taskId: string;
+	specHash: string;
+	predecessorRunId?: string | null;
+	workspaceStateId: string;
+	continuationRecordId: string;
+	capPolicyId: string;
+	expiresAt: string;
+	engineVersion: string;
+	workspaceCapabilityId: string;
 }
 
 /** All references and the ready edge are committed as one SQLite unit. */
@@ -649,6 +708,41 @@ function ensureTaskArtifactIdentityIndex(db: DatabaseSync): void {
 	db.exec(`CREATE UNIQUE INDEX ${TASK_ARTIFACT_IDENTITY_INDEX} ON task_artifacts(task_id, artifact_id)`);
 }
 
+/** M5.5 standalone recovery ledger (ADR docs/adr/m5.5-linear-recovery.md).
+ * Run/lifecycle identities and references only — never Pi message bodies,
+ * tool bodies, transcripts, hidden reasoning, or opaque continuation bodies.
+ * The status overlay keeps the base table additive for the later claim and
+ * expiry/pruning seams (4b/4c). */
+const V12_DDL = `
+CREATE TABLE IF NOT EXISTS standalone_recovery (
+    run_id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL,
+    spec_hash TEXT NOT NULL,
+    predecessor_run_id TEXT,
+    successor_run_id TEXT,
+    phase TEXT NOT NULL CHECK (phase IN (
+        'failed', 'resumable', 'blocked', 'claimed', 'completed')),
+    resume_allowed INTEGER NOT NULL CHECK (resume_allowed IN (0, 1)),
+    blocked_reason TEXT CHECK (blocked_reason IN (
+        'continuation_missing', 'corrupt', 'expired', 'incompatible',
+        'over_budget', 'blocked')),
+    workspace_state_id TEXT,
+    continuation_record_id TEXT,
+    cap_policy_id TEXT NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    expires_at TEXT NOT NULL,
+    engine_version TEXT NOT NULL,
+    workspace_capability_id TEXT
+);
+CREATE TABLE IF NOT EXISTS standalone_recovery_status_overrides (
+    run_id TEXT PRIMARY KEY REFERENCES standalone_recovery(run_id) ON DELETE CASCADE,
+    phase TEXT NOT NULL,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS standalone_recovery_family_idx
+    ON standalone_recovery(task_id, created_at);
+`;
+
 const MIGRATIONS: Migration[] = [
 	{ version: 1, sql: V1_DDL },
 	{ version: 2, sql: V2_DDL },
@@ -661,6 +755,7 @@ const MIGRATIONS: Migration[] = [
 	{ version: 9, sql: V9_DDL },
 	{ version: 10, sql: V10_DDL },
 	{ version: 11, apply: ensureTaskArtifactIdentityIndex },
+	{ version: 12, sql: V12_DDL },
 ];
 
 function migrate(db: DatabaseSync): void {
@@ -1960,6 +2055,355 @@ export class LedgerStore {
 		}
 		return { requeued, failed };
 	}
+
+	// ─── M5.5 standalone recovery (ADR docs/adr/m5.5-linear-recovery.md) ──
+
+	/** Insert one `resumable` standalone-recovery row from validated identities.
+	 * Used by tests now; capture wiring lands in seam 4b (no claim, no
+	 * pruning — those are 4b/4c). Idempotent for an identical run; a
+	 * conflicting identity or a lineage fork is rejected atomically. */
+	createRecoveryRecord(input: NewStandaloneRecovery): RecoveryStatus {
+		return this.transaction(() => {
+			validateStandaloneRecoveryIdentities(input);
+			const existing = this.db.prepare(
+				"SELECT run_id FROM standalone_recovery WHERE run_id = ?",
+			).get(input.runId);
+			if (existing !== undefined) {
+				const own = recoveryRow(this.db, input.runId);
+				const current = own === undefined ? null : rowToRecoveryStatus(own);
+				if (current === null || current.phase !== "resumable" ||
+					current.taskId !== input.taskId || current.specHash !== input.specHash ||
+					current.workspaceStateId !== input.workspaceStateId ||
+					current.continuationRecordId !== input.continuationRecordId ||
+					current.capPolicyId !== input.capPolicyId ||
+					current.engineVersion !== input.engineVersion ||
+					current.workspaceCapabilityId !== input.workspaceCapabilityId)
+					throw new Error("recovery record identity conflicts with durable state");
+				return this.getRecoveryStatus(input.runId)!;
+			}
+			if (input.predecessorRunId !== undefined && input.predecessorRunId !== null &&
+				input.predecessorRunId !== input.runId) {
+				const predecessor = this.db.prepare(
+					"SELECT run_id, successor_run_id FROM standalone_recovery WHERE run_id = ?",
+				).get(input.predecessorRunId) as { run_id: string; successor_run_id: string | null } | undefined;
+				if (predecessor === undefined) throw new Error("recovery predecessor run does not exist");
+				// A cycle is when some EXISTING row in the chain already points at the
+				// new run. The one legitimate match is the successor slot pre-allocated
+				// by a linear claim (ADR seam 4b): the claimed row carries a dangling
+				// successor_run_id pointing at the not-yet-created successor, and the
+				// resumer walks that exact identity when creating it.
+				if (predecessor.successor_run_id !== input.runId &&
+					this.isRecoveryDescendant(input.predecessorRunId, input.runId))
+					throw new Error("recovery lineage cycle");
+				if (predecessor.successor_run_id !== null && predecessor.successor_run_id !== input.runId)
+					throw new Error("recovery predecessor already has a successor");
+				this.db.prepare(
+					"UPDATE standalone_recovery SET successor_run_id = ? WHERE run_id = ? AND (successor_run_id IS NULL OR successor_run_id = ?)",
+				).run(input.runId, input.predecessorRunId, input.runId);
+			}
+			this.db.prepare(
+				`INSERT INTO standalone_recovery
+				 (run_id, task_id, spec_hash, predecessor_run_id, successor_run_id,
+				  phase, resume_allowed, blocked_reason, workspace_state_id,
+				  continuation_record_id, cap_policy_id, expires_at, engine_version,
+				  workspace_capability_id)
+				 VALUES (?, ?, ?, ?, NULL, 'resumable', 1, NULL, ?, ?, ?, ?, ?, ?)`,
+			).run(
+				input.runId, input.taskId, input.specHash, input.predecessorRunId ?? null,
+				input.workspaceStateId, input.continuationRecordId, input.capPolicyId,
+				input.expiresAt, input.engineVersion, input.workspaceCapabilityId,
+			);
+			return this.getRecoveryStatus(input.runId)!;
+		});
+	}
+
+	/** Atomic linear claim (ADR seam 4b): resolve `runId` to its terminal
+	 * lineage member, then compare-and-set one `resumable` row with no
+	 * successor to `claimed`, allocating exactly one direct successor.
+	 * Concurrent claimers have one winner; losers receive the current factual
+	 * status and create neither a session nor a workspace. The successor
+	 * identity is supplied by the caller — a fresh family/attempt id from the
+	 * existing `deriveTaskId`/`resolveAttemptId` machinery. */
+	claimRecovery(runId: string, successorRunId: string): { success: boolean; status: RecoveryStatus } {
+		const outcome = this.transactionForClaim(() => {
+			const terminal = this.resolveToLatestFailed(runId);
+			if (terminal === null) throw new Error("recovery run does not exist");
+			if (isRecoveryExpired(terminal)) {
+				this.db.prepare(`UPDATE standalone_recovery SET phase = 'blocked', resume_allowed = 0, blocked_reason = 'expired' WHERE run_id = ?`).run(terminal.runId);
+				this.db.prepare(`INSERT INTO standalone_recovery_status_overrides (run_id, phase) VALUES (?, 'blocked') ON CONFLICT(run_id) DO UPDATE SET phase = 'blocked', updated_at = CURRENT_TIMESTAMP`).run(terminal.runId);
+				return { success: false, status: this.resolveToLatestFailed(runId)! };
+			}
+			if (terminal.blockedReason !== null || terminal.resumeAllowed === false) {
+				return { success: false, status: terminal };
+			}
+			if (this.db.prepare("SELECT 1 FROM standalone_recovery WHERE run_id = ?").get(successorRunId) !== undefined)
+				throw new Error("recovery successor run already exists in the ledger");
+			const result = this.db.prepare(
+				`UPDATE standalone_recovery
+				 SET successor_run_id = ?, resume_allowed = 0
+				 WHERE run_id = ?
+				   AND successor_run_id IS NULL
+				   AND COALESCE((SELECT phase FROM standalone_recovery_status_overrides o
+								 WHERE o.run_id = standalone_recovery.run_id), phase) = 'resumable'`,
+			).run(successorRunId, terminal.runId);
+			if (Number((result as { changes?: number | bigint }).changes ?? 0) !== 1)
+				return { success: false, status: this.resolveToLatestFailed(runId)! };
+			this.db.prepare(
+				"INSERT INTO standalone_recovery_status_overrides (run_id, phase) VALUES (?, 'claimed') ON CONFLICT(run_id) DO UPDATE SET phase = 'claimed', updated_at = CURRENT_TIMESTAMP",
+			).run(terminal.runId);
+			return { success: true, status: this.resolveToLatestFailed(runId)! };
+		});
+		if (outcome !== null) return outcome;
+		// A busy loser maps to the same factual outcome as a CAS loser.
+		const status = this.resolveToLatestFailed(runId);
+		if (status === null) throw new Error("recovery run does not exist");
+		return { success: false, status };
+	}
+
+	/** Resolve `runId` to the terminal latest member of its recovery lineage by
+	 * following the successor chain (every lineage member is a failed attempt;
+	 * claimed/superseded members are returned as-is so losers receive factual
+	 * status). Expiry is applied fail-closed: an expired resumable row reports
+	 * blocked/expired with resume_allowed=false before any workspace restore. */
+	resolveToLatestFailed(runId: string, now?: number | Date | string): RecoveryStatus | null {
+		const row = recoveryRow(this.db, runId);
+		if (row === undefined) return null;
+		let current = rowToRecoveryStatus(row);
+		const seen = new Set<string>([current.runId]);
+		while (current.successorRunId !== null && !seen.has(current.successorRunId)) {
+			seen.add(current.successorRunId);
+			const next = recoveryRow(this.db, current.successorRunId);
+			if (next === undefined) break;
+			current = rowToRecoveryStatus(next);
+		}
+		return this.applyRecoveryExpiryIfNeeded(current, now);
+	}
+
+	/** Factual status read (4a contract): the terminal lineage member, with
+	 * expiry fail-closed applied. */
+	getRecoveryStatus(runId: string, now?: number | Date | string): RecoveryStatus | null {
+		return this.resolveToLatestFailed(runId, now);
+	}
+
+	/** Latest recovery fact for a task family (`task_id` = familyId): the most
+	 * recently created recovery row, lineage-resolved to its chain end. */
+	getLatestRecoveryForFamily(familyId: string, now?: number | Date | string): RecoveryStatus | null {
+		const row = this.db.prepare(
+			"SELECT run_id FROM standalone_recovery WHERE task_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1",
+		).get(familyId) as { run_id: string } | undefined;
+		if (row === undefined) return null;
+		return this.getRecoveryStatus(String(row.run_id), now);
+	}
+
+	/** Apply expiry fail-closed without mutating the ledger (pruning persists it). */
+	private applyRecoveryExpiryIfNeeded(status: RecoveryStatus, now?: number | Date | string): RecoveryStatus {
+		if (status.phase !== "resumable") return status;
+		const reference = now ?? Date.now();
+		if (!isRecoveryExpired(status, reference)) return status;
+		return { ...status, phase: "blocked", resumeAllowed: false, blockedReason: "expired" };
+	}
+
+	/** Mark a recovery run as blocked with a stable factual reason.
+	 * Every blocker maps to resume_allowed=false and a stable blocked_reason
+	 * (continuation_missing|corrupt|expired|incompatible|over_budget|blocked). */
+	markRecoveryBlocked(runId: string, blocker: RecoveryBlocker): RecoveryStatus {
+		return this.transaction(() => {
+			const row = recoveryRow(this.db, runId);
+			if (row === undefined) throw new Error("recovery run does not exist");
+			this.db.prepare(
+				`UPDATE standalone_recovery SET phase = 'blocked', resume_allowed = 0, blocked_reason = ? WHERE run_id = ?`,
+			).run(blocker, runId);
+			this.db.prepare(
+				`INSERT INTO standalone_recovery_status_overrides (run_id, phase) VALUES (?, 'blocked') ON CONFLICT(run_id) DO UPDATE SET phase = 'blocked', updated_at = CURRENT_TIMESTAMP`,
+			).run(runId);
+			const updated = recoveryRow(this.db, runId);
+			if (updated === undefined) throw new Error("recovery run does not exist after block");
+			return rowToRecoveryStatus(updated);
+		});
+	}
+
+	/** Coordination helper: delete the continuation body for a run and make the
+	 * ledger reference non-resumable. Bodies in LocalContinuationStore are
+	 * deleted; canonical receipts/traces are never touched. */
+	deleteRecoveryRecordBody(
+		runId: string,
+		options: { continuationStore?: { delete(id: string): Promise<boolean> }; storeRoot?: string } = {},
+	): boolean {
+		return this.transaction(() => {
+			const status = this.resolveToLatestFailed(runId);
+			if (status === null) throw new Error("recovery run does not exist");
+			if (status.continuationRecordId !== null) {
+				if (options.continuationStore !== undefined) {
+					void options.continuationStore.delete(status.continuationRecordId).catch(() => {});
+				} else if (options.storeRoot !== undefined) {
+					deleteContinuationBodyFile(options.storeRoot, status.continuationRecordId);
+				}
+				if (status.workspaceStateId !== null && options.storeRoot !== undefined) {
+					deleteContinuationBodyFile(options.storeRoot, status.workspaceStateId);
+				}
+			}
+			this.db.prepare(`UPDATE standalone_recovery SET resume_allowed = 0, blocked_reason = COALESCE(blocked_reason, 'blocked'), phase = CASE WHEN phase = 'resumable' THEN 'blocked' ELSE phase END WHERE run_id = ?`).run(status.runId);
+			if (status.phase === "resumable") {
+				this.db.prepare(`INSERT INTO standalone_recovery_status_overrides (run_id, phase) VALUES (?, 'blocked') ON CONFLICT(run_id) DO UPDATE SET phase = 'blocked', updated_at = CURRENT_TIMESTAMP`).run(status.runId);
+			}
+			return true;
+		});
+	}
+
+	/** Async variant of deleteRecoveryRecordBody for callers with an async store. */
+	async deleteRecoveryRecordBodyAsync(
+		runId: string,
+		options: { continuationStore?: { delete(id: string): Promise<boolean> }; storeRoot?: string } = {},
+	): Promise<boolean> {
+		const status = this.resolveToLatestFailed(runId);
+		if (status === null) throw new Error("recovery run does not exist");
+		if (status.continuationRecordId !== null) {
+			await deleteContinuationBodyAsync(options.continuationStore, options.storeRoot, status.continuationRecordId);
+			if (status.workspaceStateId !== null) await deleteContinuationBodyAsync(options.continuationStore, options.storeRoot, status.workspaceStateId);
+		}
+		this.markRecoveryBlocked(status.runId, (status.blockedReason as RecoveryBlocker | null) ?? "blocked");
+		return true;
+	}
+
+	/** Deterministic prune: expired → terminal settlement → superseded lineage.
+	 * Each pruned row becomes non-resumable (blocked) and its continuation body
+	 * is deleted. Never deletes canonical receipts/traces. Returns pruned runIds
+	 * in deterministic order. */
+	pruneExpiredRecoveries(
+		now: number | Date | string = Date.now(),
+		options: { continuationStore?: { delete(id: string): Promise<boolean> }; storeRoot?: string } = {},
+	): string[] {
+		return this.transaction(() => {
+			const rows = this.db.prepare(`SELECT r.*, o.phase AS override_phase FROM standalone_recovery r LEFT JOIN standalone_recovery_status_overrides o ON o.run_id = r.run_id`).all() as Record<string, unknown>[];
+			const statuses = rows.map(rowToRecoveryStatus);
+			const expired: RecoveryStatus[] = [];
+			const terminal: RecoveryStatus[] = [];
+			const superseded: RecoveryStatus[] = [];
+			const nowMs = typeof now === "number" ? now : now instanceof Date ? now.getTime() : Date.parse(String(now));
+			for (const s of statuses) {
+				const isExpired = Number.isFinite(Date.parse(s.expiresAt)) ? Date.parse(s.expiresAt) <= (Number.isFinite(nowMs) ? nowMs : Date.now()) : true;
+				if (isExpired && s.phase === "resumable") expired.push(s);
+				else if (s.phase === "completed") terminal.push(s);
+				else if (s.successorRunId !== null) superseded.push(s);
+			}
+			expired.sort(compareRecoveryForPruning);
+			terminal.sort(compareRecoveryForPruning);
+			superseded.sort(compareRecoveryForPruning);
+			const ordered = [...expired, ...terminal, ...superseded];
+			const pruned: string[] = [];
+			for (const s of ordered) {
+				const blocker: RecoveryBlocker = expired.includes(s) ? "expired" : (s.blockedReason as RecoveryBlocker | null) ?? "blocked";
+				this.db.prepare(`UPDATE standalone_recovery SET resume_allowed = 0, blocked_reason = ?, phase = CASE WHEN phase = 'resumable' THEN 'blocked' ELSE phase END WHERE run_id = ?`).run(blocker, s.runId);
+				if (s.phase === "resumable") {
+					this.db.prepare(`INSERT INTO standalone_recovery_status_overrides (run_id, phase) VALUES (?, 'blocked') ON CONFLICT(run_id) DO UPDATE SET phase = 'blocked', updated_at = CURRENT_TIMESTAMP`).run(s.runId);
+				}
+				if (s.continuationRecordId !== null) {
+					if (options.continuationStore !== undefined) {
+						void options.continuationStore.delete(s.continuationRecordId).catch(() => {});
+					} else if (options.storeRoot !== undefined) {
+						deleteContinuationBodyFile(options.storeRoot, s.continuationRecordId);
+					}
+				}
+				if (s.workspaceStateId !== null && options.storeRoot !== undefined) {
+					deleteContinuationBodyFile(options.storeRoot, s.workspaceStateId);
+				}
+				pruned.push(s.runId);
+			}
+			return pruned;
+		});
+	}
+
+	/** Async prune variant that awaits continuation-store deletes. */
+	async pruneExpiredRecoveriesAsync(
+		now: number | Date | string = Date.now(),
+		options: { continuationStore?: { delete(id: string): Promise<boolean> }; storeRoot?: string } = {},
+	): Promise<string[]> {
+		const pruned = this.pruneExpiredRecoveries(now, {});
+		for (const runId of pruned) {
+			const status = this.getRecoveryStatus(runId);
+			if (status?.continuationRecordId !== null && status !== null) {
+				await deleteContinuationBodyAsync(options.continuationStore, options.storeRoot, status.continuationRecordId);
+			}
+		}
+		return pruned;
+	}
+
+	/** Delete temporary continuation bodies after successful delivery.
+	 * Successful runs add zero additional inference; this cleans the
+	 * operational recovery body without touching canonical evidence. */
+	cleanupOnSuccess(
+		runId: string,
+		options: { continuationStore?: { delete(id: string): Promise<boolean> }; storeRoot?: string } = {},
+	): boolean {
+		return this.transaction(() => {
+			const status = this.resolveToLatestFailed(runId);
+			if (status === null) throw new Error("recovery run does not exist");
+			if (status.continuationRecordId !== null) {
+				if (options.continuationStore !== undefined) {
+					void options.continuationStore.delete(status.continuationRecordId).catch(() => {});
+				} else if (options.storeRoot !== undefined) {
+					deleteContinuationBodyFile(options.storeRoot, status.continuationRecordId);
+				}
+			}
+			if (status.workspaceStateId !== null && options.storeRoot !== undefined) {
+				deleteContinuationBodyFile(options.storeRoot, status.workspaceStateId);
+			}
+			this.db.prepare(`UPDATE standalone_recovery SET resume_allowed = 0 WHERE run_id = ?`).run(status.runId);
+			return true;
+		});
+	}
+
+	async cleanupOnSuccessAsync(
+		runId: string,
+		options: { continuationStore?: { delete(id: string): Promise<boolean> }; storeRoot?: string } = {},
+	): Promise<boolean> {
+		const status = this.resolveToLatestFailed(runId);
+		if (status === null) throw new Error("recovery run does not exist");
+		if (status.continuationRecordId !== null) {
+			await deleteContinuationBodyAsync(options.continuationStore, options.storeRoot, status.continuationRecordId);
+		}
+		if (status.workspaceStateId !== null) await deleteContinuationBodyAsync(options.continuationStore, options.storeRoot, status.workspaceStateId);
+		this.db.prepare(`UPDATE standalone_recovery SET resume_allowed = 0 WHERE run_id = ?`).run(status.runId);
+		return true;
+	}
+
+	/** Instance wrapper for the module-level shouldPersistRecovery. */
+	shouldPersistRecovery(taskStatus: string): boolean {
+		return shouldPersistRecovery(taskStatus);
+	}
+
+	/** Factual rendering for `status <run-id>`: surfaces blocked_reason + successor_run_id. */
+	renderRecoveryStatus(status: RecoveryStatus): string {
+		const parts: string[] = [
+			`runId=${status.runId}`,
+			`taskId=${status.taskId}`,
+			`phase=${status.phase}`,
+			`resume_allowed=${String(status.resumeAllowed)}`,
+			`blocked_reason=${status.blockedReason ?? "none"}`,
+			`successor_run_id=${status.successorRunId ?? "none"}`,
+		];
+		return parts.join(" ");
+	}
+
+	formatRecoveryStatus(status: RecoveryStatus): string {
+		return this.renderRecoveryStatus(status);
+	}
+
+	/** True when following the successor chain forward from `runId` reaches
+	 * `target` — the defensive half of the no-cycle lineage invariant. */
+	private isRecoveryDescendant(runId: string, target: string): boolean {
+		const seen = new Set<string>();
+		let cursor: string | null = runId;
+		while (cursor !== null && !seen.has(cursor)) {
+			if (cursor === target) return true;
+			seen.add(cursor);
+			const row = this.db.prepare(
+				"SELECT successor_run_id FROM standalone_recovery WHERE run_id = ?",
+			).get(cursor) as { successor_run_id: string | null } | undefined;
+			cursor = row === undefined || row.successor_run_id === null ? null : row.successor_run_id;
+		}
+		return false;
+	}
 }
 
 // ─── Row mappers (snake_case DDL → camelCase TS) ─────────────────────
@@ -2087,6 +2531,59 @@ function rowToTaskEdge(row: Record<string, unknown>): TaskEdgeRow {
 		claimedAt: row.claimed_at === null ? null : String(row.claimed_at),
 		completedAt: row.completed_at === null ? null : String(row.completed_at),
 	};
+}
+
+// ─── Standalone recovery row helpers (M5.5, ADR seam 1) ─────────────
+
+/** One recovery row joined with its status overlay (the overlay carries
+ *  later claim/phase transitions additively; read via effective phase). */
+function recoveryRow(db: DatabaseSync, runId: string): Record<string, unknown> | undefined {
+	return db.prepare(
+		`SELECT r.*, o.phase AS override_phase
+		 FROM standalone_recovery r
+		 LEFT JOIN standalone_recovery_status_overrides o ON o.run_id = r.run_id
+		 WHERE r.run_id = ?`,
+	).get(runId) as Record<string, unknown> | undefined;
+}
+
+function rowToRecoveryStatus(row: Record<string, unknown>): RecoveryStatus {
+	return {
+		runId: String(row.run_id),
+		taskId: String(row.task_id),
+		specHash: String(row.spec_hash),
+		predecessorRunId: row.predecessor_run_id === null ? null : String(row.predecessor_run_id),
+		successorRunId: row.successor_run_id === null ? null : String(row.successor_run_id),
+		phase: (row.override_phase ?? row.phase) as RecoveryPhase,
+		resumeAllowed: Number(row.resume_allowed) === 1,
+		blockedReason: row.blocked_reason === null ? null : (row.blocked_reason as RecoveryBlocker),
+		workspaceStateId: row.workspace_state_id === null ? null : String(row.workspace_state_id),
+		continuationRecordId: row.continuation_record_id === null ? null : String(row.continuation_record_id),
+		capPolicyId: String(row.cap_policy_id),
+		createdAt: String(row.created_at),
+		expiresAt: String(row.expires_at),
+		engineVersion: String(row.engine_version),
+		workspaceCapabilityId: row.workspace_capability_id === null ? null : String(row.workspace_capability_id),
+	};
+}
+
+/** Resumable rows must carry complete validated identities; nothing here
+ *  admits a body. `capPolicyId` follows the shared cap-policy vocabulary. */
+function validateStandaloneRecoveryIdentities(input: NewStandaloneRecovery): void {
+	if (!input.runId || !input.taskId || !input.engineVersion || !input.workspaceStateId ||
+		!input.continuationRecordId || !input.workspaceCapabilityId)
+		throw new Error("recovery record requires run, task, engine, workspace and continuation identities");
+	for (const [value, field] of [
+		[input.runId, "run"], [input.taskId, "task"], [input.workspaceStateId, "workspace state"],
+		[input.continuationRecordId, "continuation record"], [input.workspaceCapabilityId, "workspace capability"],
+	] as const) {
+		if (value.length > 256) throw new Error(`recovery ${field} identity exceeds the supported bound`);
+	}
+	if (input.engineVersion.length > 128)
+		throw new Error("recovery engine version exceeds the supported bound");
+	requireArtifactIdentity(input.specHash, "recovery spec hash");
+	CapPolicyIdSchema.parse(input.capPolicyId);
+	if (!Number.isFinite(Date.parse(input.expiresAt)))
+		throw new Error("recovery record expires_at must be a valid timestamp");
 }
 
 // ─── Workflow approvals (human gate, planning-only workflow) ──────────

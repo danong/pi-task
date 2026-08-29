@@ -21,3 +21,4 @@ export * from "./control-surface.ts";
 export * from "./trace.ts";
 export * from "./artifact-policy.ts";
 export * from "./acceptance.ts";
+export * from "./recovery-status.ts";

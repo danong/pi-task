@@ -26,6 +26,7 @@ import { runTests as runContextIntegrationTests } from "./test-context-integrati
 import { runTests as runContextEvalTests } from "./test-context-eval.ts";
 import { runTests as runM4ProofTests } from "./test-m4-proof.ts";
 import { runTests as runContinuationTests } from "./test-continuation.ts";
+import { runTests as runContinuationCompilerTests } from "./test-continuation-compiler.ts";
 import { runTests as runCliTests } from "./test-cli.ts";
 import { runTests as runDaemonTests } from "./test-daemon.ts";
 import { runTests as runEnvironmentTests } from "./test-environments.ts";
@@ -39,6 +40,7 @@ import { runTests as runSequentialTests } from "./test-sequential.ts";
 import { runTests as runPrewalkTests } from "./test-prewalk.ts";
 import { runTests as runReviewForkTests } from "./test-review-fork.ts";
 import { runTests as runLedgerTests } from "./test-ledger.ts";
+import { runTests as runRecoveryClaimTests } from "./test-recovery-claim.ts";
 import { runTests as runLifecycleCollectorPluginTests } from "./test-plugins-lifecycle.ts";
 import { runTests as runHandoffCapPluginTests } from "./test-plugins-handoff-cap.ts";
 import { runTests as runRouterTests } from "./test-router.ts";
@@ -77,8 +79,10 @@ const SUITES: Array<{ name: string; run: () => Promise<void> }> = [
 	{ name: "m4-proof", run: runM4ProofTests },
 	{ name: "bundle", run: runBundleTests },
 	{ name: "continuation", run: runContinuationTests },
+	{ name: "continuation-compiler", run: runContinuationCompilerTests },
 	{ name: "cli", run: runCliTests },
 	{ name: "ledger", run: runLedgerTests },
+	{ name: "recovery-claim", run: runRecoveryClaimTests },
 	{ name: "router", run: runRouterTests },
 	{ name: "verify-run", run: runVerifyRunTests },
 	{ name: "artifacts", run: runArtifactTests },

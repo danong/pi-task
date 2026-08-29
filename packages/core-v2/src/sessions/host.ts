@@ -170,6 +170,8 @@ export type SessionHostEvent =
 	| { type: "toolEnd"; toolName: string; toolCallId: string; isError: boolean }
 	| { type: "settled" }
 	| { type: "yielded"; payload: Yield }
+	| { type: "cancelled" }
+	| { type: "rejected"; reason: string }
 	| { type: "error"; message: string; code: SessionHostErrorCode };
 
 /** Typed listener for the host's event stream. */
@@ -533,6 +535,7 @@ class LiveSession implements SessionHandle {
 	}
 
 	async abort(): Promise<void> {
+		this.#emit({ type: "cancelled" });
 		await this.#session.abort();
 	}
 

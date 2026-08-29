@@ -46,6 +46,7 @@ export const TraceEventTypeSchema = z.enum([
 	"trace.delivered",
 	"failure",
 	"recovery.referenced",
+	"task.delivery_pending",
 	"task.completed",
 	"task.failed",
 	"task.escalated",
@@ -411,6 +412,10 @@ export function traceEventFromGateway(
 				action: capTraceText(event.action),
 				description: capTraceText(event.detail),
 			};
+			break;
+		case "task.delivery_pending":
+			type = "task.delivery_pending";
+			detail = { settlementSource: event.detail.settlementSource };
 			break;
 		case "task.completed":
 			type = "task.completed";

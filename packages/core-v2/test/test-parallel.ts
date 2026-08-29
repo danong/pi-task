@@ -123,10 +123,24 @@ class NoYieldHandle extends FakeHandle {
 	}
 }
 
-function noYieldHost(fileName: string): SessionHost {
+function noYieldHost(
+	fileName: string,
+	promptCalls?: { value: number },
+): SessionHost {
 	return {
-		spawn: (config) =>
-			Promise.resolve(new NoYieldHandle(config, join(config.cwd, fileName))),
+		spawn: (config) => {
+			const handle = new NoYieldHandle(config, join(config.cwd, fileName));
+			if (promptCalls !== undefined) {
+				const prompt = handle.prompt.bind(handle);
+				Object.defineProperty(handle, "prompt", {
+					value: () => {
+						promptCalls.value += 1;
+						return prompt();
+					},
+				});
+			}
+			return Promise.resolve(handle);
+		},
 	};
 }
 
@@ -579,7 +593,8 @@ export async function runTests(): Promise<void> {
 				stdio: "pipe",
 			});
 
-			const host = noYieldHost("a.txt");
+			const promptCalls = { value: 0 };
+			const host = noYieldHost("a.txt", promptCalls);
 			const { JujutsuWorkspaceDriver } =
 				await import("../src/workspaces/jj-driver.ts");
 			const result = await runParallelTask({
@@ -602,8 +617,10 @@ export async function runTests(): Promise<void> {
 				"engine-derived authority is present on the worker receipt",
 			);
 			check(
-				result.aggregate.turns === 1 && result.aggregate.inputTokens === 500,
-				"engine settlement preserves observed turns and measured usage",
+				result.aggregate.turns === 1 &&
+					result.aggregate.inputTokens === 500 &&
+					promptCalls.value === 1,
+				`engine settlement preserves usage and issues one prompt (got ${promptCalls.value})`,
 			);
 			check(existsSync(join(repo, "a.txt")), "engine-settled work is integrated");
 			const { LedgerStore } = await import("../src/ledger/store.ts");
@@ -661,6 +678,57 @@ export async function runTests(): Promise<void> {
 			);
 		}
 
+		// ─── M5.5: thrown objective gate reconciles exactly once ─────────
+		{
+			const repo = join(dir, "engine-settlement-materialize-throw");
+			mkdirSync(repo, { recursive: true });
+			execSync("jj git init --colocate", { cwd: repo, stdio: "pipe" });
+			writeFileSync(join(repo, "README.md"), "# fixture\n", "utf-8");
+			execSync('JJ_EDITOR=true jj commit -m "init"', {
+				cwd: repo,
+				stdio: "pipe",
+			});
+			const { JujutsuWorkspaceDriver } =
+				await import("../src/workspaces/jj-driver.ts");
+			const driver = new JujutsuWorkspaceDriver({ projectDir: repo });
+			let recoveries = 0;
+			const recover = driver.recoverFailedRun.bind(driver);
+			Object.defineProperty(driver, "recoverFailedRun", {
+				value: async (...args: Parameters<typeof recover>) => {
+					recoveries += 1;
+					return await recover(...args);
+				},
+			});
+			Object.defineProperty(driver, "materialize", {
+				value: async () => {
+					throw new Error("materialize fault");
+				},
+			});
+			const result = await runParallelTask({
+				subTasks: [SPEC_A],
+				singleTask: true,
+				projectDir: repo,
+				artifactsDir: join(dir, "artifacts-engine-settlement-materialize-throw"),
+				dbPath: join(dir, "engine-settlement-materialize-throw.db"),
+				model: "openrouter/stealth/ox-alpha",
+				workspaceDriver: driver,
+				host: noYieldHost("a.txt"),
+			});
+			check(
+				result.aggregate.verdict === "failed" && recoveries === 1,
+				`materialization exception fails with one reconciliation (got ${result.aggregate.verdict}/${recoveries})`,
+			);
+			const { LedgerStore } = await import("../src/ledger/store.ts");
+			const ledger = new LedgerStore(
+				join(dir, "engine-settlement-materialize-throw.db"),
+			);
+			check(
+				ledger.getTask(result.aggregate.taskId)?.status === "failed",
+				"materialization exception leaves a terminal failed task",
+			);
+			ledger.close();
+		}
+
 		// ─── M5.5: missing authoritative finalization fails closed ───────
 		{
 			const repo = join(dir, "engine-settlement-no-authority");
@@ -692,6 +760,46 @@ export async function runTests(): Promise<void> {
 			check(
 				result.perWorker[0]?.settlementSource === undefined,
 				"claim-only provider never gains engine-derived authority",
+			);
+		}
+
+		// ─── M5.5: engine aggregate never falls back before combine ──────
+		{
+			const repo = join(dir, "engine-settlement-no-combine-evidence");
+			mkdirSync(repo, { recursive: true });
+			execSync("jj git init --colocate", { cwd: repo, stdio: "pipe" });
+			writeFileSync(join(repo, "README.md"), "# fixture\n", "utf-8");
+			execSync('JJ_EDITOR=true jj commit -m "init"', {
+				cwd: repo,
+				stdio: "pipe",
+			});
+			const { JujutsuWorkspaceDriver } =
+				await import("../src/workspaces/jj-driver.ts");
+			const driver = new JujutsuWorkspaceDriver({ projectDir: repo });
+			const combine = driver.combine.bind(driver);
+			Object.defineProperty(driver, "combine", {
+				value: async (...args: Parameters<typeof combine>) => {
+					const outcome = await combine(...args);
+					return {
+						commitId: outcome.commitId,
+						conflicts: outcome.conflicts,
+						filesChanged: outcome.filesChanged,
+					};
+				},
+			});
+			const result = await runParallelTask({
+				subTasks: [SPEC_A],
+				singleTask: true,
+				projectDir: repo,
+				artifactsDir: join(dir, "artifacts-engine-no-combine-evidence"),
+				dbPath: join(dir, "engine-no-combine-evidence.db"),
+				model: "openrouter/stealth/ox-alpha",
+				workspaceDriver: driver,
+				host: noYieldHost("a.txt"),
+			});
+			check(
+				result.aggregate.verdict === "failed",
+				"engine settlement rejects missing post-combine tree evidence",
 			);
 		}
 

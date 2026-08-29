@@ -93,6 +93,8 @@ function assertExhaustive(event: TaskLifecycleEvent): string {
 			return event.type;
 		case "merge.conflict":
 			return event.type;
+		case "task.delivery_pending":
+			return event.type;
 		case "task.completed":
 			return event.type;
 		case "task.failed":

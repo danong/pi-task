@@ -28,8 +28,10 @@ import type {
 } from "../contracts/index.ts";
 import {
 	acceptArtifacts,
+	CombineOutcomeSchema,
 	ENGINE_DERIVED_SETTLEMENT_SOURCE,
 	MODEL_YIELD_SETTLEMENT_SOURCE,
+	WorkspaceFinalizationSchema,
 } from "../contracts/index.ts";
 import type { SettlementSource, TaskReceipt } from "../contracts/index.ts";
 import { writeFailureArtifact } from "../guards/artifacts.ts";
@@ -179,6 +181,13 @@ interface WorkerObservation {
 	lastEvent: unknown;
 	turns: number;
 	watchdogAbort: WatchdogEnd | undefined;
+	terminalDisposition:
+		| "settled"
+		| "yielded"
+		| "error"
+		| "cancelled"
+		| "rejected"
+		| undefined;
 }
 
 /** 1 for a family's first attempt; k+1 when the id carries `-a{k+1}`. */
@@ -280,6 +289,9 @@ async function runWithStore(
 	mkdirSync(options.artifactsDir, { recursive: true });
 
 	const singleTask = options.singleTask === true;
+	// Retained single-task work belongs to the M5 child coordinator. Only an
+	// ordinary isolated run is eligible for M5.5 engine settlement.
+	const engineSettlementLane = singleTask && options.retainWorkspace !== true;
 	const familyBase = singleTask
 		? deriveTaskId(options.subTasks[0]!, options.projectDir)
 		: deriveTaskId(parsed.map((p) => p.goal).join("\n"), options.projectDir);
@@ -630,6 +642,7 @@ async function runWithStore(
 		lastEvent: undefined,
 		turns: 0,
 		watchdogAbort: undefined,
+		terminalDisposition: undefined,
 	}));
 	const contextEpochs = contexts.map((_context, index) =>
 		validatedResume === undefined
@@ -708,6 +721,18 @@ async function runWithStore(
 				options.onEvent?.(i, event);
 				const obs = observations[i]!;
 				if (event.type === "turnStart") obs.turns += 1;
+				if (event.type === "yielded") obs.terminalDisposition = "yielded";
+				if (
+					event.type === "settled" &&
+					obs.terminalDisposition === undefined
+				)
+					obs.terminalDisposition = "settled";
+				if (
+					event.type === "error" ||
+					event.type === "cancelled" ||
+					event.type === "rejected"
+				)
+					obs.terminalDisposition = event.type;
 				obs.lastEvent = event;
 			});
 			return handle;
@@ -715,6 +740,7 @@ async function runWithStore(
 	);
 	const watchdogHandles = handles.map((h, i) =>
 		attachWatchdogs(h, {
+			...(engineSettlementLane ? { settledAction: "observe" as const } : {}),
 			...(options.sessionTimeoutMs === undefined && (options.maxTurns ?? 0) === 0
 				? {}
 				: {
@@ -814,8 +840,14 @@ async function runWithStore(
 		);
 		for (let i = 0; i < finalized.length; i += 1) {
 			const result = finalized[i]!;
-			if (result.status === "fulfilled") finalizations[i] = result.value;
-			else
+			if (result.status === "fulfilled") {
+				const validated = WorkspaceFinalizationSchema.safeParse(result.value);
+				if (validated.success) finalizations[i] = validated.data;
+				else
+					finalizationErrors[i] = `invalid provider finalization: ${validated.error.issues
+						.map((issue) => issue.message)
+						.join("; ")}`;
+			} else
 				finalizationErrors[i] =
 					result.reason instanceof Error
 						? result.reason.message
@@ -832,12 +864,14 @@ async function runWithStore(
 	// model authority.
 	const engineSettlementCandidates = contexts.map(
 		(_context, i) =>
-			singleTask &&
+			engineSettlementLane &&
 			baseChangeId !== undefined &&
 			promptResults[i]?.status === "fulfilled" &&
+			observations[i]!.terminalDisposition === "settled" &&
 			observations[i]!.watchdogAbort === undefined &&
 			yieldPayloads[i] === undefined &&
-			finalizations[i] !== undefined &&
+			finalizations[i]?.presentFiles !== undefined &&
+			finalizations[i]?.deletedFiles !== undefined &&
 			finalizationErrors[i] === undefined,
 	);
 	// Per-worker receipts: failed attempts named first.
@@ -1066,7 +1100,9 @@ async function runWithStore(
 	// 'executing'.
 	let combineOutcome;
 	try {
-		combineOutcome = await taskBase!.combine(baseChangeId, healthyContexts);
+		combineOutcome = CombineOutcomeSchema.parse(
+			await taskBase!.combine(baseChangeId, healthyContexts),
+		);
 	} catch (err) {
 		const cause = `merge ladder failed: ${err instanceof Error ? err.message : String(err)}`;
 		for (const ctx of contexts)
@@ -1158,19 +1194,72 @@ async function runWithStore(
 		};
 	}
 
-	// Materialize the merged tree and verify ONCE, through the environment
-	// driver (FR-6: the gate runs on the integrated tree, not a snapshot).
-	// M6: the runner's full semantics (suite wall, bounded grace, capped
-	// tails) now execute THROUGH the environment ladder.
-	await taskBase!.materialize(baseChangeId);
+	const failObjectiveGate = async (
+		cause: string,
+		stage: "workspace" | "verification",
+		code: "merge_failed" | "verification_failed",
+	): Promise<RunParallelResult> => {
+		for (const ctx of contexts)
+			store.setWorkspaceStatus(`${ctx.taskId}-workspace`, "orphaned");
+		writeFailureArtifact({
+			artifactsDir: options.artifactsDir,
+			runId: aggregateId,
+			cause,
+			lastEvent: `stranded/preserved workspaces: ${contexts.map((c) => `${c.branchName} @ ${c.hostPath}`).join("; ")}`,
+			recovery: await reconcileFailedRun(cause),
+		});
+		store.setTaskStatus(aggregateId, "failed");
+		for (const ctx of contexts) store.setTaskStatus(ctx.taskId, "failed");
+		gateway.emit({
+			type: "task.failed",
+			taskId: aggregateId,
+			sessionId: sessionIdFor(aggregateId),
+			detail: { cause, stage, code },
+		});
+		return {
+			aggregate: makeReceipt(
+				aggregateId,
+				"failed",
+				combineOutcome.changedPaths?.length ?? combineOutcome.filesChanged,
+				[combineOutcome.commitId],
+				observedTurns,
+				sumUsage(usages),
+			),
+			perWorker,
+			mergedCommitId: combineOutcome.commitId,
+			conflicts: [],
+		};
+	};
+
+	// Materialize and verification are provider boundaries, not trusted local
+	// calls. A thrown objective gate must settle through the same once-only
+	// recovery path as a returned failure.
+	try {
+		await taskBase!.materialize(baseChangeId);
+	} catch (error) {
+		return await failObjectiveGate(
+			`materialization failed: ${error instanceof Error ? error.message : String(error)}`,
+			"workspace",
+			"merge_failed",
+		);
+	}
 	const allCommands = parsed.flatMap((p) => p.verificationCommands);
 	const failures: string[] = [];
 	let verifyStderrTail: string | undefined;
-	const verification = await verifyThroughEnvironment(
-		env,
-		options.projectDir,
-		allCommands,
-	);
+	let verification: Awaited<ReturnType<typeof verifyThroughEnvironment>>;
+	try {
+		verification = await verifyThroughEnvironment(
+			env,
+			options.projectDir,
+			allCommands,
+		);
+	} catch (error) {
+		return await failObjectiveGate(
+			`verification driver failed: ${error instanceof Error ? error.message : String(error)}`,
+			"verification",
+			"verification_failed",
+		);
+	}
 	gateway.emit({
 		type: "verify.completed",
 		taskId: aggregateId,
@@ -1190,44 +1279,56 @@ async function runWithStore(
 		);
 	}
 
-	// Content acceptance consumes only provider evidence after integration. A
-	// combine implementation from before this seam has no path evidence, so
-	// legacy/fake providers fall back to their yield claims and combine count.
-	// The real jj provider supplies all three authoritative lists, including D.
+	const aggregateSettlementSource = engineSettlementCandidates.some(Boolean)
+		? ENGINE_DERIVED_SETTLEMENT_SOURCE
+		: MODEL_YIELD_SETTLEMENT_SOURCE;
+	const engineDerived =
+		aggregateSettlementSource === ENGINE_DERIVED_SETTLEMENT_SOURCE;
+	// Engine settlement accepts only post-combine tree evidence. Model-yield
+	// compatibility may still use the historical finalizer/claim fallback, but
+	// it can never authorize an engine-derived aggregate.
 	const finalizedChangedPaths = [
 		...new Set(finalizations.flatMap((f) => f?.changedPaths ?? [])),
 	].sort();
-	const authoritativeChangedPaths =
+	const modelChangedPaths =
 		combineOutcome.changedPaths ??
 		(finalizedChangedPaths.length > 0 || finalizations.some(Boolean)
 			? finalizedChangedPaths
 			: [
 					...new Set(yieldPayloads.flatMap((y) => y?.files_changed ?? [])),
 				].sort());
-	const authoritativePresentFiles =
+	const modelPresentFiles =
 		combineOutcome.presentFiles ??
 		[...new Set(finalizations.flatMap((f) => f?.presentFiles ?? []))].sort();
-	const authoritativeDeletedFiles =
+	const modelDeletedFiles =
 		combineOutcome.deletedFiles ??
 		[...new Set(finalizations.flatMap((f) => f?.deletedFiles ?? []))].sort();
+	const authoritativeChangedPaths = engineDerived
+		? combineOutcome.changedPaths ?? []
+		: modelChangedPaths;
 	const claimedFiles = [
 		...new Set(yieldPayloads.flatMap((y) => y?.files_changed ?? [])),
 	].sort();
-	const aggregateSettlementSource = engineSettlementCandidates.some(Boolean)
-		? ENGINE_DERIVED_SETTLEMENT_SOURCE
-		: MODEL_YIELD_SETTLEMENT_SOURCE;
 	const contentAcceptance = acceptArtifacts({
 		settlementSource: aggregateSettlementSource,
 		policy: parsed[0]!.artifactPolicy,
 		claimedFiles,
-		actualFiles: authoritativeChangedPaths,
-		presentFiles:
-			authoritativePresentFiles.length > 0
-				? authoritativePresentFiles
+		actualFiles: engineDerived
+			? combineOutcome.changedPaths
+			: authoritativeChangedPaths,
+		presentFiles: engineDerived
+			? combineOutcome.presentFiles
+			: modelPresentFiles.length > 0
+				? modelPresentFiles
 				: authoritativeChangedPaths,
-		deletedFiles: authoritativeDeletedFiles,
-		hasIntegratedChange:
-			combineOutcome.changedPaths !== undefined
+		deletedFiles: engineDerived
+			? combineOutcome.deletedFiles
+			: modelDeletedFiles,
+		hasIntegratedChange: engineDerived
+			? combineOutcome.changedPaths === undefined
+				? undefined
+				: combineOutcome.changedPaths.length > 0
+			: combineOutcome.changedPaths !== undefined
 				? authoritativeChangedPaths.length > 0
 				: combineOutcome.filesChanged > 0 ||
 					authoritativeChangedPaths.length > 0,
